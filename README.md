@@ -27,7 +27,7 @@ Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git`
 5. Run `python3 bot.py`
 
 
-After both of these are running you can detach from the screen sessions and go to http://localhost:5000 (or http://OtherPCsIPAddress:5000 if running on another computer) to access the dashboard.
+After both of these are running and the discord bot has been added to your server, you can detach from the screen sessions and go to http://localhost:5000 (or http://OtherPCsIPAddress:5000 if running on another computer) to access the dashboard.
 
 ### What this bot allows you to do
 - Make custom commands
