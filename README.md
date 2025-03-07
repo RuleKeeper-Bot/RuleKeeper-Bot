@@ -28,3 +28,16 @@ Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git`
 
 
 After both of these are running you can detach from the screen sessions and go to http://localhost:5000 (or http://OtherPCsIPAddress:5000 if running on another computer) to access the dashboard.
+
+### What this bot allows you to do
+- Make custom commands
+- Remove custom commands
+- Warn a user
+- Get warnings from a user
+- Remove a warning from a user
+- Timeout and ban people if they get too many warnings
+- Message and mention spam detection
+
+
+#### Todo:
+- Add more automod features (deletes certain blocked words and sends a dm when a user sends a blocked word)
