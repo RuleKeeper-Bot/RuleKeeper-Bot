@@ -1,4 +1,4 @@
-# rulekeeperbot
+# RuleKeeper Discord Bot
 My rule keeper discord bot and dashboard!
 
 
