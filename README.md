@@ -19,7 +19,7 @@ Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git`
 5. Replace bot token in secrets.json with your token
 6. Run `python3 bot.py`
 
-## Dashboard
+## Dashboard (optional)
 1. Open up a screen session
 2. Run `cd path/to/where/you/ran/git-clone`
 3. Run `cd rulekeeperbot` then `source venv/bin/activate`
@@ -38,6 +38,10 @@ After both of these are running you can detach from the screen sessions and go t
 - Timeout and ban people if they get too many warnings
 - Message and mention spam detection
 
+### What the dashboard allows you to do
+- Edit custom commands
+- Remove custom commands
 
-#### Todo:
+### Todo:
 - Add more automod features (deletes certain blocked words and sends a dm when a user sends a blocked word)
+- Integrate an add command button to the dashboard
