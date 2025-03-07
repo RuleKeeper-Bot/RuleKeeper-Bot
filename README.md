@@ -1,10 +1,14 @@
 # rulekeeperbot
-My rule keeper discord bot and dashboard
+My rule keeper discord bot and dashboard!
 
 
 # Instructions (FOR LINUX)
 Install git
+
 Install python
+
+Go to https://discord.com/developers/applications and make a new application (discord bot).
+
 Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git`
 
 ## Bot
