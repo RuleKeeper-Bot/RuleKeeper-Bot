@@ -9,7 +9,13 @@ Install python
 
 Go to https://discord.com/developers/applications and make a new application (discord bot).
 
-Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git`
+Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git` and run `cd rulekeeperbot`
+
+Make a new file called `.env` and add these lines to is:
+```
+SECRET_KEY=REPLACE WITH A RANDOM STRING
+ADMIN_PASSWORD=CHOOSE A SECURE PASSWORD
+```
 
 ## Bot
 1. Open up a screen session
@@ -37,12 +43,13 @@ After both of these are running and the discord bot has been added to your serve
 - Remove a warning from a user
 - Timeout and ban people if they get too many warnings
 - Message and mention spam detection
+- Logs a lot of stuff
 
 ### What the dashboard allows you to do
 - Add custom commands
 - Edit custom commands
 - Remove custom commands
+- Enable and disable individual logging options
 
 ### Todo:
 - Add more automod features (deletes certain blocked words and sends a dm when a user sends a blocked word)
-- Add logging (like Dynos logging features)
