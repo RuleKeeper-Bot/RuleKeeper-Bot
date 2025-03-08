@@ -45,3 +45,4 @@ After both of these are running and the discord bot has been added to your serve
 
 ### Todo:
 - Add more automod features (deletes certain blocked words and sends a dm when a user sends a blocked word)
+- Add logging (like Dynos logging features)
