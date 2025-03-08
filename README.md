@@ -39,9 +39,9 @@ After both of these are running and the discord bot has been added to your serve
 - Message and mention spam detection
 
 ### What the dashboard allows you to do
+- Add custom commands
 - Edit custom commands
 - Remove custom commands
 
 ### Todo:
 - Add more automod features (deletes certain blocked words and sends a dm when a user sends a blocked word)
-- Integrate an add command button to the dashboard
