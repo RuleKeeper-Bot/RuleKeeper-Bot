@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Logging Configuration</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<div class="container mt-4">
+    <h2>Logging Configuration</h2>
+    <form id="logConfigForm" method="POST" action="/log_config">
+        <div class="row">
+            {% for key, value in config.items() %}
+            <div class="col-md-4">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" name="{{ key }}" id="{{ key }}" {% if value %}checked{% endif %}>
+                    <label class="form-check-label" for="{{ key }}">{{ key.replace('_', ' ').title() }}</label>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <button type="submit" class="btn btn-primary mt-3" id="saveConfigButton">
+            <span id="saveConfigText">Save Configuration</span>
+            <span id="saveConfigSpinner" class="spinner-border spinner-border-sm d-none"></span>
+        </button>
+    </form>
+    <div id="successMessage" class="alert alert-success mt-3 d-none" role="alert">
+        Configuration updated successfully! Redirecting to Dashboard...
+    </div>
+    <a href="/" class="btn btn-secondary mt-3">Back to Dashboard</a>
+</div>
+
+<script>
+    document.getElementById('logConfigForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const button = document.getElementById('saveConfigButton');
+        const text = document.getElementById('saveConfigText');
+        const spinner = document.getElementById('saveConfigSpinner');
+        const successMessage = document.getElementById('successMessage');
+
+        // Show loading state
+        button.disabled = true;
+        text.textContent = 'Saving...';
+        spinner.classList.remove('d-none');
+
+        const formData = new FormData(this);
+        fetch('/log_config', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.text())
+        .then(data => {
+            // Show success message and redirect after a short delay
+            successMessage.classList.remove('d-none');
+            setTimeout(() => {
+                window.location.href = "/";
+            }, 2000);
+        })
+        .catch(error => {
+            alert('Error updating configuration: ' + error);
+        })
+        .finally(() => {
+            button.disabled = false;
+            text.textContent = 'Save Configuration';
+            spinner.classList.add('d-none');
+        });
+    });
+</script>
+</body>
+</html>

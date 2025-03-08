@@ -9,14 +9,21 @@
 <body>
     <div class="container mt-4">
         <div class="d-flex justify-content-between mb-4">
-            <button class="btn btn-success" id="syncButton">
-                <i class="bi bi-arrow-repeat" id="syncIcon"></i>
-                <span id="syncText">Sync Commands</span>
-                <span id="syncSpinner" class="spinner-border spinner-border-sm d-none"></span>
-            </button>
-            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newCommandModal">
-                <i class="bi bi-plus-lg"></i> New Command
-            </button>
+            <div>
+                <button class="btn btn-success" id="syncButton">
+                    <i class="bi bi-arrow-repeat" id="syncIcon"></i>
+                    <span id="syncText">Sync Commands</span>
+                    <span id="syncSpinner" class="spinner-border spinner-border-sm d-none"></span>
+                </button>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#newCommandModal">
+                    <i class="bi bi-plus-lg"></i> New Command
+                </button>
+            </div>
+            <div>
+                <a href="/log_config" class="btn btn-info">
+                    <i class="bi bi-gear"></i> Logging Config
+                </a>
+            </div>
         </div>
 
         <div class="row row-cols-1 row-cols-md-3 g-4">
