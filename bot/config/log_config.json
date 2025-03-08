@@ -1,0 +1,23 @@
+{
+    "message_delete": true,
+    "bulk_message_delete": true,
+    "message_edit": true,
+    "invite_create": true,
+    "invite_delete": true,
+    "member_role_add": true,
+    "member_role_remove": true,
+    "member_timeout": true,
+    "member_warn": true,
+    "member_unwarn": true,
+    "member_ban": true,
+    "member_unban": true,
+    "role_create": true,
+    "role_delete": true,
+    "role_update": true,
+    "channel_create": true,
+    "channel_delete": true,
+    "channel_update": true,
+    "emoji_create": true,
+    "emoji_name_change": true,
+    "emoji_delete": true
+}
