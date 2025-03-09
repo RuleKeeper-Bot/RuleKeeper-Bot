@@ -234,8 +234,15 @@ async def reload_commands():
     
     @bot.tree.command(name="sync", description="Sync commands manually")
     async def sync_commands(interaction: discord.Interaction):
+        # Send initial response to avoid "application did not respond" error
+        await interaction.response.send_message("Syncing...", ephemeral=True)
+        
+        # Perform the sync operations
         await reload_commands()
-        await interaction.response.send_message("Commands synced!", ephemeral=True)
+        
+        # Edit the original response to indicate success
+        original = await interaction.original_response()
+        await original.edit(content="✅ Sync was successful")
 
     @bot.tree.command(name="custom_command", description="Create a custom command")
     @app_commands.describe(
