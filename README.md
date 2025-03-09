@@ -25,12 +25,16 @@ ADMIN_PASSWORD=CHOOSE_A_SECURE_PASSWORD
 5. Replace bot token in secrets.json with your token
 6. Run `python3 bot.py`
 
-## Dashboard (optional)
+(You can also skip the screen session and just run the script with `nohup python bot. py &`)
+
+## Dashboard (optional but recommended)
 1. Open up a screen session
 2. Run `cd path/to/where/you/ran/git-clone`
 3. Run `cd rulekeeperbot` then `source venv/bin/activate`
 4. Run `cd web` then `pip install -r requirements.txt`
-5. Run `python3 bot.py`
+5. Run `python3 app.py`
+
+(You can also skip the screen session and just run the script with `nohup python app. py &`)
 
 
 After both of these are running and the discord bot has been added to your server, you can detach from the screen sessions and go to http://localhost:5000 (or http://OtherPCsIPAddress:5000 if running on another computer) to access the dashboard.
