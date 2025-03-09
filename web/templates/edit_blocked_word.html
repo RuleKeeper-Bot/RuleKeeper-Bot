@@ -1,0 +1,13 @@
+<!-- edit_blocked_word.html -->
+{% extends 'index.html' %}
+
+{% block content %}
+<h1>Edit Blocked Word</h1>
+
+<form method="POST">
+  <label for="new_word">New Blocked Word:</label>
+  <input type="text" name="new_word" value="{{ word }}" required>
+  <button type="submit">Save Changes</button>
+</form>
+
+{% endblock %}

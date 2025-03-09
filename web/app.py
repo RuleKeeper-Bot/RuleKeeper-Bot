@@ -3,6 +3,7 @@ import json
 import requests
 import sys
 import os
+from markupsafe import Markup
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config  # config.py should define SECRET_KEY, ADMIN_PASSWORD, and COMMANDS_FILE
 
@@ -181,6 +182,61 @@ def log_config_dashboard():
     else:
         visible_config = {key: full_config.get(key, True) for key in ALLOWED_LOG_KEYS}
         return render_template('log_config.html', config=visible_config)
+
+# -------------------- Blocked Words Configuration Dashboard --------------------
+@app.template_filter('hex')
+def hex_filter(value):
+    # Assuming the value is an integer, convert it to a hex string
+    if isinstance(value, int):
+        return f'#{value:06x}'
+    return value
+    
+@app.route('/blocked_words', methods=['GET', 'POST'])
+@login_required
+def blocked_words():
+    # Load existing data
+    try:
+        with open(Config.BLOCKED_WORDS_FILE, 'r') as f:
+            blocked_data = json.load(f)
+            blocked_words = blocked_data.get('blocked_words', [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        blocked_words = []
+
+    try:
+        with open(Config.BLOCKED_WORDS_EMBED_FILE, 'r') as f:
+            embed_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        embed_data = {
+            "title": "Blocked Word Detected!",
+            "description": "You have used a word that is not allowed.",
+            "color": 0xff0000
+        }
+
+    if request.method == 'POST':
+        # Process form data
+        new_words = [w.strip() for w in request.form.getlist('blocked_words') if w.strip()]
+        embed_title = request.form['embed_title']
+        embed_description = request.form['embed_description']
+        embed_color = int(request.form['embed_color'].lstrip('#'), 16)
+
+        # Save blocked words
+        with open(Config.BLOCKED_WORDS_FILE, 'w') as f:
+            json.dump({"blocked_words": new_words}, f, indent=4)
+
+        # Save embed settings
+        with open(Config.BLOCKED_WORDS_EMBED_FILE, 'w') as f:
+            json.dump({
+                "title": embed_title,
+                "description": embed_description,
+                "color": embed_color
+            }, f, indent=4)
+
+        flash('Settings saved successfully!', 'success')
+        return redirect('/blocked_words')
+
+    return render_template('blocked_words.html',
+                         blocked_words=blocked_words,
+                         embed=embed_data)
 
 # -------------------- Main Entry --------------------
 if __name__ == '__main__':
