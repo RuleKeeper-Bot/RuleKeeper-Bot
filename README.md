@@ -72,7 +72,11 @@ Ensure you have the following installed:
    ```
 5. **Add your bot token:**
    - Open `secrets.json` and replace the token with your bot's token.
-6. **Run the bot:**
+6. **Add blocked words:**
+   - Open `blocked_words.json` and add words in there that you want to block.
+7. **Edit blocked word DM:**
+   - Open `blocked_word_embed.json` and edit to send what you want the embed to send.
+8. **Run the bot:**
    ```bash
    python3 bot.py
    ```
@@ -124,6 +128,4 @@ To detach from a screen session, press `Ctrl + A` then `D`.
 
 ## To-Do List
 
-- **Automod Enhancements:**  
-  - Block certain words automatically.  
-  - Notify users via DM when they send blocked words.  
+- **None currently (will update later)**   
