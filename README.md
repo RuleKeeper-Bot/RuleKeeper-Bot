@@ -32,9 +32,9 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 ### Prerequisites
 Ensure you have the following installed:
 - **Git**
-  - For Debian-based Linux distributions: `sudo apt-get install git`
+  - For Debian-based Linux distributions run: `sudo apt install git`
 - **Python**
-  - For Debian-based Linux distributions: `sudo apt install python3 python3-pip python3-venv`
+  - For Debian-based Linux distributions run: `sudo apt install python3 python3-pip python3-venv`
 
 ### Setup
 
