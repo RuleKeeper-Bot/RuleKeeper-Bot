@@ -27,7 +27,7 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 ### Prerequisites
 Ensure you have the following installed:
 - **Git**
-- **Python** (preferably Python 3.x)
+- **Python**
 
 ### Setup
 
@@ -116,7 +116,7 @@ nohup python3 app.py &
 
 Once running, access the dashboard:
 - **Local access:** [http://localhost:5000](http://localhost:5000)  
-- **Remote access:** http://OtherPCsIPAddress:5000  
+- **Remote access:** http://OtherPCsIPAddress:5000
 
 To detach from a screen session, press `Ctrl + A` then `D`.
 
