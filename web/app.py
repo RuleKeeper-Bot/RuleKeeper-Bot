@@ -1,14 +1,19 @@
-from flask import Flask, render_template, request, jsonify, redirect
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash
 import json
 import requests
+import sys
 import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import Config  # config.py should define SECRET_KEY, ADMIN_PASSWORD, and COMMANDS_FILE
 
 app = Flask(__name__)
+app.config.from_object(Config)
 
-# Path to commands and log config files (adjust if needed)
+# -------------------- File Paths --------------------
 COMMANDS_PATH = os.path.join('..', 'bot', 'commands.json')
 LOG_CONFIG_PATH = os.path.join('..', 'bot', 'config', 'log_config.json')
 
+# -------------------- Utility Functions --------------------
 def get_commands():
     try:
         with open(COMMANDS_PATH, 'r') as f:
@@ -25,7 +30,7 @@ def load_log_config():
         with open(LOG_CONFIG_PATH, 'r') as f:
             return json.load(f)
     except FileNotFoundError:
-        # If not found, return default settings
+        # Create default log config if it doesn't exist
         default_config = {
             "message_delete": True,
             "bulk_message_delete": True,
@@ -57,12 +62,55 @@ def save_log_config(config):
     with open(LOG_CONFIG_PATH, 'w') as f:
         json.dump(config, f, indent=4)
 
+# Only these keys will be shown/edited on the dashboard.
+ALLOWED_LOG_KEYS = [
+    "message_delete", "bulk_message_delete", "message_edit",
+    "invite_create", "invite_delete", "member_role_add",
+    "member_role_remove", "member_timeout", "member_warn",
+    "member_unwarn", "member_ban", "member_unban", "role_create",
+    "role_delete", "role_update", "channel_create", "channel_delete",
+    "channel_update", "emoji_create", "emoji_name_change", "emoji_delete"
+]
+
+# -------------------- Admin Login System --------------------
+def login_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            flash("Please log in to access this page.", "warning")
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == app.config['ADMIN_PASSWORD']:
+            session['logged_in'] = True
+            flash("Logged in successfully!", "success")
+            next_page = request.args.get('next') or url_for('index')
+            return redirect(next_page)
+        else:
+            flash("Incorrect password.", "danger")
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    flash("Logged out successfully.", "success")
+    return redirect(url_for('login'))
+
+# -------------------- Main Routes --------------------
 @app.route('/')
+@login_required
 def index():
     commands = get_commands()
     return render_template('index.html', commands=commands)
 
 @app.route('/sync', methods=['POST'])
+@login_required
 def sync_commands():
     try:
         response = requests.post('http://localhost:5003/sync')
@@ -71,6 +119,7 @@ def sync_commands():
         return str(e), 500
 
 @app.route('/create_command', methods=['POST'])
+@login_required
 def create_command():
     try:
         new_command = request.get_json()
@@ -88,6 +137,7 @@ def create_command():
         return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route('/edit/<command_name>', methods=['GET', 'POST'])
+@login_required
 def edit_command(command_name):
     commands = get_commands()
     if request.method == 'POST':
@@ -101,6 +151,7 @@ def edit_command(command_name):
     return render_template('edit.html', command=commands[command_name], command_name=command_name)
 
 @app.route('/delete/<command_name>')
+@login_required
 def delete_command(command_name):
     commands = get_commands()
     if command_name in commands:
@@ -108,26 +159,19 @@ def delete_command(command_name):
         save_commands(commands)
     return redirect('/')
 
-# -------------------- Logging Config Dashboard --------------------
-ALLOWED_LOG_KEYS = [
-    "message_delete", "bulk_message_delete", "message_edit",
-    "invite_create", "invite_delete", "member_role_add",
-    "member_role_remove", "member_timeout", "member_warn",
-    "member_unwarn", "member_ban", "member_unban", "role_create",
-    "role_delete", "role_update", "channel_create", "channel_delete",
-    "channel_update", "emoji_create", "emoji_name_change", "emoji_delete"
-]
-
+# -------------------- Logging Configuration Dashboard --------------------
 @app.route('/log_config', methods=['GET', 'POST'])
+@login_required
 def log_config_dashboard():
     full_config = load_log_config()
     
     if request.method == 'POST':
+        # Update only the allowed keys from the form
         for key in ALLOWED_LOG_KEYS:
             full_config[key] = (key in request.form)
         save_log_config(full_config)
         
-        # Auto reload the bot by calling its /sync endpoint
+        # Auto-reload bot configuration via its sync endpoint.
         try:
             requests.post('http://localhost:5003/sync')
         except Exception as e:
@@ -138,6 +182,6 @@ def log_config_dashboard():
         visible_config = {key: full_config.get(key, True) for key in ALLOWED_LOG_KEYS}
         return render_template('log_config.html', config=visible_config)
 
-
+# -------------------- Main Entry --------------------
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
