@@ -42,13 +42,17 @@ After both of these are running and the discord bot has been added to your serve
 - Get warnings from a user
 - Remove a warning from a user
 - Timeout and ban people if they get too many warnings
+- Sync commands to update them
 - Message and mention spam detection
 - Logs a lot of stuff
 
 ### What the dashboard allows you to do
+- Login with an admin password
+- Logout
 - Add custom commands
 - Edit custom commands
 - Remove custom commands
+- Sync commands to update then
 - Enable and disable individual logging options
 
 ### Todo:
