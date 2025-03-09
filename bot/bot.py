@@ -5,9 +5,12 @@ from collections import defaultdict
 import json
 from datetime import datetime, timedelta
 import time
+import sys
 import os
 import threading
 from aiohttp import web
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import Config
 
 # -------------------- Load Secrets --------------------
 with open('secrets.json', 'r') as f:
@@ -59,8 +62,35 @@ def save_log_config(config):
 # Global log configuration
 log_config = load_log_config()
 
+# -------------------- Load Blocked Words --------------------
+# Load blocked words from the config file
+def load_blocked_words():
+    try:
+        with open('blocked_words.json', 'r') as f:
+            data = json.load(f)
+            
+            # Handle both formats:
+            if isinstance(data, dict):
+                return data.get("blocked_words", [])
+            return data  # Assume it's a list if not a dictionary
+            
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        return []  # Return empty list if any error occurs
+        
+# Load the embed configuration for the blocked word notification
+def load_embed():
+    try:
+        with open('blocked_word_embed.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {
+            "title": "Blocked Word Detected!",
+            "description": "You have used a word that is not allowed.",
+            "color": 0xff0000
+        }  # Default embed if not configured
+
 # -------------------- Bot Setup --------------------
-LOG_CHANNEL_ID = 123456789012345678  # Replace with your actual log channel ID
+LOG_CHANNEL_ID = 1347980248830181466  # Replace with your actual log channel ID
 
 intents = discord.Intents.default()
 intents.members = True
@@ -444,12 +474,42 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 @bot.event
 async def on_message(message):
     global processed_messages
-    if message.author.bot or message.id in processed_messages:
+    
+    if message.author == bot.user:
         return
-        
-    processed_messages.add(message.id)
-    if len(processed_messages) > 1000:
-        processed_messages = set()
+
+    # Load fresh data every time
+    blocked_words = load_blocked_words()
+    embed_config = load_embed()
+    
+    content_lower = message.content.lower()
+    
+    for word in blocked_words:
+        if word.lower() in content_lower:
+            try:
+                await message.delete()
+                
+                try:
+                    embed = discord.Embed(
+                        title=embed_config['title'],
+                        description=embed_config['description'],
+                        color=discord.Color(embed_config['color'])
+                    )
+                    await message.author.send(embed=embed)
+                except discord.Forbidden:
+                    pass
+                
+                await log_event(message.guild, "message_delete", "Blocked Word Detected",
+                              f"**User:** {message.author.mention}\n**Message:** {message.content}",
+                              color=discord.Color.red())
+                return
+            except discord.NotFound:
+                print("Message already deleted elsewhere")
+            except discord.Forbidden:
+                print("Bot lacks permissions to delete messages!")
+            except Exception as e:
+                print(f"Unexpected error: {str(e)}")
+            return
 
     current_time = discord.utils.utcnow().timestamp()
     if current_time - last_message_time[message.author.id] < SPAM_TIME_WINDOW:
@@ -479,6 +539,15 @@ async def on_message(message):
             ))
             mention_count[message.author.id] = 0
             last_message_time[message.author.id] = current_time
+            
+            
+    await bot.process_commands(message)
+    
+    processed_messages.add(message.id)
+    if len(processed_messages) > 1000:
+        processed_messages = set()
+    
+    return
 
 # -------------------- Logging Event Handlers --------------------
 
