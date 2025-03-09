@@ -11,10 +11,10 @@ Go to https://discord.com/developers/applications and make a new application (di
 
 Run `git clone https://github.com/Wesley-Playz/rulekeeperbot.git` and run `cd rulekeeperbot`
 
-Make a new file called `.env` and add these lines to is:
+Make a new file called `.env` and add these lines to it:
 ```
-SECRET_KEY=REPLACE WITH A RANDOM STRING
-ADMIN_PASSWORD=CHOOSE A SECURE PASSWORD
+SECRET_KEY=REPLACE_WITH_A_RANDOM_STRING
+ADMIN_PASSWORD=CHOOSE_A_SECURE_PASSWORD
 ```
 
 ## Bot
