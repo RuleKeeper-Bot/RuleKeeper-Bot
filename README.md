@@ -5,12 +5,14 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 ## Features
 
 ### Bot Features
-- **Custom Commands:** Add, edit, and remove commands directly from Discord or the dashboard.
+- **Custom Commands:** Add, edit, and remove commands directly from Discord or through the dashboard.
 - **Moderation:**
   - Warn users and track their warnings.
   - Remove warnings.
   - Automatically timeout or ban users who accumulate too many warnings.
-- **Auto Moderation:** Detects and mitigates spam (message and mention spam detection).
+- **Auto Moderation:**
+  - Detects and mitigates spam (message and mention spam detection).
+  - Blocks words that you can set and DM users when they say a blocked word.
 - **Logging:** Tracks various server events.
 - **Command Syncing:** Ensure commands are always up to date.
 
@@ -19,15 +21,20 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 - **Custom Commands:** Add, edit, and remove custom commands.
 - **Command Syncing:** Update bot commands instantly.
 - **Logging Control:** Enable or disable individual logging options.
+- **Manage Blocked Words:**
+  - Add, edit, and remove blocked words.
+  - Edit the embed that gets sent to the user when they say a blocked word.
 
 ---
 
-## Installation (Linux)
+## Installation (FOR LINUX)
 
 ### Prerequisites
 Ensure you have the following installed:
 - **Git**
+  - For Debian-based Linux distributions: `sudo apt-get install git`
 - **Python**
+  - For Debian-based Linux distributions: `sudo apt install python3 python3-pip python3-venv`
 
 ### Setup
 
@@ -122,7 +129,7 @@ Once running, access the dashboard:
 - **Local access:** [http://localhost:5000](http://localhost:5000)  
 - **Remote access:** http://OtherPCsIPAddress:5000
 
-To detach from a screen session, press `Ctrl + A` then `D`.
+To detach from a screen session, press `Ctrl + A` then `Ctrl + D`.
 
 ---
 
