@@ -136,4 +136,4 @@ To detach from a screen session, press `Ctrl + A` then `Ctrl + D`.
 ## To-Do List
 
 - **Fix the /sync command**
-  - Respond immediately so you don't get the "Application has not responded" error
+  - Respond immediately so you don't get the "Application did not respond" error
