@@ -167,7 +167,7 @@ threading.Thread(target=watch_commands, daemon=True).start()
 
 # -------------------- Spam and Warning Tracking --------------------
 message_count = defaultdict(int)
-mention_count = defaultdict(int)
+user_mentions = defaultdict(list)
 last_message_time = defaultdict(float)
 
 def load_warnings():
@@ -186,7 +186,7 @@ warnings = load_warnings()
 SPAM_THRESHOLD = 5
 SPAM_TIME_WINDOW = 10
 MENTION_THRESHOLD = 3
-MENTION_TIME_WINDOW = 10
+MENTION_TIME_WINDOW = 30
 WARNING_ACTIONS = {2: "timeout", 3: "ban"}
 
 # -------------------- Web Server for Syncing --------------------
@@ -484,6 +484,8 @@ async def on_message(message):
     
     if message.author == bot.user:
         return
+        
+    current_time = discord.utils.utcnow().timestamp()
 
     # Load fresh data every time
     blocked_words = load_blocked_words()
@@ -535,17 +537,24 @@ async def on_message(message):
 
     mention_count_current = len(message.mentions)
     if mention_count_current > 0:
-        if current_time - last_message_time[message.author.id] > MENTION_TIME_WINDOW:
-            mention_count[message.author.id] = 0
-        mention_count[message.author.id] += mention_count_current
-        if mention_count[message.author.id] > MENTION_THRESHOLD:
+        user_id = message.author.id
+        current_time = discord.utils.utcnow().timestamp()
+        
+        # Record timestamps for mentions
+        user_mentions[user_id].extend([current_time] * mention_count_current)
+        
+        # Filter mentions to only keep those within 5 minutes
+        window_start = current_time - MENTION_TIME_WINDOW
+        user_mentions[user_id] = [t for t in user_mentions[user_id] if t >= window_start]
+        
+        if len(user_mentions[user_id]) > MENTION_THRESHOLD:
             await message.channel.send(embed=discord.Embed(
                 title="Too Many Mentions",
                 description="Please do not mention too many users at once or you will get a warning.",
                 color=discord.Color.red()
             ))
-            mention_count[message.author.id] = 0
-            last_message_time[message.author.id] = current_time
+            # Reset after warning
+            user_mentions[user_id].clear()
             
             
     await bot.process_commands(message)
