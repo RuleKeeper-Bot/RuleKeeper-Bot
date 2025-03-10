@@ -135,4 +135,4 @@ To detach from a screen session, press `Ctrl + A` then `Ctrl + D`.
 
 ## To-Do List
 
-- **None currently (will update later)**
+[- **Check the Trello board)**](https://trello.com/b/rVCkIgc5/rulekeeper-features)
