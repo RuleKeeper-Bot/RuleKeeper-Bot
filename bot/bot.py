@@ -8,9 +8,12 @@ import time
 import sys
 import os
 import threading
+import random
+import math
 from aiohttp import web
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
+from discord.errors import Forbidden
 
 # -------------------- Load Secrets --------------------
 with open('secrets.json', 'r') as f:
@@ -61,6 +64,8 @@ def save_log_config(config):
 
 # Global log configuration
 log_config = load_log_config()
+
+processed_messages = set()
 
 # -------------------- Load Blocked Words --------------------
 # Load blocked words from the config file
@@ -231,6 +236,241 @@ async def reload_commands():
         handler = create_handler(data.copy())
         handler.__name__ = f"cmd_{command_name}"
         bot.tree.command(name=command_name, description=data["description"])(handler)
+    
+    @bot.tree.command(name="level", description="Check your current level and XP")
+    async def level(interaction: discord.Interaction, user: discord.User = None):
+        user = user or interaction.user
+        user_id = str(user.id)
+        
+        if user_id not in level_data:
+            await interaction.response.send_message(
+                f"{user.mention} hasn't earned any XP yet!",
+                ephemeral=True
+            )
+            return
+        
+        data = level_data[user_id]
+        xp = data['xp']
+        level = data['level']
+        needed_xp = calculate_xp_for_level(level)
+        
+        embed = discord.Embed(
+            title=f"{user.display_name}'s Level",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="Level", value=level, inline=True)
+        embed.add_field(name="XP", value=f"{xp}/{needed_xp}", inline=True)
+        embed.set_thumbnail(url=user.display_avatar.url)
+        
+        progress = xp / needed_xp
+        progress_bar = "▓" * int(progress * 20) + "░" * (20 - int(progress * 20))
+        embed.add_field(name="Progress", value=f"{progress_bar} ({round(progress*100)}%)", inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(name="leaderboard", description="Show the server level leaderboard")
+    async def leaderboard(interaction: discord.Interaction):
+        sorted_users = sorted(level_data.items(), 
+                             key=lambda x: (x[1]['level'], x[1]['xp']), 
+                             reverse=True)[:10]
+        
+        embed = discord.Embed(
+            title="🏆 Server Leaderboard",
+            color=discord.Color.gold()
+        )
+        
+        for idx, (user_id, data) in enumerate(sorted_users, 1):
+            user = interaction.guild.get_member(int(user_id))
+            if user:
+                embed.add_field(
+                    name=f"{idx}. {user.display_name}",
+                    value=f"Level {data['level']} | XP {data['xp']}",
+                    inline=False
+                )
+        
+        await interaction.response.send_message(embed=embed)
+        
+    @bot.tree.command(name="setlevel", description="Set a user's level (Admin only)")
+    @app_commands.describe(
+        user="User to modify",
+        level="New level to set"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_level(interaction: discord.Interaction, user: discord.User, level: int):
+        if level < 0:
+            await interaction.response.send_message("Level must be a positive number!", ephemeral=True)
+            return
+            
+        user_id = str(user.id)
+        
+        # Initialize user data if needed
+        if user_id not in level_data:
+            level_data[user_id] = {
+                "xp": 0,
+                "level": 0,
+                "username": user.name
+            }
+        
+        # Calculate required XP for target level
+        required_xp = calculate_xp_for_level(level)
+        level_data[user_id]['level'] = level
+        level_data[user_id]['xp'] = required_xp
+        
+        # Handle role rewards
+        with open('level_rewards.json', 'r') as f:
+            rewards = json.load(f)
+        
+        roles_to_add = []
+        for reward_level, role_id in rewards.items():
+            if level >= int(reward_level):
+                role = interaction.guild.get_role(int(role_id))
+                if role:
+                    roles_to_add.append(role)
+        
+        try:
+            if roles_to_add:
+                await user.add_roles(*roles_to_add, reason=f"Level set to {level}")
+        except Forbidden:
+            pass
+        
+        save_level_data(level_data)
+        
+        embed = discord.Embed(
+            title="Level Updated",
+            description=f"{user.mention}'s level has been set to **{level}**",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        # Log the action
+        await log_event(
+            interaction.guild,
+            "member_level_change",
+            "Level Modified",
+            f"**Admin:** {interaction.user.mention}\n"
+            f"**User:** {user.mention}\n"
+            f"**New Level:** {level}",
+            color=discord.Color.blue()
+        )
+    
+    @bot.tree.command(name="setxp", description="Set a user's XP (Admin only)")
+    @app_commands.describe(
+        user="User to modify",
+        xp="New XP value to set"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_xp(interaction: discord.Interaction, user: discord.User, xp: int):
+        if xp < 0:
+            await interaction.response.send_message("XP must be a positive number!", ephemeral=True)
+            return
+            
+        user_id = str(user.id)
+        
+        # Initialize user data if needed
+        if user_id not in level_data:
+            level_data[user_id] = {
+                "xp": 0,
+                "level": 0,
+                "username": user.name
+            }
+        
+        # Set XP and calculate level
+        level_data[user_id]['xp'] = xp
+        new_level = 0
+        while level_data[user_id]['xp'] >= calculate_xp_for_level(new_level):
+            new_level += 1
+        
+        # Update level and handle overflow XP
+        level_data[user_id]['level'] = new_level - 1
+        required_xp = calculate_xp_for_level(new_level - 1)
+        level_data[user_id]['xp'] = min(xp, required_xp)
+        
+        await handle_level_up(user, interaction.guild, interaction.channel)
+        save_level_data(level_data)
+        
+        embed = discord.Embed(
+            title="XP Updated",
+            description=f"{user.mention}'s XP has been set to **{xp}**",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        # Log the action
+        await log_event(
+            interaction.guild,
+            "member_xp_change",
+            "XP Modified",
+            f"**Admin:** {interaction.user.mention}\n"
+            f"**User:** {user.mention}\n"
+            f"**New XP:** {xp}",
+            color=discord.Color.blue()
+        )
+
+    @bot.tree.command(name="addxp", description="Add XP to a user (Admin only)")
+    @app_commands.describe(
+        user="User to modify",
+        xp="XP to add"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def add_xp(interaction: discord.Interaction, user: discord.User, xp: int):
+        if xp < 0:
+            await interaction.response.send_message("XP must be a positive number!", ephemeral=True)
+            return
+            
+        user_id = str(user.id)
+        
+        # Initialize user data if needed
+        if user_id not in level_data:
+            level_data[user_id] = {
+                "xp": 0,
+                "level": 0,
+                "username": user.name
+            }
+        
+        # Add XP and calculate level changes
+        level_data[user_id]['xp'] += xp
+        new_level = level_data[user_id]['level']
+        
+        # Check for level ups
+        while level_data[user_id]['xp'] >= calculate_xp_for_level(new_level):
+            level_data[user_id]['xp'] -= calculate_xp_for_level(new_level)
+            new_level += 1
+        
+        # Update level if changed
+        if new_level != level_data[user_id]['level']:
+            level_data[user_id]['level'] = new_level
+            await handle_level_up(user, interaction.guild, interaction.channel)
+        
+        save_level_data(level_data)
+        
+        embed = discord.Embed(
+            title="XP Added",
+            description=f"Added **{xp}** XP to {user.mention}\n"
+                        f"New Total: **{level_data[user_id]['xp']}** XP",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        # Log the action
+        await log_event(
+            interaction.guild,
+            "member_xp_change",
+            "XP Added",
+            f"**Admin:** {interaction.user.mention}\n"
+            f"**User:** {user.mention}\n"
+            f"**XP Added:** {xp}\n"
+            f"**New Total:** {level_data[user_id]['xp']}",
+            color=discord.Color.blue()
+        )
+
+    @set_xp.error
+    @add_xp.error
+    async def xp_commands_error(interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.CheckFailure):
+            await interaction.response.send_message(
+                "❌ You need administrator permissions to use this command!",
+                ephemeral=True
+            )
     
     @bot.tree.command(name="sync", description="Sync commands manually")
     async def sync_commands(interaction: discord.Interaction):
@@ -467,23 +707,188 @@ async def reload_commands():
         
     await bot.tree.sync()
     print("All commands reloaded successfully")
-
+    
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if not interaction.response.is_done():
+    if isinstance(error, app_commands.CommandInvokeError):
+        await interaction.response.send_message(
+            "An error occurred while executing this command.",
+            ephemeral=True
+        )
+        print(f"Command error: {error.original}")
+    elif isinstance(error, app_commands.CheckFailure):
+        await interaction.response.send_message(
+            "You don't have permission to use this command.",
+            ephemeral=True
+        )
+    else:
         await interaction.response.send_message(
             "Something went wrong with this command!",
             ephemeral=True
         )
-    print(f"Command error: {error}")
+        print(f"Command error: {error}")
 
+# -------------------- Leveling System --------------------
+def load_level_data():
+    try:
+        with open('levels.json', 'r') as f:
+            data = json.load(f)
+            # Convert all keys to strings for consistency
+            return {str(k): v for k, v in data.items()}
+    except FileNotFoundError:
+        return {}
+
+level_data = load_level_data()
+
+def save_level_data(data):
+    with open('levels.json', 'w') as f:
+        json.dump(data, f, indent=4)
+
+def load_level_config():
+    default_config = {
+        "cooldown": 60,
+        "xp_range": [15, 25],
+        "level_channel": None,
+        "announce_level_up": True,
+        "excluded_channels": [],
+        "xp_boost_roles": {},
+        "embed": {
+            "title": "🎉 Level Up!",
+            "description": "{user} has reached level **{level}**!",
+            "color": 0xffd700
+        }
+    }
+    try:
+        with open('level_config.json', 'r') as f:
+            config = json.load(f)
+            # Ensure all fields exist
+            return {**default_config, **config}
+    except FileNotFoundError:
+        with open('level_config.json', 'w') as f:
+            json.dump(default_config, f, indent=4)
+        return default_config
+
+level_config = load_level_config()
+
+def save_level_config(config):
+    with open('level_config.json', 'w') as f:
+        json.dump(config, f, indent=4)
+
+user_cooldowns = {}
+
+def calculate_xp_for_level(level):
+    return math.floor(5 * (level ** 2) + (50 * level) + 100)
+
+def calculate_xp_with_boost(base_xp, user_roles, xp_boost_roles):
+    boost = 0
+    for role in user_roles:
+        if str(role.id) in xp_boost_roles:
+            boost += xp_boost_roles[str(role.id)]
+    return base_xp * (1 + boost / 100)
+
+async def handle_level_up(user, guild, channel):
+    user_id = str(user.id)
+    current_level = level_data[user_id]['level']
+    new_level = current_level + 1
+    
+    # Update level in data
+    level_data[user_id]['level'] = new_level
+    
+    # Load rewards
+    with open('level_rewards.json', 'r') as f:
+        rewards = json.load(f)
+    
+    # Check for rewards
+    roles_to_add = []
+    for level, role_id in rewards.items():
+        if new_level >= int(level):
+            role = guild.get_role(int(role_id))
+            if role:
+                roles_to_add.append(role)
+    
+    # Assign roles
+    if roles_to_add:
+        try:
+            await user.add_roles(*roles_to_add, reason=f"Level {new_level} rewards")
+        except Forbidden:
+            print(f"Missing permissions to assign roles in {guild.name}")
+        except Exception as e:
+            print(f"Error assigning roles: {str(e)}")
+    
+    # Create embed
+    embed = discord.Embed(
+        title="🎉 Level Up!",
+        description=f"{user.mention} has reached level **{new_level}**!",
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=user.display_avatar.url)
+    
+    # Get announcement channel
+    target_channel = None
+    if level_config['level_channel']:
+        target_channel = guild.get_channel(int(level_config['level_channel']))
+    if not target_channel:
+        target_channel = channel
+    
+    # Send announcement if enabled
+    if level_config['announce_level_up'] and target_channel:
+        try:
+            await target_channel.send(embed=embed)
+        except Exception as e:
+            print(f"Error sending level up message: {str(e)}")
 # -------------------- Message Processing --------------------
 @bot.event
 async def on_message(message):
-    global processed_messages
-    
-    if message.author == bot.user:
+    if message.author.bot or not message.guild:
         return
+        
+    # Check if message is in excluded channel
+    if message.channel.id in level_config['excluded_channels']:
+        return
+
+    user_id = str(message.author.id)
+    current_time = time.time()
+    
+    # Check cooldown
+    last_message = user_cooldowns.get(user_id, 0)
+    if current_time - last_message < level_config['cooldown']:
+        return
+    
+    user_cooldowns[user_id] = current_time
+    
+   # Calculate base XP
+    base_xp = random.randint(*level_config['xp_range'])
+
+    # Calculate XP with boosts
+    total_xp = calculate_xp_with_boost(
+        base_xp,
+        message.author.roles,
+        level_config['xp_boost_roles']
+    )
+
+    # Add XP to user
+    level_data[user_id]['xp'] += total_xp
+    
+    # Initialize user data if needed
+    if user_id not in level_data:
+        level_data[user_id] = {
+            "xp": 0,
+            "level": 0,
+            "username": message.author.name
+        }
+    
+    # Add XP
+    xp_gain = random.randint(*level_config['xp_range'])
+    level_data[user_id]['xp'] += xp_gain
+    
+    # Check for level up
+    while level_data[user_id]['xp'] >= calculate_xp_for_level(level_data[user_id]['level']):
+        level_data[user_id]['xp'] -= calculate_xp_for_level(level_data[user_id]['level'])
+        level_data[user_id]['level'] += 1
+        await handle_level_up(message.author, message.guild, message.channel)
+    
+    # Save data
+    save_level_data(level_data)    
         
     current_time = discord.utils.utcnow().timestamp()
 
@@ -558,6 +963,11 @@ async def on_message(message):
             
             
     await bot.process_commands(message)
+    
+   # Track processed messages
+    if 'processed_messages' not in globals():
+        global processed_messages
+        processed_messages = set()
     
     processed_messages.add(message.id)
     if len(processed_messages) > 1000:
