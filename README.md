@@ -28,6 +28,7 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 - **Manage Blocked Words:**
   - Add, edit, and remove blocked words.
   - Edit the embed that gets sent to the user when they say a blocked word.
+- **Manage Leveling:** Customize XP ranges, boosts, and level embed.
 
 ---
 
