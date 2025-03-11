@@ -15,6 +15,10 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
   - Blocks words that you can set and DM users when they say a blocked word.
 - **Logging:** Tracks various server events.
 - **Command Syncing:** Ensure commands are always up to date.
+- **Leveling:**
+  - Role rewards
+  - XP boosting for certain roles
+  - Custom XP ranges
 
 ### Dashboard Features
 - **Admin Login/Logout:** Secure the dashboard with an admin password.
