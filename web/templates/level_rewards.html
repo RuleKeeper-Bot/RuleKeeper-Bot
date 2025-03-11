@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Level Rewards</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+</head>
+<body>
+    <div class="container mt-4">
+        <h2 class="mb-4">Level Rewards Management</h2>
+        
+        <a href="/" class="btn btn-secondary mb-4">
+            <i class="bi bi-arrow-left"></i> Back to Dashboard
+        </a>
+
+        <div class="card mb-4">
+            <div class="card-header">Add/Edit Reward</div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Level</label>
+                            <input type="number" class="form-control" name="level" min="1" required>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label">Role ID</label>
+                            <input type="text" class="form-control" name="role_id" required>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary mt-3">
+                        <i class="bi bi-save"></i> Save Reward
+                    </button>
+                </form>
+            </div>
+        </div>
+		
+		<div class="card mb-4">
+			<div class="card-header">Level Rewards</div>
+			<div class="card-body">
+				<table class="table">
+					<thead>
+						<tr>
+							<th>Level</th>
+							<th>Role</th>
+						</tr>
+					</thead>
+					<tbody>
+						{% for level, role_id in rewards.items() %}
+						<tr>
+							<td>{{ level }}</td>
+							<td>
+								{% if role_id|string in all_roles %}
+									{{ all_roles[role_id|string].name }} ({{ role_id }})
+								{% else %}
+									Role not found ({{ role_id }})
+								{% endif %}
+							</td>
+						</tr>
+						{% endfor %}
+					</tbody>
+				</table>
+			</div>
+		</div>
+
+        <div class="card">
+            <div class="card-header">Current Rewards</div>
+            <div class="card-body">
+                {% if rewards %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Level</th>
+                                <th>Role ID</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for level, role_id in rewards.items() %}
+                            <tr>
+                                <td>{{ level }}</td>
+                                <td>{{ role_id }}</td>
+                                <td>
+                                    <form method="POST" style="display: inline;">
+                                        <input type="hidden" name="delete" value="{{ level }}">
+                                        <button type="submit" class="btn btn-danger btn-sm">
+                                            <i class="bi bi-trash"></i> Delete
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info">No rewards configured yet.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Leveling Configuration</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+</head>
+<body>
+    <div class="container mt-4">
+        <h2 class="mb-4">Leveling Configuration</h2>
+        
+        <a href="/" class="btn btn-secondary mb-4">
+            <i class="bi bi-arrow-left"></i> Back to Dashboard
+        </a>
+
+        <form method="POST">
+            <div class="card mb-4">
+                <div class="card-header">XP Settings</div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Cooldown (seconds)</label>
+                            <input type="number" class="form-control" name="cooldown" 
+                                   value="{{ config.cooldown }}" min="10" required>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label">XP Range</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" name="xp_min" 
+                                       value="{{ config.xp_range[0] }}" min="1" required>
+                                <input type="number" class="form-control" name="xp_max" 
+                                       value="{{ config.xp_range[1] }}" min="1" required>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+			
+			<div class="card mb-4">
+				<div class="card-header">XP Boost Roles</div>
+				<div class="card-body">
+					<div class="mb-3">
+						<label class="form-label">XP Boost Roles (JSON format)</label>
+						<textarea class="form-control" name="xp_boost_roles" rows="5" required>
+							{{ config.xp_boost_roles|tojson|safe }}
+						</textarea>
+						<small class="text-muted">
+							Format: {"role_id": boost_percentage, "role_id": boost_percentage}<br>
+							Example: {"123456789012345678": 50, "987654321098765432": 25}<br>
+							This means role 123... gets 50% more XP, and role 987... gets 25% more XP
+						</small>
+					</div>
+				</div>
+			</div>
+
+            <div class="card mb-4">
+                <div class="card-header">Announcement Settings</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="announce_level_up" 
+                                   id="announceToggle" {{ 'checked' if config.announce_level_up }}>
+                            <label class="form-check-label" for="announceToggle">
+                                Enable Level Up Announcements
+                            </label>
+                        </div>
+                    </div>
+                    
+					<div class="mb-3">
+						<label class="form-label">Announcement Channel ID</label>
+						<input type="text" class="form-control" name="level_channel" 
+							   value="{{ config.level_channel or '' }}">
+						<small class="text-muted">Leave blank to disable announcements</small>
+					</div>
+					
+                    <div class="mb-3">
+                        <label class="form-label">Excluded Channels (comma-separated IDs)</label>
+                        <textarea class="form-control" name="excluded_channels" 
+                                  rows="3">{{ config.excluded_channels|join(', ') }}</textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header">Level Up Embed</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Embed Title</label>
+                        <input type="text" class="form-control" name="embed_title" 
+                               value="{{ embed.title }}" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Embed Description</label>
+                        <textarea class="form-control" name="embed_description" 
+                                  rows="3" required>{{ embed.description }}</textarea>
+                        <small class="text-muted">Available variables: {user}, {level}</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Embed Color</label>
+                        <input type="color" class="form-control-color" name="embed_color" 
+                               value="{{ embed.color_hex }}" style="height: 38px">
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-grid gap-2">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-save"></i> Save Changes
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

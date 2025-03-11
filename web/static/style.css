@@ -71,3 +71,26 @@ body {
     top: 50%;
     margin-top: -9px;
 }
+
+.dashboard-card {
+    transition: transform 0.2s, box-shadow 0.2s;
+    border: 1px solid rgba(0,0,0,0.125);
+}
+
+.dashboard-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    background-color: #f8f9fa;
+}
+
+.dashboard-card .card-title {
+    color: #0d6efd;
+}
+
+.dashboard-card:hover .card-title {
+    color: #0b5ed7;
+}
+
+.card-link:hover {
+    text-decoration: none;
+}
