@@ -26,6 +26,8 @@ LOG_CONFIG_PATH = os.path.join('config', 'log_config.json')
 
 def load_log_config():
     default_config = {
+        "log_channel_id": None,
+        "log_config_update": True,
         "message_delete": True,
         "bulk_message_delete": True,
         "message_edit": True,
@@ -51,12 +53,13 @@ def load_log_config():
     try:
         with open(LOG_CONFIG_PATH, 'r') as f:
             config = json.load(f)
+        # Merge with default to ensure new keys exist
+        return {**default_config, **config}
     except FileNotFoundError:
         # Create default config if not found
         with open(LOG_CONFIG_PATH, 'w') as f:
             json.dump(default_config, f, indent=4)
-        config = default_config
-    return config
+        return default_config
 
 def save_log_config(config):
     with open(LOG_CONFIG_PATH, 'w') as f:
@@ -95,7 +98,6 @@ def load_embed():
         }  # Default embed if not configured
 
 # -------------------- Bot Setup --------------------
-LOG_CHANNEL_ID = 1347980248830181466  # Replace with your actual log channel ID
 
 intents = discord.Intents.default()
 intents.members = True
@@ -115,7 +117,13 @@ async def log_event(guild, event_key, title, description, color=discord.Color.bl
     # Check if logging for this event is enabled
     if not log_config.get(event_key, True):
         return
-    channel = guild.get_channel(LOG_CHANNEL_ID)
+    
+    # Get channel ID from config
+    channel_id = log_config.get('log_channel_id')
+    if not channel_id:
+        return  # No log channel configured
+    
+    channel = guild.get_channel(channel_id)
     if channel is None:
         print(f"Log channel not found in guild: {guild.name}")
         return
@@ -705,6 +713,161 @@ async def reload_commands():
             ephemeral=True
         )
         
+    @bot.tree.command(name="purge", description="Delete a specified number of messages")
+    @app_commands.describe(
+        amount="Number of messages to delete",
+        user="User whose messages should be deleted (optional)",
+        contains="Only delete messages containing this text (optional)"
+    )
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def purge(interaction: discord.Interaction, amount: int, user: discord.User = None, contains: str = None):
+        if amount <= 0 or amount > 100:
+            await interaction.response.send_message("Amount must be between 1 and 100.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        def check(m):
+            if user and m.author.id != user.id:
+                return False
+            if contains and contains.lower() not in m.content.lower():
+                return False
+            return True
+
+        deleted = await interaction.channel.purge(limit=amount, check=check)
+
+        # Log the purge action
+        description = f"**Moderator:** {interaction.user.mention}\n**Channel:** {interaction.channel.mention}\n**Messages Deleted:** {len(deleted)}"
+        if user:
+            description += f"\n**User:** {user.mention}"
+        if contains:
+            description += f"\n**Containing:** {contains}"
+        
+        await log_event(interaction.guild, "message_delete", "Messages Purged", description, color=discord.Color.red())
+
+        await interaction.followup.send(f"Successfully deleted {len(deleted)} messages.", ephemeral=True)
+
+    @purge.error
+    async def purge_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
+        else:
+            await interaction.response.send_message("An error occurred while executing this command.", ephemeral=True)
+            print(f"Purge command error: {error}")
+            
+    @bot.tree.command(name="purge_after", description="Delete messages after a specific message ID")
+    @app_commands.describe(
+        message_id="The message ID to start purging after",
+        count="Number of messages to delete after the specified message ID (optional, max 100)"
+    )
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def purge_after(interaction: discord.Interaction, message_id: str, count: int = 100):
+        # Validate count
+        if count <= 0 or count > 100:
+            await interaction.response.send_message("Count must be between 1 and 100.", ephemeral=True)
+            return
+    
+        # Validate message ID
+        try:
+            message_id = int(message_id)
+        except ValueError:
+            await interaction.response.send_message("Invalid message ID format.", ephemeral=True)
+            return
+    
+        await interaction.response.defer(ephemeral=True)
+    
+        try:
+            # Verify the starting message exists
+            start_message = await interaction.channel.fetch_message(message_id)
+        except discord.NotFound:
+            await interaction.followup.send("❌ Message ID not found in this channel.", ephemeral=True)
+            return
+        except discord.Forbidden:
+            await interaction.followup.send("🔒 Missing permissions to access that message.", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Error fetching message: {str(e)}", ephemeral=True)
+            return
+    
+        # Collect messages after the specified ID
+        messages_to_delete = []
+        try:
+            async for message in interaction.channel.history(
+                after=start_message,
+                limit=count,
+                oldest_first=False
+            ):
+                if message.id > message_id:
+                    messages_to_delete.append(message)
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Error fetching history: {str(e)}", ephemeral=True)
+            return
+    
+        # Delete messages if any were found
+        if messages_to_delete:
+            try:
+                await interaction.channel.delete_messages(messages_to_delete)
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"⚠️ Failed to delete messages: {str(e)}", ephemeral=True)
+                return
+    
+            # Log the action
+            log_description = (
+                f"**Moderator:** {interaction.user.mention}\n"
+                f"**Channel:** {interaction.channel.mention}\n"
+                f"**Messages Deleted:** {len(messages_to_delete)}\n"
+                f"**After Message ID:** {message_id}"
+            )
+            await log_event(
+                interaction.guild,
+                "message_delete",
+                "Messages Purged After",
+                log_description,
+                color=discord.Color.red()
+            )
+    
+            await interaction.followup.send(
+                f"✅ Successfully deleted {len(messages_to_delete)} messages after {message_id}",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send("🔍 No messages found to delete after the specified message.", ephemeral=True)
+    
+    @purge_after.error
+    async def purge_after_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            await interaction.response.send_message("❌ You need manage messages permissions to use this command.", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ An error occurred while processing this command.", ephemeral=True)
+            print(f"Purge After Error: {str(error)}")
+            
+    @bot.tree.command(name="setlogchannel", description="Set the channel for logging events")
+    @app_commands.describe(channel="The channel to use for logging")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_log_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Must be a text channel", ephemeral=True)
+            return
+        global log_config
+        log_config = load_log_config()  # Reload first
+        log_config['log_channel_id'] = channel.id
+        save_log_config(log_config)
+        
+        # Send confirmation
+        await interaction.response.send_message(
+            f"Log channel set to {channel.mention}",
+            ephemeral=True
+        )
+        
+        # Log the configuration change
+        await log_event(
+            interaction.guild,
+            "log_config_update",
+            "Log Channel Configured",
+            f"Log channel set to {channel.mention} by {interaction.user.mention}",
+            color=discord.Color.green()
+        )
+        
     await bot.tree.sync()
     print("All commands reloaded successfully")
     
@@ -856,7 +1019,15 @@ async def on_message(message):
     
     user_cooldowns[user_id] = current_time
     
-   # Calculate base XP
+    # Initialize user data if needed
+    if user_id not in level_data:
+        level_data[user_id] = {
+            "xp": 0,
+            "level": 0,
+            "username": message.author.name
+        }
+    
+    # Calculate base XP
     base_xp = random.randint(*level_config['xp_range'])
 
     # Calculate XP with boosts
@@ -868,18 +1039,6 @@ async def on_message(message):
 
     # Add XP to user
     level_data[user_id]['xp'] += total_xp
-    
-    # Initialize user data if needed
-    if user_id not in level_data:
-        level_data[user_id] = {
-            "xp": 0,
-            "level": 0,
-            "username": message.author.name
-        }
-    
-    # Add XP
-    xp_gain = random.randint(*level_config['xp_range'])
-    level_data[user_id]['xp'] += xp_gain
     
     # Check for level up
     while level_data[user_id]['xp'] >= calculate_xp_for_level(level_data[user_id]['level']):

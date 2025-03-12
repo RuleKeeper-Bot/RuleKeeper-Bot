@@ -16,6 +16,7 @@ COMMANDS_PATH = os.path.join('..', 'bot', 'commands.json')
 LOG_CONFIG_PATH = os.path.join('..', 'bot', 'config', 'log_config.json')
 LEVEL_CONFIG_PATH = os.path.join('..', 'bot', 'level_config.json')
 LEVEL_REWARDS_PATH = os.path.join('..', 'bot', 'level_rewards.json')
+LEVELS_PATH = os.path.join('..', 'bot', 'levels.json')
 
 # -------------------- Admin Login System --------------------
 def login_required(f):
@@ -153,16 +154,6 @@ def save_log_config(config):
     with open(LOG_CONFIG_PATH, 'w') as f:
         json.dump(config, f, indent=4)
 
-# Only these keys will be shown/edited on the dashboard.
-ALLOWED_LOG_KEYS = [
-    "message_delete", "bulk_message_delete", "message_edit",
-    "invite_create", "invite_delete", "member_role_add",
-    "member_role_remove", "member_timeout", "member_warn",
-    "member_unwarn", "member_ban", "member_unban", "role_create",
-    "role_delete", "role_update", "channel_create", "channel_delete",
-    "channel_update", "emoji_create", "emoji_name_change", "emoji_delete"
-]
-
 def load_level_config():
     default_config = {
         "cooldown": 60,
@@ -189,6 +180,17 @@ def load_level_config():
 def save_level_config(config):
     with open(LEVEL_CONFIG_PATH, 'w') as f:  # Use LEVEL_CONFIG_PATH here
         json.dump(config, f, indent=4)
+        
+# Only these keys will be shown/edited on the dashboard.
+ALLOWED_LOG_KEYS = [
+    "message_delete", "bulk_message_delete", "message_edit",
+    "invite_create", "invite_delete", "member_role_add",
+    "member_role_remove", "member_timeout", "member_warn",
+    "member_unwarn", "member_ban", "member_unban", "role_create",
+    "role_delete", "role_update", "channel_create", "channel_delete",
+    "channel_update", "emoji_create", "emoji_name_change", "emoji_delete",
+    "log_config_update"
+]
 
 def load_level_rewards():
     try:
@@ -200,6 +202,13 @@ def load_level_rewards():
 def save_level_rewards(rewards):
     with open(LEVEL_REWARDS_PATH, 'w') as f:
         json.dump(rewards, f, indent=4)
+        
+def load_user_levels():
+    try:
+        with open(USER_LEVELS_PATH, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
 @app.route('/level_rewards', methods=['GET', 'POST'])
 @login_required
@@ -234,6 +243,27 @@ def level_rewards():
         return redirect('/level_rewards')
     
     return render_template('level_rewards.html', rewards=rewards)
+    
+@app.route('/leaderboard')
+@login_required
+def leaderboard():
+    def load_levels():
+        try:
+            with open(LEVELS_PATH, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    users_data = load_levels()
+    
+    # Convert to list of tuples and sort by XP descending, then level descending
+    sorted_users = sorted(users_data.items(),
+                        key=lambda x: (-x[1]['xp'], -x[1]['level']))
+    
+    # Add this filter to format XP values
+    app.jinja_env.filters['intxp'] = lambda x: int(x) if isinstance(x, float) and x.is_integer() else x
+    
+    return render_template('leaderboard.html', users=sorted_users)
 
 @app.route('/commands')
 @login_required
@@ -241,7 +271,7 @@ def commands_page():
     commands = get_commands()
     return render_template('commands.html', commands=commands)
 
-# -------------------- Logging Configuration Dashboard --------------------
+# -------------------- Leveling Configuration Dashboard --------------------
 @app.route('/level_config', methods=['GET', 'POST'])
 @login_required
 def level_config():
@@ -289,7 +319,41 @@ def level_config():
                          config=config,
                          embed=embed,
                          all_channels=all_channels)
-
+                         
+# -------------------- Logging Configuration Dashboard --------------------
+@app.route('/log_config', methods=['GET', 'POST'])
+@login_required
+def log_config_dashboard():
+    full_config = load_log_config()
+    
+    if request.method == 'POST':
+        # Handle log channel ID input
+        try:
+            channel_id = int(request.form.get('log_channel_id', 0)) or None
+            if channel_id:
+                try:
+                    full_config['log_channel_id'] = int(channel_id)
+                except ValueError:
+                    flash('Invalid channel ID format', 'danger')
+            else:
+                full_config['log_channel_id'] = None
+        except ValueError:
+            flash('Invalid channel ID format', 'danger')
+        # Update only the allowed keys from the form
+        for key in ALLOWED_LOG_KEYS:
+            full_config[key] = (key in request.form)
+        save_log_config(full_config)
+        
+        # Auto-reload bot configuration via its sync endpoint.
+        try:
+            requests.post('http://localhost:5003/sync')
+        except Exception as e:
+            print("Error reloading bot configuration:", e)
+        
+        return redirect('/log_config')
+    else:
+        visible_config = {key: full_config.get(key, True) for key in ALLOWED_LOG_KEYS}
+        return render_template('log_config.html', config=visible_config)
 # -------------------- Blocked Words Configuration Dashboard --------------------
 @app.template_filter('hex')
 def hex_filter(value):

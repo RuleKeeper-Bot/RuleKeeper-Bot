@@ -18,6 +18,22 @@
             </div>
             {% endfor %}
         </div>
+		<div class="mb-4">
+			<h4>Log Channel Configuration</h4>
+			<div class="input-group">
+				<input type="number" 
+					   class="form-control" 
+					   name="log_channel_id"
+					   placeholder="Enter Channel ID"
+					   value="{{ config.log_channel_id if config.log_channel_id else '' }}">
+				<div class="input-group-append">
+					<span class="input-group-text">Channel ID</span>
+				</div>
+			</div>
+			<small class="form-text text-muted">
+				Use /setlogchannel command in Discord or enter ID here
+			</small>
+		</div>
         <button type="submit" class="btn btn-primary mt-3" id="saveConfigButton">
             <span id="saveConfigText">Save Configuration</span>
             <span id="saveConfigSpinner" class="spinner-border spinner-border-sm d-none"></span>
