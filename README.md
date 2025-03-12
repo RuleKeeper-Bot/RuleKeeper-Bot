@@ -7,9 +7,12 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 ### Bot Features
 - **Custom Commands:** Add, edit, and remove commands directly from Discord or through the dashboard.
 - **Moderation:**
+  - Ban, kick, deafen, timeout, and softban users.
+  - Unban, undeafen, and untimeout users.
   - Warn users and track their warnings.
   - Remove warnings.
   - Automatically timeout or ban users who accumulate too many warnings.
+  - Purge messages.
 - **Auto Moderation:**
   - Detects and mitigates spam (message and mention spam detection).
   - Blocks words that you can set and DM users when they say a blocked word.
@@ -29,6 +32,7 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
   - Add, edit, and remove blocked words.
   - Edit the embed that gets sent to the user when they say a blocked word.
 - **Manage Leveling:** Customize XP ranges, boosts, and level embed.
+- **Leaderboard:** View a server leaderboard.
 
 ---
 
