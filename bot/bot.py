@@ -868,6 +868,303 @@ async def reload_commands():
             color=discord.Color.green()
         )
         
+    @bot.tree.command(name="ban", description="Ban a user from the server")
+    @app_commands.describe(user="The user to ban", reason="The reason for the ban")
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def ban(interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+        if not interaction.guild.me.guild_permissions.ban_members:
+            await interaction.response.send_message("I don't have permission to ban users.", ephemeral=True)
+            return
+
+        try:
+            member = await interaction.guild.fetch_member(user.id)
+            if interaction.guild.me.top_role <= member.top_role:
+                await interaction.response.send_message("I can't ban this user due to role hierarchy.", ephemeral=True)
+                return
+        except discord.NotFound:
+            pass  # User not in server but can still be banned
+
+        # DM the user
+        ban_embed = discord.Embed(
+            title="You have been banned!",
+            description=f"**Reason:** {reason}\n\nYou have been banned from {interaction.guild.name}.",
+            color=discord.Color.red()
+        )
+        ban_embed.add_field(
+            name="Appeal Form",
+            value="If you believe this was a mistake, you can appeal your ban here: [Appeal Form](https://example.com)",
+            inline=False
+        )
+        try:
+            await user.send(embed=ban_embed)
+        except discord.Forbidden:
+            pass  # Couldn't send DM
+
+        # Ban the user
+        await interaction.guild.ban(user, reason=reason, delete_message_days=0)
+        await interaction.response.send_message(f"{user.mention} has been banned. Reason: {reason}", ephemeral=True)
+        await log_event(
+            interaction.guild,
+            "member_ban",
+            "Member Banned",
+            f"**User:** {user.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+            color=discord.Color.red()
+        )
+
+    @bot.tree.command(name="unban", description="Unban a user from the server")
+    @app_commands.describe(user="The user to unban", reason="The reason for the unban")
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def unban(interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+        if not interaction.guild.me.guild_permissions.ban_members:
+            await interaction.response.send_message("I don't have permission to unban users.", ephemeral=True)
+            return
+
+        try:
+            await interaction.guild.unban(user, reason=reason)
+            await interaction.response.send_message(f"{user.mention} has been unbanned. Reason: {reason}", ephemeral=True)
+            await log_event(
+                interaction.guild,
+                "member_unban",
+                "Member Unbanned",
+                f"**User:** {user.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+                color=discord.Color.green()
+            )
+        except discord.NotFound:
+            await interaction.response.send_message("This user is not banned.", ephemeral=True)
+
+    @bot.tree.command(name="kick", description="Kick a user from the server")
+    @app_commands.describe(member="The member to kick", reason="The reason for the kick")
+    @app_commands.checks.has_permissions(kick_members=True)
+    async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        if not interaction.guild.me.guild_permissions.kick_members:
+            await interaction.response.send_message("I don't have permission to kick users.", ephemeral=True)
+            return
+
+        if interaction.guild.me.top_role <= member.top_role:
+            await interaction.response.send_message("I can't kick this user due to role hierarchy.", ephemeral=True)
+            return
+
+        # DM the user
+        try:
+            await member.send(f"You have been kicked from {interaction.guild.name}. Reason: {reason}")
+        except discord.Forbidden:
+            pass
+
+        await member.kick(reason=reason)
+        await interaction.response.send_message(f"{member.mention} has been kicked. Reason: {reason}", ephemeral=True)
+        await log_event(
+            interaction.guild,
+            "member_kick",
+            "Member Kicked",
+            f"**User:** {member.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+            color=discord.Color.orange()
+        )
+
+    @bot.tree.command(name="deafen", description="Deafen a user in voice channels")
+    @app_commands.describe(member="The member to deafen", reason="The reason for deafening")
+    @app_commands.checks.has_permissions(deafen_members=True)
+    async def deafen(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        if not member.voice or not member.voice.channel:
+            await interaction.response.send_message("The user is not in a voice channel.", ephemeral=True)
+            return
+
+        if not interaction.guild.me.guild_permissions.deafen_members:
+            await interaction.response.send_message("I don't have permission to deafen members.", ephemeral=True)
+            return
+
+        await member.edit(deafen=True, reason=reason)
+        await interaction.response.send_message(f"{member.mention} has been deafened. Reason: {reason}", ephemeral=True)
+        await log_event(
+            interaction.guild,
+            "member_deafen",
+            "Member Deafened",
+            f"**User:** {member.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+            color=discord.Color.blue()
+        )
+
+    @bot.tree.command(name="undeafen", description="Undeafen a user in voice channels")
+    @app_commands.describe(member="The member to undeafen", reason="The reason for undeffening")
+    @app_commands.checks.has_permissions(deafen_members=True)
+    async def undeafen(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        if not member.voice or not member.voice.channel:
+            await interaction.response.send_message("The user is not in a voice channel.", ephemeral=True)
+            return
+
+        if not interaction.guild.me.guild_permissions.deafen_members:
+            await interaction.response.send_message("I don't have permission to undeafen members.", ephemeral=True)
+            return
+
+        await member.edit(deafen=False, reason=reason)
+        await interaction.response.send_message(f"{member.mention} has been undeafened. Reason: {reason}", ephemeral=True)
+        await log_event(
+            interaction.guild,
+            "member_undeafen",
+            "Member Undeafened",
+            f"**User:** {member.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+            color=discord.Color.blue()
+        )
+
+    @bot.tree.command(name="timeout", description="Timeout a user (restrict interactions)")
+    @app_commands.describe(
+        member="The member to timeout",
+        duration="Duration (e.g., 5m, 1h, 1d) - defaults to 5m",
+        reason="The reason for timing out"
+    )
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def timeout(
+        interaction: discord.Interaction,
+        member: discord.Member,
+        duration: str = "5m",
+        reason: str = "No reason provided"
+    ):
+        if not interaction.guild.me.guild_permissions.moderate_members:
+            await interaction.response.send_message("I don't have permission to timeout members.", ephemeral=True)
+            return
+
+        if interaction.user.top_role <= member.top_role:
+            await interaction.response.send_message("You can't timeout someone with an equal or higher role.", ephemeral=True)
+            return
+
+        # Parse duration
+        time_units = {
+            "m": 60,
+            "h": 3600,
+            "d": 86400
+        }
+        
+        try:
+            duration_num = int(duration[:-1])
+            unit = duration[-1].lower()
+            if unit not in time_units:
+                raise ValueError
+            seconds = duration_num * time_units[unit]
+            if seconds > 2419200:  # 28 day maximum
+                raise ValueError
+        except (ValueError, IndexError):
+            await interaction.response.send_message(
+                "Invalid duration format! Use: [number][m/h/d] (e.g., 30m, 2h, 1d)",
+                ephemeral=True
+            )
+            return
+
+        timeout_duration = discord.utils.utcnow() + timedelta(seconds=seconds)
+
+        try:
+            await member.timeout(timeout_duration, reason=reason)
+            await interaction.response.send_message(
+                f"{member.mention} has been timed out for {duration}.\nReason: {reason}",
+                ephemeral=True
+            )
+            await log_event(
+                interaction.guild,
+                "member_timeout",
+                "Member Timed Out",
+                f"**User:** {member.mention}\n"
+                f"**Duration:** {duration}\n"
+                f"**Reason:** {reason}\n"
+                f"**Moderator:** {interaction.user.mention}",
+                color=discord.Color.orange()
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("Failed to timeout member - check role hierarchy.", ephemeral=True)
+
+    @bot.tree.command(name="untimeout", description="Remove timeout from a user")
+    @app_commands.describe(
+        member="The member to untimeout",
+        reason="The reason for removing timeout"
+    )
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def untimeout(
+        interaction: discord.Interaction,
+        member: discord.Member,
+        reason: str = "No reason provided"
+    ):
+        if not interaction.guild.me.guild_permissions.moderate_members:
+            await interaction.response.send_message("I don't have permission to remove timeouts.", ephemeral=True)
+            return
+
+        if not member.is_timed_out():
+            await interaction.response.send_message("This user is not currently timed out.", ephemeral=True)
+            return
+
+        try:
+            await member.timeout(None, reason=reason)
+            await interaction.response.send_message(
+                f"Timeout removed from {member.mention}.\nReason: {reason}",
+                ephemeral=True
+            )
+            await log_event(
+                interaction.guild,
+                "member_untimeout",
+                "Timeout Removed",
+                f"**User:** {member.mention}\n"
+                f"**Reason:** {reason}\n"
+                f"**Moderator:** {interaction.user.mention}",
+                color=discord.Color.green()
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("Failed to remove timeout - check role hierarchy.", ephemeral=True)
+
+    @bot.tree.command(name="softban", description="Ban and immediately unban a user to delete their messages")
+    @app_commands.describe(user="The user to softban", reason="The reason for softban")
+    @app_commands.checks.has_permissions(ban_members=True)
+    async def softban(interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+        if not interaction.guild.me.guild_permissions.ban_members:
+            await interaction.response.send_message("I don't have permission to ban users.", ephemeral=True)
+            return
+
+        try:
+            # Create an invite for rejoining
+            try:
+                invite = await interaction.channel.create_invite(
+                    max_uses=1,
+                    unique=True,
+                    reason=f"Rejoin invite for softbanned user {user}"
+                )
+                invite_link = invite.url
+            except discord.Forbidden:
+                invite_link = "Contact server staff for a new invite"
+            
+            # DM the user
+            embed = discord.Embed(
+                title=f"You were softbanned from {interaction.guild.name}",
+                description="Your messages have been cleared but you can rejoin immediately.",
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            embed.add_field(name="Rejoin Link", value=invite_link, inline=False)
+            
+            try:
+                await user.send(embed=embed)
+            except discord.Forbidden:
+                pass  # Couldn't send DM
+
+            # Ban to delete messages (7 days worth)
+            await interaction.guild.ban(user, reason=reason, delete_message_days=7)
+            # Unban immediately
+            await interaction.guild.unban(user, reason="Softban removal")
+            
+            await interaction.response.send_message(
+                f"{user.mention} has been softbanned. They received a rejoin link.\nReason: {reason}",
+                ephemeral=True
+            )
+            
+            await log_event(
+                interaction.guild,
+                "member_softban",
+                "Member Softbanned",
+                f"**User:** {user.mention}\n**Reason:** {reason}\n" +
+                f"**Rejoin Sent:** {'Yes' if invite_link else 'No'}\n" +
+                f"**Moderator:** {interaction.user.mention}",
+                color=discord.Color.purple()
+            )
+
+        except discord.NotFound:
+            await interaction.response.send_message("User not found.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to ban/unban this user.", ephemeral=True)
+    
+    # Sync commands
     await bot.tree.sync()
     print("All commands reloaded successfully")
     
