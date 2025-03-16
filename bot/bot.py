@@ -289,7 +289,7 @@ async def handle_get_bans(request):
         if not bot.guilds:
             return web.json_response({"error": "Bot is not in any guilds"}, status=404)
             
-        guild = bot.guilds[1]  # Use first guild the bot is in
+        guild = bot.guilds[0]  # Use first guild the bot is in
         bans = []
         
         async for entry in guild.bans():
