@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Banned Users</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding: 20px; background-color: #f8f9fa; }
+        .table { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .table th { background: #0d6efd; color: white; }
+        .ban-reason { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="mb-4">Banned Users</h2>
+		<div>
+			<a href="/" class="btn btn-secondary">
+                <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
+            </a>
+            <a href="/logout" class="btn btn-danger ms-2">
+                 <i class="bi bi-box-arrow-right"></i> Logout
+            </a>
+        </div>
+        
+        {% if not bans %}
+		<div class="alert alert-success">No active bans</div>
+		{% else %}
+		<table class="table table-hover">
+			<thead>
+				<tr>
+					<th>Username</th>
+					<th>Ban Date</th>
+					<th>Reason</th>
+					<th>Actions</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for ban in bans %}
+				<tr>
+					<td>{{ ban.username }}</td>
+					<td>{{ ban.date }}</td>
+					<td class="ban-reason" title="{{ ban.reason }}">{{ ban.reason }}</td>
+					<td>
+						<a href="/unban/{{ ban.user_id }}" class="btn btn-primary btn-sm">
+							<i class="bi bi-person-check"></i> Unban
+						</a>
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+		{% endif %}
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

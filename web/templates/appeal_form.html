@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ form_config.title }} Appeal</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f8f9fa; }
+        .appeal-card {
+            max-width: 800px;
+            margin: 2rem auto;
+            border-radius: 15px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .appeal-header {
+            background: {{ '#dc3545' if 'ban' in appeal_type else '#ffc107' }};
+            color: white;
+            border-radius: 15px 15px 0 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="appeal-card">
+            <div class="appeal-header p-4">
+                <h2 class="mb-0">{{ form_config.title }} Appeal</h2>
+            </div>
+            
+            <div class="card-body p-4">
+                {% if form_config.description %}
+                <div class="alert alert-info">
+                    {{ form_config.description }}
+                </div>
+                {% endif %}
+                
+                <form method="POST" class="needs-validation" novalidate>
+					<input type="hidden" name="user_id" value="{{ request.args.get('user_id', '') }}">
+					
+					{% for field in form_config.form_fields %}
+					{% set field_parts = field.split('(') %}
+					{% set field_name = field_parts[0].strip() %}
+					{% set field_type = 'textarea' if 'textarea' in field else 'text' %}
+					{% set required = 'required' if 'required' in field else '' %}
+					
+					<div class="mb-4">
+						<label class="form-label fs-5">
+							{{ field_name }}
+							{% if required %}*{% endif %}
+						</label>
+						
+						{% if field_type == 'textarea' %}
+						<textarea class="form-control" name="{{ field_name }}" {{ required }} rows="4"></textarea>
+						{% else %}
+						<input type="{{ field_type }}" class="form-control" name="{{ field_name }}" {{ required }}>
+						{% endif %}
+					</div>
+					{% endfor %}
+					
+					<div class="d-grid mt-5">
+						<button type="submit" class="btn btn-lg btn-primary">
+							Submit Appeal
+						</button>
+					</div>
+				</form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Basic form validation
+    (() => {
+      'use strict'
+      const forms = document.querySelectorAll('.needs-validation')
+      Array.from(forms).forEach(form => {
+        form.addEventListener('submit', event => {
+          if (!form.checkValidity()) {
+            event.preventDefault()
+            event.stopPropagation()
+          }
+          form.classList.add('was-validated')
+        }, false)
+      })
+    })()
+    </script>
+</body>
+</html>

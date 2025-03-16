@@ -14,11 +14,15 @@ from aiohttp import web
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
 from discord.errors import Forbidden
+from discord.utils import sleep_until
 
 # -------------------- Load Secrets --------------------
 with open('secrets.json', 'r') as f:
     secrets = json.load(f)
     BOT_TOKEN = secrets['BOT_TOKEN']
+
+# -------------------- Appeals Config --------------------
+APPEALS_PATH = os.path.join('appeals.json')
 
 # -------------------- Log Config --------------------
 # Path to your logging configuration file
@@ -69,6 +73,62 @@ def save_log_config(config):
 log_config = load_log_config()
 
 processed_messages = set()
+
+# -------------------- Batch Role Changes --------------------
+class RoleChangeBatcher:
+    def __init__(self):
+        self.pending = {}  # {user_id: {"added": set(), "removed": set(), "guild": None, "timer": None}}
+    
+    async def log_and_reset(self, user_id):
+        entry = self.pending.pop(user_id, None)
+        if not entry:
+            return
+
+        guild = entry["guild"]
+        added = entry["added"]
+        removed = entry["removed"]
+
+        if not added and not removed:
+            return
+
+        description = f"**Member:** <@{user_id}>\n"
+        if added:
+            description += f"**Added Roles:** {', '.join([f'<@&{r}>' for r in added])}\n"
+        if removed:
+            description += f"**Removed Roles:** {', '.join([f'<@&{r}>' for r in removed])}"
+
+        await log_event(
+            guild,
+            "member_role_change",
+            "Role Updates",
+            description,
+            color=discord.Color.blue()
+        )
+
+    async def add_change(self, member, added_roles, removed_roles):
+        user_id = str(member.id)
+        current_entry = self.pending.get(user_id, {
+            "added": set(),
+            "removed": set(),
+            "guild": member.guild,
+            "timer": None
+        })
+
+        current_entry["added"].update([str(r.id) for r in added_roles])
+        current_entry["removed"].update([str(r.id) for r in removed_roles])
+        current_entry["guild"] = member.guild
+
+        if current_entry["timer"]:
+            current_entry["timer"].cancel()
+
+        current_entry["timer"] = bot.loop.create_task(self.schedule_log(user_id))
+        self.pending[user_id] = current_entry
+
+    async def schedule_log(self, user_id):
+        await asyncio.sleep(60)
+        await self.log_and_reset(user_id)
+
+role_batcher = RoleChangeBatcher()
 
 # -------------------- Load Blocked Words --------------------
 # Load blocked words from the config file
@@ -190,9 +250,9 @@ def load_warnings():
     except FileNotFoundError:
         return {}
 
-def save_warnings():
+def save_warnings(warnings_data):
     with open('warnings.json', 'w') as f:
-        json.dump(warnings, f, indent=4)
+        json.dump(warnings_data, f, indent=4)
 
 warnings = load_warnings()
 
@@ -206,15 +266,124 @@ WARNING_ACTIONS = {2: "timeout", 3: "ban"}
 async def webserver():
     app = web.Application()
     app.router.add_post('/sync', handle_sync)
+    app.router.add_post('/sync_warnings', handle_sync_warnings)
+    app.router.add_post('/appeal', handle_appeal_submission)
+    app.router.add_get('/get_bans', handle_get_bans)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, 'localhost', 5003)
+    site = web.TCPSite(runner, '0.0.0.0', 5003)
     await site.start()
     print("Sync endpoint running on port 5003")
 
 async def handle_sync(request):
     await reload_commands()
     return web.Response(text="Commands synced successfully!")
+    
+async def handle_sync_warnings(request):
+    reload_warnings()
+    return web.Response(text="Warnings synced successfully!")
+    
+async def handle_get_bans(request):
+    try:
+        print("Fetching bans...")
+        if not bot.guilds:
+            return web.json_response({"error": "Bot is not in any guilds"}, status=404)
+            
+        guild = bot.guilds[1]  # Use first guild the bot is in
+        bans = []
+        
+        async for entry in guild.bans():
+            # Get ban date from audit logs
+            async for log in guild.audit_logs(action=discord.AuditLogAction.ban):
+                if log.target.id == entry.user.id:
+                    ban_date = log.created_at.isoformat()
+                    break
+            else:
+                ban_date = "Unknown"
+
+            bans.append({
+                "user_id": str(entry.user.id),
+                "username": str(entry.user),
+                "reason": entry.reason or "No reason provided",
+                "date": ban_date
+            })
+        
+        print(f"Total bans fetched: {len(bans)}")
+        return web.json_response(bans)
+        
+    except Exception as e:
+        print(f"Error fetching bans: {str(e)}")
+        return web.json_response({"error": str(e)}, status=500)
+
+def save_appeals(appeals):
+    with open('appeals.json', 'w') as f:
+        json.dump(appeals, f, indent=4)
+
+async def handle_appeal_submission(request):
+    try:
+        data = await request.json()
+        appeal_type = data.get('type')
+        user_id = data.get('user_id')
+        appeal_id = data.get('id')
+        form_data = data.get('data', [])
+        channel_id = data.get('channel_id')
+
+        # Create appeal object
+        appeal = {
+            "id": appeal_id,
+            "user_id": user_id,
+            "type": appeal_type,
+            "data": form_data,
+            "status": "pending",
+            "timestamp": datetime.now().isoformat(),
+            "channel_id": channel_id
+        }
+
+        # Load existing appeals and save the new one
+        appeals = load_appeals()
+        appeals.append(appeal)
+        save_appeals(appeals)  # Save to appeals.json
+
+        # Send embed to Discord
+        channel = bot.get_channel(int(channel_id))
+        if not channel:
+            return web.Response(status=404, text=f"Channel {channel_id} not found")
+
+        embed = discord.Embed(
+            title=f"{appeal_type.capitalize()} Appeal - {appeal_id}",
+            color=discord.Color.orange(),
+            description=(
+                f"**User ID:** {user_id}\n"
+                f"**Submitted:** <t:{int(time.time())}:R>\n"
+                f"**Appeal ID:** `{appeal_id}`"
+            )
+        )
+
+        for index, item in enumerate(form_data, 1):
+            embed.add_field(
+                name=f"{index}. {item.get('question', f'Question #{index}')}",
+                value=item.get('answer', 'No response provided') or "N/A",
+                inline=False
+            )
+
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.green,
+            label="Approve",
+            custom_id=f"approve_{appeal_type}_{appeal_id}"
+        ))
+        view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.red,
+            label="Reject",
+            custom_id=f"reject_{appeal_type}_{appeal_id}"
+        ))
+
+        await channel.send(embed=embed, view=view)
+        return web.Response(text="Appeal processed successfully")
+
+    except Exception as e:
+        print(f"Unexpected error processing appeal: {str(e)}")
+        return web.Response(status=500, text="Internal server error")
 
 @bot.event
 async def on_ready():
@@ -539,6 +708,7 @@ async def reload_commands():
     @bot.tree.command(name="warn", description="Warn a user")
     @app_commands.describe(member="User to warn", reason="Reason for warning")
     async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+        # Check bot permissions
         if not interaction.guild.me.guild_permissions.moderate_members:
             await interaction.response.send_message(
                 "I don't have permission to timeout or ban users.",
@@ -546,6 +716,7 @@ async def reload_commands():
             )
             return
         
+        # Check role hierarchy
         if interaction.guild.me.top_role <= member.top_role:
             await interaction.response.send_message(
                 "I cannot moderate this user because their role is equal to or higher than mine.",
@@ -553,12 +724,16 @@ async def reload_commands():
             )
             return
         
+        # Check if the user is in the server
         if member not in interaction.guild.members:
             await interaction.response.send_message(
                 "This user is not in the server.",
                 ephemeral=True
             )
             return
+        
+        # Load warnings from file to ensure we have the latest data
+        reload_warnings()
         
         user_id = str(member.id)
         if user_id not in warnings:
@@ -567,13 +742,28 @@ async def reload_commands():
                 "warnings": []
             }
         
+        # Add the new warning
         warnings[user_id]["warnings"].append({
             "timestamp": datetime.now().isoformat(),
             "reason": reason
         })
-        save_warnings()
+        
+        # Save the updated warnings to the file
+        save_warnings(warnings)  # Pass the warnings dictionary as an argument
+        
+        # Check if the user has no warnings left (e.g., if warnings were deleted externally)
+        if not warnings[user_id]["warnings"]:
+            del warnings[user_id]
+            save_warnings(warnings)  # Pass the warnings dictionary as an argument
+            await interaction.response.send_message(
+                f"{member.mention} has no warnings left. Their warning record has been cleared.",
+                ephemeral=True
+            )
+            return
+        
         warning_count = len(warnings[user_id]["warnings"])
         
+        # Send DM to the user
         dm_embed = discord.Embed(
             title="You have been warned!",
             description=f"**Reason:** {reason}",
@@ -581,6 +771,7 @@ async def reload_commands():
         )
         dm_embed.add_field(name="Total Warnings", value=str(warning_count))
         
+        # Check if an action should be taken based on the number of warnings
         if warning_count in WARNING_ACTIONS:
             action = WARNING_ACTIONS[warning_count]
             action_text = ""
@@ -595,17 +786,32 @@ async def reload_commands():
                     )
                     return
             elif action == "ban":
+                # Load appeal configuration
+                appeal_forms = load_appeal_forms()
+                ban_config = appeal_forms.get('ban', {})
+                
                 ban_embed = discord.Embed(
                     title="You have been banned!",
                     description=("**Reason:** You got 3 warnings\n\n"
                                  "You have reached the maximum number of warnings and have been banned from the server."),
                     color=discord.Color.red()
                 )
-                ban_embed.add_field(
-                    name="Appeal Form",
-                    value="If you believe this was a mistake, you can appeal your ban here: [Appeal Form](https://dyno.gg/form/f78d0f9a)",
-                    inline=False
-                )
+                
+                # Use same appeal URL logic as regular ban command
+                if ban_config.get('enabled', False) and ban_config.get('form_url'):
+                    appeal_url = f"{appeal_forms['base_url']}{ban_config['form_url']}?user_id={member.id}"
+                    ban_embed.add_field(
+                        name="Appeal Form",
+                        value=f"[Click here to appeal]({appeal_url})",
+                        inline=False
+                    )
+                else:
+                    ban_embed.add_field(
+                        name="Appeal Information",
+                        value="Contact server staff to appeal your ban",
+                        inline=False
+                    )
+
                 try:
                     await member.send(embed=ban_embed)
                 except discord.Forbidden:
@@ -615,7 +821,7 @@ async def reload_commands():
                     action_text = "Permanent ban applied"
                     if user_id in warnings:
                         del warnings[user_id]
-                        save_warnings()
+                        save_warnings(warnings)
                 except discord.Forbidden:
                     await interaction.response.send_message(
                         "I don't have permission to ban this user.",
@@ -631,10 +837,12 @@ async def reload_commands():
         except discord.Forbidden:
             pass
         
+        # Log the warning event
         await log_event(interaction.guild, "member_warn", "Member Warned", 
                         f"**Member:** {member.mention}\n**Reason:** {reason}\n**Total Warnings:** {warning_count}",
                         color=discord.Color.orange())
         
+        # Respond to the moderator
         await interaction.response.send_message(
             f"{member.mention} warned. They now have {warning_count} warning(s).",
             ephemeral=True
@@ -687,7 +895,7 @@ async def reload_commands():
         
         removed_warning = user_warnings.pop(warning_number - 1)
         warnings[user_id]["warnings"] = user_warnings
-        save_warnings()
+        save_warnings(warnings)  # Pass the warnings dictionary as an argument
         new_count = len(user_warnings)
         
         if new_count + 1 in WARNING_ACTIONS:
@@ -712,7 +920,7 @@ async def reload_commands():
             f"**New total warnings:** {new_count}",
             ephemeral=True
         )
-        
+            
     @bot.tree.command(name="purge", description="Delete a specified number of messages")
     @app_commands.describe(
         amount="Number of messages to delete",
@@ -872,44 +1080,60 @@ async def reload_commands():
     @app_commands.describe(user="The user to ban", reason="The reason for the ban")
     @app_commands.checks.has_permissions(ban_members=True)
     async def ban(interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
-        if not interaction.guild.me.guild_permissions.ban_members:
-            await interaction.response.send_message("I don't have permission to ban users.", ephemeral=True)
-            return
-
         try:
-            member = await interaction.guild.fetch_member(user.id)
-            if interaction.guild.me.top_role <= member.top_role:
-                await interaction.response.send_message("I can't ban this user due to role hierarchy.", ephemeral=True)
+            # Check bot permissions
+            if not interaction.guild.me.guild_permissions.ban_members:
+                await interaction.response.send_message("I don't have permission to ban users.", ephemeral=True)
                 return
-        except discord.NotFound:
-            pass  # User not in server but can still be banned
 
-        # DM the user
-        ban_embed = discord.Embed(
-            title="You have been banned!",
-            description=f"**Reason:** {reason}\n\nYou have been banned from {interaction.guild.name}.",
-            color=discord.Color.red()
-        )
-        ban_embed.add_field(
-            name="Appeal Form",
-            value="If you believe this was a mistake, you can appeal your ban here: [Appeal Form](https://example.com)",
-            inline=False
-        )
-        try:
-            await user.send(embed=ban_embed)
+            # Load appeal forms configuration
+            appeal_forms = load_appeal_forms()
+            ban_config = appeal_forms.get('ban', {})
+            
+            # Create ban embed
+            ban_embed = discord.Embed(
+                title="You have been banned!",
+                description=f"**Reason:** {reason}\n\nYou have been banned from {interaction.guild.name}.",
+                color=discord.Color.red()
+            )
+            
+            # Add appeal form if configured
+            # Find this section in the ban command:
+            if ban_config.get('enabled', False) and ban_config.get('form_url'):
+                appeal_url = f"{appeal_forms['base_url']}{ban_config['form_url']}?user_id={user.id}"  # ← ADD USER ID
+                ban_embed.add_field(
+                    name="Appeal Form",
+                    value=f"[Click here to appeal]({appeal_url})",
+                    inline=False
+                )
+
+            try:
+                # Send DM with ban notification
+                await user.send(embed=ban_embed)
+            except discord.Forbidden:
+                pass  # Couldn't send DM
+
+            # Execute the ban
+            await interaction.guild.ban(user, reason=reason, delete_message_days=0)
+            await interaction.response.send_message(
+                f"{user.mention} has been banned. Reason: {reason}",
+                ephemeral=True
+            )
+            
+            # Log the ban
+            await log_event(
+                interaction.guild,
+                "member_ban",
+                "Member Banned",
+                f"**User:** {user.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+                color=discord.Color.red()
+            )
+
         except discord.Forbidden:
-            pass  # Couldn't send DM
-
-        # Ban the user
-        await interaction.guild.ban(user, reason=reason, delete_message_days=0)
-        await interaction.response.send_message(f"{user.mention} has been banned. Reason: {reason}", ephemeral=True)
-        await log_event(
-            interaction.guild,
-            "member_ban",
-            "Member Banned",
-            f"**User:** {user.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
-            color=discord.Color.red()
-        )
+            await interaction.response.send_message("I don't have permission to ban this user.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+            print(f"Ban error: {str(e)}")
 
     @bot.tree.command(name="unban", description="Unban a user from the server")
     @app_commands.describe(user="The user to unban", reason="The reason for the unban")
@@ -936,29 +1160,59 @@ async def reload_commands():
     @app_commands.describe(member="The member to kick", reason="The reason for the kick")
     @app_commands.checks.has_permissions(kick_members=True)
     async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-        if not interaction.guild.me.guild_permissions.kick_members:
-            await interaction.response.send_message("I don't have permission to kick users.", ephemeral=True)
-            return
-
-        if interaction.guild.me.top_role <= member.top_role:
-            await interaction.response.send_message("I can't kick this user due to role hierarchy.", ephemeral=True)
-            return
-
-        # DM the user
         try:
-            await member.send(f"You have been kicked from {interaction.guild.name}. Reason: {reason}")
-        except discord.Forbidden:
-            pass
+            # Check bot permissions
+            if not interaction.guild.me.guild_permissions.kick_members:
+                await interaction.response.send_message("I don't have permission to kick users.", ephemeral=True)
+                return
 
-        await member.kick(reason=reason)
-        await interaction.response.send_message(f"{member.mention} has been kicked. Reason: {reason}", ephemeral=True)
-        await log_event(
-            interaction.guild,
-            "member_kick",
-            "Member Kicked",
-            f"**User:** {member.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
-            color=discord.Color.orange()
-        )
+            # Load appeal forms configuration
+            appeal_forms = load_appeal_forms()
+            kick_config = appeal_forms.get('kick', {})
+            
+            # Create kick embed
+            kick_embed = discord.Embed(
+                title="You have been kicked!",
+                description=f"**Reason:** {reason}\n\nYou have been kicked from {interaction.guild.name}.",
+                color=discord.Color.orange()
+            )
+            
+            # Add appeal form if configured
+            if kick_config.get('enabled', False) and kick_config.get('form_url'):
+                appeal_url = f"{appeal_forms['base_url']}{kick_config['form_url']}?user_id={member.id}"
+                kick_embed.add_field(
+                    name="Appeal Form",
+                    value=f"[Click here to appeal]({appeal_url})",
+                    inline=False
+                )
+
+            try:
+                # Send DM with kick notification
+                await member.send(embed=kick_embed)
+            except discord.Forbidden:
+                pass  # Couldn't send DM
+
+            # Execute the kick
+            await member.kick(reason=reason)
+            await interaction.response.send_message(
+                f"{member.mention} has been kicked. Reason: {reason}",
+                ephemeral=True
+            )
+            
+            # Log the kick
+            await log_event(
+                interaction.guild,
+                "member_kick",
+                "Member Kicked",
+                f"**User:** {member.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+                color=discord.Color.orange()
+            )
+
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to kick this user.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+            print(f"Kick error: {str(e)}")
 
     @bot.tree.command(name="deafen", description="Deafen a user in voice channels")
     @app_commands.describe(member="The member to deafen", reason="The reason for deafening")
@@ -1017,56 +1271,78 @@ async def reload_commands():
         duration: str = "5m",
         reason: str = "No reason provided"
     ):
-        if not interaction.guild.me.guild_permissions.moderate_members:
-            await interaction.response.send_message("I don't have permission to timeout members.", ephemeral=True)
-            return
-
-        if interaction.user.top_role <= member.top_role:
-            await interaction.response.send_message("You can't timeout someone with an equal or higher role.", ephemeral=True)
-            return
-
-        # Parse duration
-        time_units = {
-            "m": 60,
-            "h": 3600,
-            "d": 86400
-        }
-        
         try:
-            duration_num = int(duration[:-1])
-            unit = duration[-1].lower()
-            if unit not in time_units:
-                raise ValueError
-            seconds = duration_num * time_units[unit]
-            if seconds > 2419200:  # 28 day maximum
-                raise ValueError
-        except (ValueError, IndexError):
-            await interaction.response.send_message(
-                "Invalid duration format! Use: [number][m/h/d] (e.g., 30m, 2h, 1d)",
-                ephemeral=True
+            # Check bot permissions
+            if not interaction.guild.me.guild_permissions.moderate_members:
+                await interaction.response.send_message("I don't have permission to timeout members.", ephemeral=True)
+                return
+
+            # Parse duration
+            time_units = {"m": 60, "h": 3600, "d": 86400}
+            try:
+                duration_num = int(duration[:-1])
+                unit = duration[-1].lower()
+                if unit not in time_units:
+                    raise ValueError
+                seconds = duration_num * time_units[unit]
+                if seconds > 2419200:  # 28 day maximum
+                    raise ValueError
+            except (ValueError, IndexError):
+                await interaction.response.send_message(
+                    "Invalid duration format! Use: [number][m/h/d] (e.g., 30m, 2h, 1d)",
+                    ephemeral=True
+                )
+                return
+
+            timeout_duration = discord.utils.utcnow() + timedelta(seconds=seconds)
+
+            # Load appeal forms configuration
+            appeal_forms = load_appeal_forms()
+            timeout_config = appeal_forms.get('timeout', {})
+            
+            # Create timeout embed
+            timeout_embed = discord.Embed(
+                title="You have been timed out!",
+                description=f"**Duration:** {duration}\n**Reason:** {reason}",
+                color=discord.Color.orange()
             )
-            return
+            
+            # Add appeal form if configured
+            if timeout_config.get('enabled', False) and timeout_config.get('form_url'):
+                appeal_url = f"{appeal_forms['base_url']}{timeout_config['form_url']}?user_id={member.id}"
+                timeout_embed.add_field(
+                    name="Appeal Form",
+                    value=f"[Click here to appeal]({appeal_url})",
+                    inline=False
+                )
 
-        timeout_duration = discord.utils.utcnow() + timedelta(seconds=seconds)
+            try:
+                # Send DM with timeout notification
+                await member.send(embed=timeout_embed)
+            except discord.Forbidden:
+                pass  # Couldn't send DM
 
-        try:
+            # Execute the timeout
             await member.timeout(timeout_duration, reason=reason)
             await interaction.response.send_message(
-                f"{member.mention} has been timed out for {duration}.\nReason: {reason}",
+                f"{member.mention} has been timed out for {duration}. Reason: {reason}",
                 ephemeral=True
             )
+            
+            # Log the timeout
             await log_event(
                 interaction.guild,
                 "member_timeout",
                 "Member Timed Out",
-                f"**User:** {member.mention}\n"
-                f"**Duration:** {duration}\n"
-                f"**Reason:** {reason}\n"
-                f"**Moderator:** {interaction.user.mention}",
+                f"**User:** {member.mention}\n**Duration:** {duration}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
                 color=discord.Color.orange()
             )
+
         except discord.Forbidden:
-            await interaction.response.send_message("Failed to timeout member - check role hierarchy.", ephemeral=True)
+            await interaction.response.send_message("I don't have permission to timeout this member.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+            print(f"Timeout error: {str(e)}")
 
     @bot.tree.command(name="untimeout", description="Remove timeout from a user")
     @app_commands.describe(
@@ -1187,6 +1463,186 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             ephemeral=True
         )
         print(f"Command error: {error}")
+
+def load_appeal_forms():
+    try:
+        with open('appeal_forms.json') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {
+            "ban": {"enabled": True, "form_url": ""},
+            "kick": {"enabled": False, "form_url": ""},
+            "timeout": {"enabled": False, "form_url": ""}
+        }
+        
+def load_appeals():
+    try:
+        with open('appeals.json', 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+        
+def reload_warnings():
+    global warnings
+    warnings = load_warnings()
+
+# -------------------- Appeal Embed ------------------
+async def send_appeal_to_discord(channel_id, appeal_data):
+    channel = bot.get_channel(int(channel_id))
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title=f"🚨 New {appeal_data['type'].title()} Appeal",
+        color=discord.Color.orange(),
+        description=f"**Appeal ID:** `{appeal_data['id']}`\n"
+                    f"**Submitted:** <t:{int(datetime.now().timestamp())}:R>"
+    )
+    
+    # Add fields with emoji icons
+    for field in appeal_data['data']:
+        embed.add_field(
+            name=f"📌 {field['text']}",
+            value=field['value'] or "*Not provided*",
+            inline=False
+        )
+    
+    embed.set_footer(text="Use the buttons below to manage this appeal")
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.success,
+        label="Approve",
+        custom_id=f"approve_{appeal_data['id']}",
+        emoji="✅"
+    ))
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.danger,
+        label="Reject",
+        custom_id=f"reject_{appeal_data['id']}",
+        emoji="❌"
+    ))
+    view.add_item(discord.ui.Button(
+        style=discord.ButtonStyle.link,
+        label="View Online",
+        url=f"https://rkbot.30-seven.cc/appeals/{appeal_data['id']}",
+        emoji="🌐"
+    ))
+
+    await channel.send(embed=embed, view=view)
+    
+@bot.event
+async def on_interaction(interaction):
+    if interaction.type == discord.InteractionType.component:
+        custom_id = interaction.data.get('custom_id', '')
+        
+        # Handle approve/reject actions
+        if custom_id.startswith('approve_') or custom_id.startswith('reject_'):
+            parts = custom_id.split('_')
+            if len(parts) != 3:
+                await interaction.response.send_message("Invalid custom ID format.", ephemeral=True)
+                return
+
+            action = parts[0]  # 'approve' or 'reject'
+            appeal_type = parts[1]  # 'ban', 'kick', or 'timeout'
+            appeal_id = parts[2]  # The unique appeal ID
+
+            try:
+                # Load appeal data
+                appeals = load_appeals()
+                appeal = next((a for a in appeals if a['id'] == appeal_id), None)
+
+                if not appeal:
+                    await interaction.response.send_message("Appeal not found.", ephemeral=True)
+                    return
+
+                # Update appeal status
+                appeal['status'] = action
+                save_appeals(appeals)  # Save the updated appeals list
+
+                # Fetch the user and guild
+                user_id = appeal['user_id']
+                guild = interaction.guild
+                user = await bot.fetch_user(int(user_id))
+
+                # Perform the action based on appeal type
+                try:
+                    if action == 'approve':
+                        if appeal_type == 'ban':
+                            await guild.unban(user, reason="Appeal approved.")
+                            await interaction.response.send_message(f"{user.mention} has been unbanned.", ephemeral=True)
+                        elif appeal_type == 'timeout':
+                            member = await guild.fetch_member(user.id)
+                            await member.timeout(None, reason="Appeal approved.")
+                            await interaction.response.send_message(f"Timeout removed for {member.mention}.", ephemeral=True)
+                        elif appeal_type == 'kick':
+                            invite = await interaction.channel.create_invite(max_uses=1, reason="Appeal approved.")
+                            await user.send(f"Your kick appeal was approved. You may rejoin here: {invite.url}")
+                            await interaction.response.send_message("Invite sent to user.", ephemeral=True)
+                    elif action == 'reject':
+                        await interaction.response.send_message("Appeal rejected.", ephemeral=True)
+
+                    # Disable buttons after action
+                    view = discord.ui.View()
+                    for component in interaction.message.components:
+                        if component.type == discord.ComponentType.button:
+                            btn = discord.ui.Button.from_component(component)
+                            btn.disabled = True
+                            view.add_item(btn)
+
+                    # Update the message to reflect the action
+                    embed = interaction.message.embeds[0]
+                    embed.color = discord.Color.green() if action == 'approve' else discord.Color.red()
+                    embed.set_field_at(
+                        -1,  # Status is the last field
+                        name="Status",
+                        value=f"✅ Approved" if action == 'approve' else "❌ Rejected"
+                    )
+
+                    await interaction.message.edit(embed=embed, view=view)
+
+                except discord.Forbidden:
+                    await interaction.response.send_message("I don't have permission to perform this action.", ephemeral=True)
+                except discord.NotFound:
+                    await interaction.response.send_message("User or appeal not found.", ephemeral=True)
+                except Exception as e:
+                    await interaction.response.send_message(f"Error processing appeal: {str(e)}", ephemeral=True)
+
+            except Exception as e:
+                await interaction.response.send_message(f"Error loading appeal data: {str(e)}", ephemeral=True)
+
+        # Handle other types of interactions (e.g., custom buttons)
+        else:
+            await bot.process_commands(interaction)
+
+async def handle_appeal_action(interaction, appeal_id, action, color):
+    # Update appeal status in storage
+    appeals = load_appeals()
+    appeal = next((a for a in appeals if a['id'] == appeal_id), None)
+    
+    if appeal:
+        appeal['status'] = action
+        save_appeals(appeals)
+        
+        # Update embed
+        embed = interaction.message.embeds[0]
+        embed.color = color
+        embed.set_field_at(
+            -1,  # Status is last field
+            name="Status",
+            value=f"🔴 {action.capitalize()}"
+        )
+        
+        # Disable buttons
+        view = discord.ui.View()
+        for item in interaction.message.components:
+            if item.type == discord.ComponentType.button:
+                button = discord.ui.Button.from_component(item)
+                button.disabled = True
+                view.add_item(button)
+        
+        await interaction.message.edit(embed=embed, view=view)
+        await interaction.response.send_message(f"Appeal {appeal_id} {action}!", ephemeral=True)
 
 # -------------------- Leveling System --------------------
 def load_level_data():
@@ -1509,8 +1965,13 @@ async def on_invite_delete(invite):
 async def on_member_update(before, after):
     guild = before.guild
     # Check for role changes
+    # Handle role changes with batcher
     added_roles = set(after.roles) - set(before.roles)
     removed_roles = set(before.roles) - set(after.roles)
+    
+    if added_roles or removed_roles:
+        await role_batcher.add_change(after, added_roles, removed_roles)
+        
     for role in added_roles:
         if log_config.get("member_role_add", True):
             description = f"**Member:** {after.mention}\n**Role Added:** {role.name}"
