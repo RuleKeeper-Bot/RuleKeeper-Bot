@@ -19,9 +19,12 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
 - **Logging:** Tracks various server events.
 - **Command Syncing:** Ensure commands are always up to date.
 - **Leveling:**
-  - Role rewards
-  - XP boosting for certain roles
-  - Custom XP ranges
+  - Role rewards.
+  - XP boosting for certain roles.
+  - Custom XP ranges.
+- **Ban Appeals:**
+  - Send ban appeals to a channel.
+  - Approve and reject an appeal directly in the channel.
 
 ### Dashboard Features
 - **Admin Login/Logout:** Secure the dashboard with an admin password.
@@ -33,6 +36,12 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
   - Edit the embed that gets sent to the user when they say a blocked word.
 - **Manage Leveling:** Customize XP ranges, boosts, and level embed.
 - **Leaderboard:** View a server leaderboard.
+- **Appeal Forms:** Make custom ban/kick/timeout appeal forms with a simple question builder.
+- **Ban Appeals:** View, approve, and deny ban appeals.
+- **Banned Users:**
+  - View a list of banned users.
+  - Unban users.
+- **Warned Users:** View, edit, and delete warnings from a user.
 
 ---
 
