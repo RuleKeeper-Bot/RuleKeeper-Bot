@@ -17,17 +17,18 @@ A powerful Discord bot with a sleek dashboard for managing rules, custom command
   - Detects and mitigates spam (message and mention spam detection).
   - Blocks words that you can set and DM users when they say a blocked word.
 - **Logging:** Tracks various server events.
-- **Command Syncing:** Ensure commands are always up to date.
 - **Leveling:**
   - Role rewards.
   - XP boosting for certain roles.
   - Custom XP ranges.
+  - Custom cooldown.
 - **Ban Appeals:**
   - Send ban appeals to a channel.
   - Approve and reject an appeal directly in the channel.
 
 ### Dashboard Features
-- **Admin Login/Logout:** Secure the dashboard with an admin password.
+- **Login Using Discord OAuth:** View all servers you have access to edit.
+- **Admin Login/Logout:** Edit any server (that your version of the bot is in) using an admin password.
 - **Custom Commands:** Add, edit, and remove custom commands.
 - **Command Syncing:** Update bot commands instantly.
 - **Logging Control:** Enable or disable individual logging options.
@@ -71,6 +72,16 @@ Ensure you have the following installed:
    ```plaintext
    SECRET_KEY=REPLACE_WITH_A_RANDOM_STRING
    ADMIN_PASSWORD=CHOOSE_A_SECURE_PASSWORD
+   ADMIN_PASSWORD=CHOOSE_A_VERY_STRONG_PASSWORD
+   FRONTEND_URL=http://localhost:5000
+   API_URL=http://localhost:5003
+   DISCORD_CLIENT_ID=GET_FROM_DISCORD_DEVELOPER_PORTAL
+   DISCORD_CLIENT_SECRET=GET_FROM_DISCORD_DEVELOPER_PORTAL
+   DISCORD_REDIRECT_URI=http://localhost:5000/callback
+   DATABASE_PATH=bot/bot.db
+   ENABLE_LEVELING=true
+   ENABLE_MODERATION=true
+   ENABLE_APPEALS=true
    ```
 
 ---
@@ -79,7 +90,7 @@ Ensure you have the following installed:
 
 1. **Start a screen session:**
    ```bash
-   screen -S bot
+   screen -S rulekeeperbot
    ```
 2. **Make the virtual environment:**
    ```bash
@@ -97,11 +108,7 @@ Ensure you have the following installed:
    ```
 5. **Add your bot token:**
    - Open `secrets.json` and replace the token with your bot's token.
-6. **Add blocked words:**
-   - Open `blocked_words.json` and add words in there that you want to block.
-7. **Edit blocked word DM:**
-   - Open `blocked_word_embed.json` and edit to send what you want the embed to send.
-8. **Run the bot:**
+6. **Run the bot:**
    ```bash
    python3 bot.py
    ```
