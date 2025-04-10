@@ -86,7 +86,7 @@ Ensure you have the following installed:
 
 ---
 
-## Running the Bot
+## Running the Bot and Dashboard
 
 1. **Start a screen session:**
    ```bash
@@ -103,51 +103,18 @@ Ensure you have the following installed:
    ```
 4. **Install dependencies:**
    ```bash
-   cd bot
    pip install -r requirements.txt
    ```
 5. **Add your bot token:**
    - Open `secrets.json` and replace the token with your bot's token.
 6. **Run the bot:**
    ```bash
-   python3 bot.py
+   python main.py
    ```
    
-Alternatively, run the bot in the background without a screen session:
+Alternatively, run the bot and dashboard in the background without a screen session:
 ```bash
-nohup python3 bot.py &
-```
-
----
-
-## Running the Dashboard (Optional but Recommended)
-
-1. **Start a screen session:**
-   ```bash
-   screen -S dashboard
-   ```
-2. **Make the virtual environment:**
-   ```bash
-   cd rulekeeperbot
-   python3 -m venv env
-   ```  
-3. **Activate the virtual environment:**
-   ```bash
-   source venv/bin/activate
-   ```
-4. **Install dependencies:**
-   ```bash
-   cd web
-   pip install -r requirements.txt
-   ```
-5. **Run the dashboard:**
-   ```bash
-   python3 app.py
-   ```
-   
-Alternatively, run it in the background without a screen session:
-```bash
-nohup python3 app.py &
+nohup python main.py &
 ```
 
 Once running, access the dashboard:
