@@ -70,8 +70,8 @@ Ensure you have the following installed:
 3. **Set up environment variables:**
    - Create a `.env` file in the project root:
    ```plaintext
+   BOT_TOKEN=GET_FROM_DISCORD_DEVELOPER_PORTAL
    SECRET_KEY=REPLACE_WITH_A_RANDOM_STRING
-   ADMIN_PASSWORD=CHOOSE_A_SECURE_PASSWORD
    ADMIN_PASSWORD=CHOOSE_A_VERY_STRONG_PASSWORD
    FRONTEND_URL=http://localhost:5000
    API_URL=http://localhost:5003
