@@ -4,58 +4,102 @@
     <title>Leveling Configuration</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <style>
+        .reward-card {
+            transition: transform 0.2s;
+            margin-bottom: 1rem;
+        }
+        .reward-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .role-id {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .color-preview {
+            width: 30px;
+            height: 30px;
+            border-radius: 4px;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        .xp-boost-editor {
+            font-family: monospace;
+            min-height: 150px;
+        }
+    </style>
 </head>
 <body>
     <div class="container mt-4">
-        <h2 class="mb-4">Leveling Configuration</h2>
-        
-        <a href="/" class="btn btn-secondary mb-4">
-            <i class="bi bi-arrow-left"></i> Back to Dashboard
-        </a>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>Leveling Configuration - {{ guild.name }}</h2>
+            <a href="{{ url_for('guild_dashboard', guild_id=guild_id) }}" class="btn btn-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Dashboard
+            </a>
+        </div>
 
-        <form method="POST">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST" action="{{ url_for('level_config', guild_id=guild_id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            
+            <!-- XP Settings Card -->
             <div class="card mb-4">
-                <div class="card-header">XP Settings</div>
+                <div class="card-header bg-primary text-white">XP Settings</div>
                 <div class="card-body">
                     <div class="row g-3">
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <label class="form-label">Cooldown (seconds)</label>
                             <input type="number" class="form-control" name="cooldown" 
-                                   value="{{ config.cooldown }}" min="10" required>
+                                   value="{{ config.cooldown or 60 }}" min="10" required>
                         </div>
                         
-                        <div class="col-md-6">
-                            <label class="form-label">XP Range</label>
-                            <div class="input-group">
-                                <input type="number" class="form-control" name="xp_min" 
-                                       value="{{ config.xp_range[0] }}" min="1" required>
-                                <input type="number" class="form-control" name="xp_max" 
-                                       value="{{ config.xp_range[1] }}" min="1" required>
-                            </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Min XP</label>
+                            <input type="number" class="form-control" name="xp_min" 
+                                   value="{{ config.xp_min or 15 }}" min="1" required>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <label class="form-label">Max XP</label>
+                            <input type="number" class="form-control" name="xp_max" 
+                                   value="{{ config.xp_max or 25 }}" min="1" required>
                         </div>
                     </div>
                 </div>
             </div>
-			
-			<div class="card mb-4">
-				<div class="card-header">XP Boost Roles</div>
-				<div class="card-body">
-					<div class="mb-3">
-						<label class="form-label">XP Boost Roles (JSON format)</label>
-						<textarea class="form-control" name="xp_boost_roles" rows="5" required>
-							{{ config.xp_boost_roles|tojson|safe }}
-						</textarea>
-						<small class="text-muted">
-							Format: {"role_id": boost_percentage, "role_id": boost_percentage}<br>
-							Example: {"123456789012345678": 50, "987654321098765432": 25}<br>
-							This means role 123... gets 50% more XP, and role 987... gets 25% more XP
-						</small>
-					</div>
-				</div>
-			</div>
 
+            <!-- XP Boost Card -->
             <div class="card mb-4">
-                <div class="card-header">Announcement Settings</div>
+                <div class="card-header bg-info text-white">XP Boost Roles</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Role XP Boosts</label>
+                        <textarea class="form-control xp-boost-editor" name="xp_boost_roles" 
+                                  rows="3" required>{{ config.xp_boost_roles or '{}' }}</textarea>
+                        <small class="text-muted">
+                            Format: {"RoleID": BoostPercentage}<br>
+                            Example: {"123456789012345678": 50} - 50% XP boost
+                        </small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Announcement Settings Card -->
+            <div class="card mb-4">
+                <div class="card-header bg-success text-white">Announcement Settings</div>
                 <div class="card-body">
                     <div class="mb-3">
                         <div class="form-check form-switch">
@@ -67,53 +111,135 @@
                         </div>
                     </div>
                     
-					<div class="mb-3">
-						<label class="form-label">Announcement Channel ID</label>
-						<input type="text" class="form-control" name="level_channel" 
-							   value="{{ config.level_channel or '' }}">
-						<small class="text-muted">Leave blank to disable announcements</small>
-					</div>
-					
+                    <div class="mb-3">
+                        <label class="form-label">Announcement Channel ID</label>
+                        <input type="text" class="form-control" name="level_channel" 
+                               value="{{ config.level_channel or '' }}">
+                        <small class="text-muted">Leave blank to disable announcements</small>
+                    </div>
+                    
                     <div class="mb-3">
                         <label class="form-label">Excluded Channels (comma-separated IDs)</label>
                         <textarea class="form-control" name="excluded_channels" 
-                                  rows="3">{{ config.excluded_channels|join(', ') }}</textarea>
+                                  rows="3">{{ config.excluded_channels or '[]' }}</textarea>
                     </div>
                 </div>
             </div>
 
+            <!-- Level Up Embed Card -->
             <div class="card mb-4">
-                <div class="card-header">Level Up Embed</div>
+                <div class="card-header bg-warning text-dark">Level Up Embed</div>
                 <div class="card-body">
                     <div class="mb-3">
                         <label class="form-label">Embed Title</label>
                         <input type="text" class="form-control" name="embed_title" 
-                               value="{{ embed.title }}" required>
+                               value="{{ config.embed_title or '🎉 Level Up!' }}" required>
                     </div>
                     
                     <div class="mb-3">
                         <label class="form-label">Embed Description</label>
                         <textarea class="form-control" name="embed_description" 
-                                  rows="3" required>{{ embed.description }}</textarea>
+                                  rows="3" required>{{ config.embed_description or '{user} has reached level **{level}**!' }}</textarea>
                         <small class="text-muted">Available variables: {user}, {level}</small>
                     </div>
                     
                     <div class="mb-3">
                         <label class="form-label">Embed Color</label>
-                        <input type="color" class="form-control-color" name="embed_color" 
-                               value="{{ embed.color_hex }}" style="height: 38px">
+                        <div class="input-group">
+                            <input type="color" class="form-control-color" name="embed_color" 
+								   value="#{{ '%06x' % config.get('embed_color', 16766720) }}" style="height: 38px">
+							<span class="color-preview" 
+								  style="background-color: #{{ '%06x' % config.get('embed_color', 16766720) }}"></span>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div class="d-grid gap-2">
+            <!-- Level Rewards Card -->
+            <div class="card mb-4">
+                <div class="card-header bg-danger text-white">Level Rewards</div>
+                <div class="card-body">
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label">Reward Level</label>
+                            <input type="number" class="form-control" name="reward_level" 
+                                   min="1" max="1000" required>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <label class="form-label">Role ID</label>
+                            <input type="text" class="form-control" name="reward_role_id" required>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" name="add_reward" class="btn btn-primary mb-4">
+                        <i class="bi bi-plus-circle"></i> Add Reward
+                    </button>
+
+                    <h5 class="mb-3">Current Rewards</h5>
+                    {% if rewards %}
+                    <div class="row row-cols-1 row-cols-md-2 g-3">
+                        {% for level, role_id in rewards.items() %}
+                        <div class="col">
+                            <div class="card reward-card">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h5 class="card-title">Level {{ level }}</h5>
+                                            <p class="card-text mb-0">
+                                                <span class="role-id">{{ role_id }}</span>
+                                            </p>
+                                        </div>
+                                        <div>
+                                            <a href="{{ url_for('level_config', guild_id=guild_id) }}?delete_reward={{ level }}" 
+                                               class="btn btn-danger btn-sm" 
+                                               title="Delete Reward">
+                                                <i class="bi bi-trash"></i>
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info">No rewards configured</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="d-grid gap-2 mb-5">
                 <button type="submit" class="btn btn-primary btn-lg">
-                    <i class="bi bi-save"></i> Save Changes
+                    <i class="bi bi-save"></i> Save All Changes
                 </button>
             </div>
         </form>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Color picker preview
+        document.querySelector('input[name="embed_color"]').addEventListener('input', function(e) {
+            document.querySelector('.color-preview').style.backgroundColor = e.target.value;
+        });
+
+        // JSON validation helper
+        document.querySelector('.xp-boost-editor').addEventListener('input', function(e) {
+            try {
+                JSON.parse(e.target.value);
+                e.target.classList.remove('is-invalid');
+            } catch {
+                e.target.classList.add('is-invalid');
+            }
+        });
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
 </body>
 </html>

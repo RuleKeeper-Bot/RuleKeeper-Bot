@@ -11,58 +11,80 @@
         .badge-pending { background: #ffc107; }
         .badge-approved { background: #198754; }
         .badge-rejected { background: #dc3545; }
+		.user-cell { min-width: 180px; }
+		.user-id { font-size: 0.8em; opacity: 0.7; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2 class="mb-4">Ban Appeals</h2>
-		<div>
-			<a href="/" class="btn btn-secondary">
+        <h2 class="mb-4">Ban Appeals - {{ guild.name }}</h2>
+        <div>
+            <a href="{{ url_for('guild_dashboard', guild_id=guild_id) }}" class="btn btn-secondary">
                 <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
             </a>
-            <a href="/logout" class="btn btn-danger ms-2">
-                 <i class="bi bi-box-arrow-right"></i> Logout
+            <a href="{{ url_for('logout') }}" class="btn btn-danger ms-2">
+                <i class="bi bi-box-arrow-right"></i> Logout
             </a>
         </div>
         
         {% if not appeals %}
-        <div class="alert alert-info">No pending appeals</div>
+        <div class="alert alert-info mt-3">No pending appeals</div>
         {% else %}
-        <table class="table table-hover">
+        <table class="table table-hover mt-3">
             <thead>
                 <tr>
                     <th>User</th>
                     <th>Appeal Date</th>
-                    <th>Reason</th>
+                    <th>Reason Preview</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for appeal in appeals %}
-                <tr>
-                    <td>{{ appeal.username }}</td>
-                    <td>{{ appeal.timestamp }}</td>
-                    <td>{{ appeal.reason|truncate(50) }}</td>
+				<tr data-appeal-id="{{ appeal.appeal_id }}">
+					<td>
+						<div class="d-flex flex-column">
+							<span class="fw-bold">{{ appeal.username }}</span>
+							<small class="text-muted">ID: {{ appeal.user_id }}</small>
+						</div>
+					</td>
+					<td>{{ appeal.timestamp }}</td>
+					<td>
+						{% if appeal.data and appeal.data[0] %}
+							{% set answer = appeal.data[0].get('answer', 'No reason provided') %}
+							{{ answer if answer is string else answer|tojson|safe }}
+						{% else %}
+							No reason provided
+						{% endif %}
+					</td>
+					<td>
+						<span class="badge 
+							{% if appeal.status == 'pending' %}bg-warning
+							{% elif appeal.status == 'approved' %}bg-success
+							{% else %}bg-danger{% endif %}">
+							{{ appeal.status|title }}
+						</span>
+					</td>
                     <td>
-                        <span class="badge 
-                            {% if appeal.status == 'pending' %}bg-warning
-                            {% elif appeal.status == 'approved' %}bg-success
-                            {% else %}bg-danger{% endif %}">
-                            {{ appeal.status|title }}
-                        </span>
-                    </td>
-                    <td>
-                        <div class="btn-group">
-                            <a href="/ban_appeals/{{ appeal.id }}/approve" class="btn btn-success btn-sm">
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-success btn-sm approve-btn"
+                                    data-user-id="{{ appeal.user_id }}"
+                                    data-guild-id="{{ guild_id }}"
+                                    data-appeal-id="{{ appeal.appeal_id }}"
+                                    data-action="approve">
                                 <i class="bi bi-check-lg"></i>
-                            </a>
-                            <a href="/ban_appeals/{{ appeal.id }}/reject" class="btn btn-danger btn-sm">
+                            </button>
+                            <button class="btn btn-danger btn-sm reject-btn"
+                                    data-appeal-id="{{ appeal.appeal_id }}"
+                                    data-action="reject">
                                 <i class="bi bi-x-lg"></i>
-                            </a>
-                            <a href="/ban_appeals/{{ appeal.id }}/delete" class="btn btn-dark btn-sm">
+                            </button>
+                            <button class="btn btn-dark btn-sm delete-btn"
+                                    data-appeal-id="{{ appeal.appeal_id }}"
+                                    data-action="delete">
                                 <i class="bi bi-trash"></i>
-                            </a>
+                            </button>
                         </div>
                     </td>
                 </tr>
@@ -72,5 +94,79 @@
         {% endif %}
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+		// Add event listeners to all action buttons
+		document.querySelectorAll('[data-action]').forEach(button => {
+			button.addEventListener('click', async function(e) {
+				e.preventDefault();
+				const action = this.dataset.action;
+				const appealId = this.dataset.appealId;
+				const guildId = this.dataset.guildId || GUILD_ID;
+				const userId = this.dataset.userId;
+
+				if (action !== 'delete' && !confirm(`Are you sure you want to ${action} this appeal?`)) {
+					return;
+				}
+
+				try {
+					let endpoint, body = null;
+					
+					if (action === 'approve' || action === 'reject') {
+						endpoint = `/dashboard/${guildId}/ban-appeals/${appealId}/${action}`;
+						if (action === 'reject') {
+							const reason = prompt('Enter rejection reason:', 'Violation of server rules');
+							if (reason === null) return;
+							body = JSON.stringify({ reason });
+						}
+					} else if (action === 'delete') {
+						endpoint = `/dashboard/${guildId}/ban-appeals/${appealId}/delete`;
+					}
+
+					const response = await fetch(endpoint, {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'X-CSRFToken': '{{ csrf_token() }}'
+						},
+						body: body,
+						credentials: 'same-origin'
+					});
+
+					if (!response.ok) {
+						throw new Error(await response.text());
+					}
+
+					window.location.reload();
+				} catch (error) {
+					console.error('Error:', error);
+					alert(`Action failed: ${error.message}`);
+				}
+			});
+		});
+	});
+
+	// Simple toast notification function
+	function showToast(message, type) {
+		const toast = document.createElement('div');
+		toast.className = `toast align-items-center text-white bg-${type} border-0`;
+		toast.innerHTML = `
+			<div class="d-flex">
+				<div class="toast-body">${message}</div>
+				<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+			</div>
+		`;
+		document.body.appendChild(toast);
+		new bootstrap.Toast(toast, { autohide: true, delay: 3000 }).show();
+		setTimeout(() => toast.remove(), 3500);
+	}
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
 </body>
 </html>

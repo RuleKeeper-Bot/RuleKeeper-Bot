@@ -3,6 +3,7 @@
 <head>
     <title>Manage Appeal Forms</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
     <style>
         body { padding: 20px; background-color: #f8f9fa; }
         .card { margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
@@ -14,7 +15,7 @@
     <div class="container">
         <h2 class="mb-4">Manage Appeal Forms</h2>
         <div>
-            <a href="/" class="btn btn-secondary">
+            <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">
                 <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
             </a>
             <a href="/logout" class="btn btn-danger ms-2">
@@ -41,9 +42,9 @@
 								   id="baseUrl" 
 								   name="base_url"
 								   placeholder="http://yourdomain.com:port (optional)"
-								   value="{{ base_url }}">
+								   value="{{ config.base_url }}">
                             <small class="text-muted">
-                                Leave empty to use relative paths. Include protocol (http/https) and port if needed
+                                Example: {{ frontend_url }}
                             </small>
                         </div>
                     </div>
@@ -189,26 +190,26 @@
             });
         });
         </script>
+    </div>
 
-        <form method="POST">
-		
-		<div class="card mb-3">
-			<div class="card-body">
-				<h5>Base URL Configuration</h5>
-				<div class="row g-3">
-					<div class="col-md-8">
-						<input type="url" class="form-control" 
-							   id="baseUrl" 
-							   name="base_url"
-							   placeholder="http://yourdomain.com:port (optional)"
-							   value="{{ base_url }}">
-						<small class="text-muted">
-							Leave empty to use relative paths. Include protocol (http/https) and port if needed
-						</small>
-					</div>
-				</div>
-			</div>
-		</div>
+        <form method="POST" action="/dashboard/{{ guild_id }}/appeal-forms">
+            <div class="card mb-3">
+                <div class="card-body">
+                    <h5>Base URL Configuration</h5>
+                    <div class="row g-3">
+                        <div class="col-md-8">
+                            <input type="url" class="form-control" 
+                                   id="baseUrl" 
+                                   name="base_url"
+                                   placeholder="http://yourdomain.com (optional)"
+                                   value="{{ forms.base_url if forms.base_url else '' }}">
+                            <small class="text-muted">
+                                Example: {{ FRONTEND_URL }}
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <!-- Ban Appeal Form -->
             <div class="card mb-4">
@@ -216,27 +217,32 @@
                 <div class="card-body">
                     <div class="mb-3 form-check">
                         <input type="checkbox" class="form-check-input" id="ban_enabled" 
-                               name="ban_enabled" {% if config.ban.enabled %}checked{% endif %}>
+                               name="ban_enabled" {% if forms.ban_enabled %}checked{% endif %}>
                         <label class="form-check-label" for="ban_enabled">Enable Ban Appeals</label>
-                        <input type="hidden" name="ban_form_url" value="/ban_appeals/{id}">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Form URL</label>
                         <div class="alert alert-secondary">
                             <code id="banUrlPreview">
-                                {% if base_url %}{{ base_url }}{% endif %}/ban_appeals/&#123;appeal_id&#125;
+                                {% if forms.base_url %}{{ forms.base_url }}{% endif %}{{ forms.ban_form_url if forms.ban_form_url else '/ban_appeals/{id}' }}
                             </code>
                         </div>
+                        <input type="hidden" name="ban_form_url" value="{{ forms.ban_form_url if forms.ban_form_url else '/ban_appeals/{id}' }}">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Form Fields (one per line)</label>
-                        <textarea class="form-control" name="ban_form_fields" rows="4">{{ config.ban.form_fields|join('\n') }}</textarea>
+                        <textarea class="form-control" name="ban_form_fields" rows="4">
+                            {%- if forms.ban_form_fields -%}
+                                {{ forms.ban_form_fields|json_loads|join('\n') }}
+                            {%- endif -%}
+                        </textarea>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Ban Appeal Channel ID</label>
                         <input type="text" class="form-control" 
                                name="ban_channel_id" 
-                               value="{{ config.ban.channel_id }}" required>
+                               value="{{ forms.ban_channel_id if forms.ban_channel_id else '' }}" 
+                               required>
                     </div>
                 </div>
             </div>
@@ -247,27 +253,32 @@
                 <div class="card-body">
                     <div class="mb-3 form-check">
                         <input type="checkbox" class="form-check-input" id="kick_enabled" 
-                               name="kick_enabled" {% if config.kick.enabled %}checked{% endif %}>
+                               name="kick_enabled" {% if forms.kick_enabled %}checked{% endif %}>
                         <label class="form-check-label" for="kick_enabled">Enable Kick Appeals</label>
-                        <input type="hidden" name="kick_form_url" value="/kick_appeals/{id}">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Form URL</label>
                         <div class="alert alert-secondary">
                             <code id="kickUrlPreview">
-                                {% if base_url %}{{ base_url }}{% endif %}/kick_appeals/&#123;appeal_id&#125;
+                                {% if forms.base_url %}{{ forms.base_url }}{% endif %}{{ forms.kick_form_url if forms.kick_form_url else '/kick_appeals/{id}' }}
                             </code>
                         </div>
+                        <input type="hidden" name="kick_form_url" value="{{ forms.kick_form_url if forms.kick_form_url else '/kick_appeals/{id}' }}">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Form Fields (one per line)</label>
-                        <textarea class="form-control" name="kick_form_fields" rows="4">{{ config.kick.form_fields|join('\n') }}</textarea>
+                        <textarea class="form-control" name="kick_form_fields" rows="4">
+                            {%- if forms.kick_form_fields -%}
+                                {{ forms.kick_form_fields|json_loads|join('\n') }}
+                            {%- endif -%}
+                        </textarea>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Kick Appeal Channel ID</label>
                         <input type="text" class="form-control" 
                                name="kick_channel_id" 
-                               value="{{ config.kick.channel_id }}" required>
+                               value="{{ forms.kick_channel_id if forms.kick_channel_id else '' }}" 
+                               required>
                     </div>
                 </div>
             </div>
@@ -278,27 +289,32 @@
                 <div class="card-body">
                     <div class="mb-3 form-check">
                         <input type="checkbox" class="form-check-input" id="timeout_enabled" 
-                               name="timeout_enabled" {% if config.timeout.enabled %}checked{% endif %}>
+                               name="timeout_enabled" {% if forms.timeout_enabled %}checked{% endif %}>
                         <label class="form-check-label" for="timeout_enabled">Enable Timeout Appeals</label>
-                        <input type="hidden" name="timeout_form_url" value="/timeout_appeals/{id}">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Form URL</label>
                         <div class="alert alert-secondary">
                             <code id="timeoutUrlPreview">
-                                {% if base_url %}{{ base_url }}{% endif %}/timeout_appeals/&#123;appeal_id&#125;
+                                {% if forms.base_url %}{{ forms.base_url }}{% endif %}{{ forms.timeout_form_url if forms.timeout_form_url else '/timeout_appeals/{id}' }}
                             </code>
                         </div>
+                        <input type="hidden" name="timeout_form_url" value="{{ forms.timeout_form_url if forms.timeout_form_url else '/timeout_appeals/{id}' }}">
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Form Fields (one per line)</label>
-                        <textarea class="form-control" name="timeout_form_fields" rows="4">{{ config.timeout.form_fields|join('\n') }}</textarea>
+                        <textarea class="form-control" name="timeout_form_fields" rows="4">
+                            {%- if forms.timeout_form_fields -%}
+                                {{ forms.timeout_form_fields|json_loads|join('\n') }}
+                            {%- endif -%}
+                        </textarea>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Timeout Appeal Channel ID</label>
                         <input type="text" class="form-control" 
                                name="timeout_channel_id" 
-                               value="{{ config.timeout.channel_id }}" required>
+                               value="{{ forms.timeout_channel_id if forms.timeout_channel_id else '' }}" 
+                               required>
                     </div>
                 </div>
             </div>
@@ -308,5 +324,35 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Keep the existing JavaScript functions
+        function addQuestion() {
+            // Existing implementation
+        }
+
+        function addToFormFields() {
+            // Existing implementation
+        }
+
+        // Update URL previews when base URL changes
+        document.getElementById('baseUrl').addEventListener('input', function(e) {
+            const baseUrl = e.target.value;
+            
+            document.querySelectorAll('[id$="UrlPreview"]').forEach(preview => {
+                const formType = preview.id.replace('UrlPreview', '').toLowerCase();
+                const pathInput = document.querySelector(`input[name="${formType}_form_url"]`);
+                const cleanBase = baseUrl.replace(/\/+$/, '');
+                const cleanPath = pathInput.value.replace(/^\/+/, '');
+                preview.textContent = `${cleanBase}/${cleanPath}`;
+            });
+        });
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
 </body>
 </html>

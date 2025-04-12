@@ -1,929 +1,1274 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort
-import json
-import requests
 import sys
 import os
-import math
-import uuid
-from datetime import datetime
-from markupsafe import Markup
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import Config
+import uuid
 import logging
-logging.basicConfig(level=logging.INFO)
+import json
+import requests
+from functools import wraps
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string
+from flask_discord import DiscordOAuth2Session, Unauthorized
+from flask_wtf.csrf import CSRFProtect, CSRFError
+from database import db
+from database import Database
+from config import Config
+from shared_config import Config
+from shared import shared
+import re
+import sqlite3
+import time
+from flask_discord.exceptions import RateLimited
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# Initialize Flask app
 app = Flask(__name__)
-app.config.from_object(Config)
+csrf = CSRFProtect(app)
+app.secret_key = os.getenv('SECRET_KEY')
+app.config['DISCORD_CLIENT_ID'] = os.getenv('DISCORD_CLIENT_ID')
+app.config['DISCORD_CLIENT_SECRET'] = os.getenv('DISCORD_CLIENT_SECRET')
+app.config['DISCORD_REDIRECT_URI'] = os.getenv('FRONTEND_URL') + '/callback'
+app.config.update({
+    'WTF_CSRF_TIME_LIMIT': 3600 * 2,  # 2 hour expiration
+    'WTF_CSRF_SSL_STRICT': False,
+    'SESSION_COOKIE_SAMESITE': 'Lax'
+})
 
-# -------------------- File Paths --------------------
-COMMANDS_PATH = os.path.join('..', 'bot', 'commands.json')
-LOG_CONFIG_PATH = os.path.join('..', 'bot', 'config', 'log_config.json')
-LEVEL_CONFIG_PATH = os.path.join('..', 'bot', 'level_config.json')
-LEVEL_REWARDS_PATH = os.path.join('..', 'bot', 'level_rewards.json')
-LEVELS_PATH = os.path.join('..', 'bot', 'levels.json')
-APPEAL_FORMS_PATH = os.path.join('..', 'bot', 'appeal_forms.json')
-BAN_APPEALS_PATH = os.path.join('..', 'bot', 'ban_appeals.json')
-WARNINGS_PATH = os.path.join('..', 'bot', 'warnings.json')
-APPEALS_PATH = os.path.join('..', 'bot', 'appeals.json')
+# Initialize Discord OAuth
+discord = DiscordOAuth2Session(app)
 
-# -------------------- Admin Login System --------------------
+# Configuration
+API_URL = os.getenv('API_URL', 'http://localhost:5003')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5000')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize database connection
+Config.verify_paths()
+db = Database(str(Config.DATABASE_PATH))
+print(f"🌐 Web using database: {db.db_path}")
+
+class Guild:
+    """Mock Guild class for cached guilds"""
+    def __init__(self, data):
+        self.id = int(data['id'])
+        self.name = data['name']
+        self.icon_url = data['icon']
+        self.permissions = type('Permissions', (), {'value': data['permissions']})
+
+@app.template_filter('json_loads')
+def json_loads_filter(s):
+    return json.loads(s)
+
+# Authentication and Authorization
 def login_required(f):
-    from functools import wraps
+    def wrapper(*args, **kwargs):
+        if not session.get('user') and not session.get('admin'):
+            flash('Please log in to access this page', 'warning')
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    wrapper.__name__ = f.__name__
+    return wrapper
+
+def guild_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        guild_id = kwargs.get('guild_id')
+        if not guild_id:
+            abort(400, "Missing guild ID")
+            
+        if session.get('admin'):
+            return f(*args, **kwargs)
+            
+        user_guilds = get_user_guilds()
+        
+        # Properly handle guild lookup
+        guild = next(
+            (guild for guild in user_guilds if str(guild.id) == guild_id),
+            None
+        )
+        
+        # Check if guild exists and has permissions
+        if not guild:
+            abort(404, "Server not found in your accessible guilds")
+            
+        if not (guild.permissions.value & 0x20):
+            abort(403, "You don't have manage server permissions")
+            
+        return f(*args, **kwargs)
+    return wrapper
+
+def get_user_guilds():
+    if session.get('admin'):
+        return []
+
+    # Check cache first
+    if 'guilds_cache' in session:
+        cached = session['guilds_cache']
+        if cached['expires'] > time.time():
+            return [Guild(g) for g in cached['guilds']]  # Reconstruct objects
+
+    try:
+        user_guilds = discord.fetch_guilds()
+        bot_guild_ids = get_bot_guild_ids()
+
+        # Convert to serializable dictionaries
+        valid_guilds = [
+            {
+                'id': str(g.id),
+                'name': g.name,
+                'icon': g.icon_url or '',
+                'permissions': g.permissions.value
+            }
+            for g in user_guilds 
+            if str(g.id) in bot_guild_ids and (g.permissions.value & 0x20)
+        ]
+        
+        session['guilds_cache'] = {
+            'guilds': valid_guilds,
+            'expires': time.time() + 300
+        }
+        
+        return user_guilds  # Return original objects for permission checks
+
+    except Unauthorized:
+        session.clear()
+        return []
+    except RateLimited as e:
+        logger.warning(f"Rate limited: {e}")
+        # Return reconstructed guilds from cache
+        return [Guild(g) for g in session.get('guilds_cache', {}).get('guilds', [])]
+
+def get_bot_guild_ids():
+    bot_guilds = db.get_all_guilds()
+    return {g['id'] for g in bot_guilds}
+
+def get_guild_or_404(guild_id):
+    guild = db.get_guild(guild_id)
+    if not guild:
+        abort(404, "Guild not found in database")
+    return guild
+    
+def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'):
-            flash("Please log in to access this page.", "warning")
-            return redirect(url_for('login', next=request.url))
+        if not session.get('admin'):
+            abort(403, description="Admin privileges required")
         return f(*args, **kwargs)
     return decorated_function
 
-@app.route('/login', methods=['GET', 'POST'])
+# TEMPORARY ROUTE
+# @app.route('/update-guild-icons')
+# def update_guild_icons():
+    # if not session.get('admin'):
+        # abort(403)
+        
+    # try:
+        # guilds = db.execute_query('SELECT guild_id FROM guilds', fetch='all')
+        
+        # updated = 0
+        # for g in guilds:
+            # # Use 'guild_id' instead of 'id'
+            # guild_id = int(g['guild_id'])
+            # guild = shared.bot.get_guild(guild_id)
+            
+            # if guild:
+                # icon = str(guild.icon.url) if guild.icon else None
+                # db.execute_query(
+                    # 'UPDATE guilds SET icon = ? WHERE guild_id = ?',
+                    # (icon, guild_id)
+                # )
+                # updated += 1
+                
+        # return f"Updated icons for {updated}/{len(guilds)} guilds"
+        
+    # except Exception as e:
+        # logger.error(f"Error updating guild icons: {str(e)}")
+        # return f"Error: {str(e)}", 500
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route("/privacy-policy")
+def privacy_policy():
+    return render_template("privacy.html")
+
+@app.route("/terms-of-service")
+def terms_of_service():
+    return render_template("terms.html")
+
+@app.route('/login')
 def login():
+    if request.args.get('admin') and request.args.get('password') == ADMIN_PASSWORD:
+        session['admin'] = True
+        session.permanent = True
+        return redirect(url_for('select_guild'))
+    return discord.create_session(scope=['identify', 'guilds'])
+    
+@app.route('/login-admin', methods=['GET', 'POST'])
+def login_admin():
     if request.method == 'POST':
+        # Verify CSRF token first
+        try:
+            csrf.protect()
+        except CSRFError:
+            flash('Security token expired. Please submit the form again.', 'danger')
+            return redirect(url_for('login_admin', guild_id=guild_id))
         password = request.form.get('password')
-        if password == app.config['ADMIN_PASSWORD']:
-            session['logged_in'] = True
-            flash("Logged in successfully!", "success")
-            next_page = request.args.get('next') or url_for('index')
-            return redirect(next_page)
+        if password == ADMIN_PASSWORD:
+            session['admin'] = True
+            session.permanent = True
+            return redirect(url_for('select_guild'))
         else:
-            flash("Incorrect password.", "danger")
-    return render_template('login.html')
+            error = "Invalid password"
+    else:
+        error = None
+
+    return render_template_string('''
+        <!doctype html>
+        <title>Admin Login</title>
+        <h2>Admin Login</h2>
+        {% if error %}<p style="color: red;">{{ error }}</p>{% endif %}
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="password" name="password" placeholder="Enter admin password" required>
+            <input type="submit" value="Login">
+        </form>
+    ''', error=error)
 
 @app.route('/logout')
 def logout():
-    session.pop('logged_in', None)
-    flash("Logged out successfully.", "success")
+    session.clear()
+    flash('Successfully logged out', 'success')
     return redirect(url_for('login'))
-
-# -------------------- Main Routes --------------------
-@app.route('/')
-@login_required
-def index():
-    commands = get_commands()
-    return render_template('index.html', commands=commands)
-
-@app.route('/sync', methods=['POST'])
-@login_required
-def sync_commands():
-    try:
-        response = requests.post('http://localhost:5003/sync')
-        return response.text, 200
-    except Exception as e:
-        return str(e), 500
-        
-@app.route('/sync_warnings', methods=['POST'])
-def sync_warnings():
-    try:
-        # Force the bot to reload warnings from the file
-        requests.post('http://localhost:5003/sync_warnings')
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/commands/create_command', methods=['POST'])
-@login_required
-def create_command():
-    try:
-        new_command = request.get_json()
-        commands = get_commands()
-        if new_command['command_name'] in commands:
-            return jsonify({"success": False, "message": "Command already exists"}), 400
-        commands[new_command['command_name']] = {
-            "content": new_command['content'],
-            "description": new_command['description'],
-            "ephemeral": new_command['ephemeral']
-        }
-        save_commands(commands)
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-@app.route('/commands/edit/<command_name>', methods=['GET', 'POST'])
-@login_required
-def edit_command(command_name):
-    commands = get_commands()
-    if request.method == 'POST':
-        commands[command_name] = {
-            "content": request.form['content'],
-            "description": request.form['description'],
-            "ephemeral": 'ephemeral' in request.form
-        }
-        save_commands(commands)
-        return redirect('/')
-    return render_template('edit.html', command=commands[command_name], command_name=command_name)
-
-@app.route('/commands/delete/<command_name>')
-@login_required
-def delete_command(command_name):
-    commands = get_commands()
-    if command_name in commands:
-        del commands[command_name]
-        save_commands(commands)
-    return redirect('/')
-
-# -------------------- Utility Functions --------------------
-def get_commands():
-    try:
-        with open(COMMANDS_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_commands(commands):
-    with open(COMMANDS_PATH, 'w') as f:
-        json.dump(commands, f, indent=4)
-
-def load_log_config():
-    try:
-        with open(LOG_CONFIG_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        # Create default log config if it doesn't exist
-        default_config = {
-            "message_delete": True,
-            "bulk_message_delete": True,
-            "message_edit": True,
-            "invite_create": True,
-            "invite_delete": True,
-            "member_role_add": True,
-            "member_role_remove": True,
-            "member_timeout": True,
-            "member_warn": True,
-            "member_unwarn": True,
-            "member_ban": True,
-            "member_unban": True,
-            "role_create": True,
-            "role_delete": True,
-            "role_update": True,
-            "channel_create": True,
-            "channel_delete": True,
-            "channel_update": True,
-            "emoji_create": True,
-            "emoji_name_change": True,
-            "emoji_delete": True
-        }
-        with open(LOG_CONFIG_PATH, 'w') as f:
-            json.dump(default_config, f, indent=4)
-        return default_config
-
-def save_log_config(config):
-    with open(LOG_CONFIG_PATH, 'w') as f:
-        json.dump(config, f, indent=4)
-
-def load_level_config():
-    default_config = {
-        "cooldown": 60,
-        "xp_range": [15, 25],
-        "level_channel": None,
-        "announce_level_up": True,
-        "excluded_channels": [],
-        "xp_boost_roles": {},
-        "embed": {
-            "title": "🎉 Level Up!",
-            "description": "{user} has reached level **{level}**!",
-            "color": 0xffd700
-        }
-    }
-    try:
-        with open(LEVEL_CONFIG_PATH, 'r') as f:  # Use LEVEL_CONFIG_PATH here
-            config = json.load(f)
-            return {**default_config, **config}
-    except FileNotFoundError:
-        with open(LEVEL_CONFIG_PATH, 'w') as f:  # Use LEVEL_CONFIG_PATH here
-            json.dump(default_config, f, indent=4)
-        return default_config
-
-def save_level_config(config):
-    with open(LEVEL_CONFIG_PATH, 'w') as f:  # Use LEVEL_CONFIG_PATH here
-        json.dump(config, f, indent=4)
-        
-# Only these keys will be shown/edited on the dashboard.
-ALLOWED_LOG_KEYS = [
-    "message_delete", "bulk_message_delete", "message_edit",
-    "invite_create", "invite_delete", "member_role_add",
-    "member_role_remove", "member_timeout", "member_warn",
-    "member_unwarn", "member_ban", "member_unban", "role_create",
-    "role_delete", "role_update", "channel_create", "channel_delete",
-    "channel_update", "emoji_create", "emoji_name_change", "emoji_delete",
-    "log_config_update"
-]
-
-def load_warnings():
-    try:
-        with open(WARNINGS_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_warnings(warnings):
-    with open(WARNINGS_PATH, 'w') as f:
-        json.dump(warnings, f, indent=4)
-
-def load_level_rewards():
-    try:
-        with open(LEVEL_REWARDS_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_level_rewards(rewards):
-    with open(LEVEL_REWARDS_PATH, 'w') as f:
-        json.dump(rewards, f, indent=4)
-        
-def load_user_levels():
-    try:
-        with open(USER_LEVELS_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-@app.route('/level_rewards', methods=['GET', 'POST'])
-@login_required
-def level_rewards():
-    rewards = load_level_rewards()
     
-    if request.method == 'POST':
-        if 'delete' in request.form:
-            # Handle deletion
-            level = request.form['delete']
-            if level in rewards:
-                del rewards[level]
-                save_level_rewards(rewards)
-                flash('Reward deleted successfully!', 'success')
+@app.route('/logout-admin')
+@login_required
+def logout_admin():
+    """Log out from admin access while preserving Discord session"""
+    try:
+        if session.get('admin'):
+            # Only remove admin privileges
+            session.pop('admin', None)
+            session.pop('_fresh', None)  # Remove freshness marker
+            session.modified = True
+            flash('Admin session terminated. Regular login preserved.', 'success')
         else:
-            # Handle add/edit
-            level = str(request.form['level'])
-            role_id = request.form['role_id'].strip()
+            flash('No admin session found', 'warning')
             
-            if not level.isdigit():
-                flash('Level must be a number!', 'danger')
-                return redirect('/level_rewards')
-            
-            if not role_id.isdigit():
-                flash('Role ID must be a valid number!', 'danger')
-                return redirect('/level_rewards')
-            
-            rewards[level] = role_id
-            save_level_rewards(rewards)
-            flash('Reward saved successfully!', 'success')
+        return redirect(url_for('select_guild'))
         
-        return redirect('/level_rewards')
-    
-    return render_template('level_rewards.html', rewards=rewards)
-    
-@app.route('/leaderboard')
-@login_required
-def leaderboard():
-    def load_levels():
-        try:
-            with open(LEVELS_PATH, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
-
-    users_data = load_levels()
-    
-    # Convert to list of tuples and sort by XP descending, then level descending
-    sorted_users = sorted(users_data.items(),
-                        key=lambda x: (-x[1]['xp'], -x[1]['level']))
-    
-    # Add this filter to format XP values
-    app.jinja_env.filters['intxp'] = lambda x: int(x) if isinstance(x, float) and x.is_integer() else x
-    
-    return render_template('leaderboard.html', users=sorted_users)
-
-@app.route('/commands')
-@login_required
-def commands_page():
-    commands = get_commands()
-    return render_template('commands.html', commands=commands)
-
-# -------------------- Leveling Configuration Dashboard --------------------
-@app.route('/level_config', methods=['GET', 'POST'])
-@login_required
-def level_config():
-    config = load_level_config()
-    all_channels = []  # Fetch actual channels from Discord API
-    
-    if request.method == 'POST':
-        # Update main config
-        config['cooldown'] = int(request.form['cooldown'])
-        config['xp_range'] = [
-            int(request.form['xp_min']),
-            int(request.form['xp_max'])
-        ]
-        config['announce_level_up'] = 'announce_level_up' in request.form
-        config['level_channel'] = request.form['level_channel'] or None
-        
-        # Process excluded channels
-        excluded = request.form['excluded_channels'].split(',')
-        config['excluded_channels'] = [int(c.strip()) for c in excluded if c.strip()]
-        
-        # Process XP boost roles
-        try:
-            xp_boost_roles = request.form['xp_boost_roles'].strip()
-            config['xp_boost_roles'] = json.loads(xp_boost_roles) if xp_boost_roles else {}
-        except json.JSONDecodeError:
-            flash('Invalid XP boost roles format! Must be valid JSON', 'danger')
-            return redirect('/level_config')
-        
-        # Update embed
-        config['embed'] = {
-            "title": request.form['embed_title'],
-            "description": request.form['embed_description'],
-            "color": int(request.form['embed_color'].lstrip('#'), 16)
-        }
-        
-        save_level_config(config)
-        flash('Leveling configuration updated!', 'success')
-        return redirect('/level_config')
-
-    # Convert color to hex string for input
-    embed = config['embed']
-    embed['color_hex'] = f"#{config['embed']['color']:06x}"
-    
-    return render_template('level_config.html', 
-                         config=config,
-                         embed=embed,
-                         all_channels=all_channels)
-                         
-# -------------------- Logging Configuration Dashboard --------------------
-@app.route('/log_config', methods=['GET', 'POST'])
-@login_required
-def log_config_dashboard():
-    full_config = load_log_config()
-    
-    if request.method == 'POST':
-        # Handle log channel ID input
-        try:
-            channel_id = int(request.form.get('log_channel_id', 0)) or None
-            if channel_id:
-                try:
-                    full_config['log_channel_id'] = int(channel_id)
-                except ValueError:
-                    flash('Invalid channel ID format', 'danger')
-            else:
-                full_config['log_channel_id'] = None
-        except ValueError:
-            flash('Invalid channel ID format', 'danger')
-        # Update only the allowed keys from the form
-        for key in ALLOWED_LOG_KEYS:
-            full_config[key] = (key in request.form)
-        save_log_config(full_config)
-        
-        # Auto-reload bot configuration via its sync endpoint.
-        try:
-            requests.post('http://localhost:5003/sync')
-        except Exception as e:
-            print("Error reloading bot configuration:", e)
-        
-        return redirect('/log_config')
-    else:
-        visible_config = {key: full_config.get(key, True) for key in ALLOWED_LOG_KEYS}
-        return render_template('log_config.html', config=visible_config)
-        
-# -------------------- Appeal Forms --------------------
-def load_appeal_forms():
-    default_forms = {
-        "base_url": "",
-        "ban": {
-            "enabled": False,
-            "channel_id": "",
-            "form_fields": [],
-            "form_url": "/ban-appeal-form"
-        },
-        "kick": {
-            "enabled": False,
-            "channel_id": "",
-            "form_fields": [],
-            "form_url": "/kick-appeal-form"
-        },
-        "timeout": {
-            "enabled": False,
-            "channel_id": "",
-            "form_fields": [],
-            "form_url": "/timeout-appeal-form"
-        }
-    }
-    try:
-        with open(APPEAL_FORMS_PATH, 'r') as f:
-            loaded = json.load(f)
-            # Properly merge all keys including base_url
-            default_forms.update(loaded)
-            # Ensure nested structures are preserved
-            for appeal_type in ['ban', 'kick', 'timeout']:
-                if appeal_type in loaded:
-                    default_forms[appeal_type].update(loaded[appeal_type])
-            return default_forms
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default_forms
-
-def save_appeal_forms(forms):
-    # Ensure we're saving the complete structure
-    with open(APPEAL_FORMS_PATH, 'w') as f:
-        json.dump({
-            "base_url": forms.get("base_url", ""),
-            "ban": forms.get("ban", {}),
-            "kick": forms.get("kick", {}),
-            "timeout": forms.get("timeout", {})
-        }, f, indent=4)
-        
-def load_appeals():
-    try:
-        with open(APPEALS_PATH, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-def save_appeals(appeals):
-    with open(APPEALS_PATH, 'w') as f:
-        json.dump(appeals, f, indent=4)
-    
-    # Ensure proper structure
-    required_keys = ['id', 'user_id', 'type', 'data', 'timestamp']
-    if not all(key in appeal_data for key in required_keys):
-        print("Invalid appeal data structure")
-        return
-    
-    appeals.append(appeal_data)
-    
-    with open(APPEALS_PATH, 'w') as f:
-        json.dump(appeals, f, indent=4)
-    
-@app.route('/ban-appeal-form', methods=['GET', 'POST'])
-def ban_appeal_form():
-    return handle_appeal_form("ban")
-
-@app.route('/kick-appeal-form', methods=['GET', 'POST'])
-def kick_appeal_form():
-    return handle_appeal_form("kick")
-
-@app.route('/timeout-appeal-form', methods=['GET', 'POST'])
-def timeout_appeal_form():
-    return handle_appeal_form("timeout")
-
-# -------------------- Appeal Discord Notification --------------------
-
-def handle_appeal_form(appeal_type):
-    form_config = load_appeal_forms().get(appeal_type, {})
-    
-    if not form_config.get("enabled", False):
-        return "This appeal form is not currently active.", 404
-
-    if request.method == 'POST':
-        appeal_id = str(uuid.uuid4())[:8]
-        user_id = request.form.get('user_id', 'Unknown')  # Get from hidden field in form
-        
-        # Process form responses
-        responses = []
-        for field in form_config.get("form_fields", []):
-            field_name = field.split('(')[0].strip()
-            responses.append({
-                "question": field_name,
-                "answer": request.form.get(field_name, "")
-            })
-
-        # Prepare data for bot
-        appeal_data = {
-            "type": appeal_type,
-            "user_id": user_id,
-            "id": appeal_id,
-            "data": responses,
-            "channel_id": form_config["channel_id"]  # Pass the channel ID from config
-        }
-
-        # Send to bot's appeal handler
-        try:
-            requests.post('http://localhost:5003/appeal', json=appeal_data)
-        except Exception as e:
-            print(f"Error sending to bot: {e}")
-            flash("Error submitting appeal. Please try again.", "danger")
-            return redirect(url_for('index'))
-
-        flash("Appeal submitted successfully! We'll review it shortly.", "success")
-        return redirect(url_for('index'))
-
-    return render_template('appeal_form.html',
-                         form_config=form_config,
-                         appeal_type=appeal_type)
-
-@app.route('/submit-appeal', methods=['POST'])
-def handle_appeal_submission():
-    appeal_type = request.form['type']
-    user_id = request.form['user_id']
-    appeal_id = str(uuid.uuid4())[:8]
-    
-    # Process form data
-    responses = []
-    for key, value in request.form.items():
-        if key not in ['type', 'user_id']:
-            responses.append({'question': key, 'answer': value})
-    
-    appeal_data = {
-        'type': appeal_type,
-        'user_id': user_id,
-        'id': appeal_id,
-        'data': responses
-    }
-    
-    # Send to bot
-    try:
-        requests.post('http://localhost:5003/appeal', json=appeal_data)
     except Exception as e:
-        print(f"Error sending appeal to bot: {e}")
+        logger.error(f"Admin logout error: {str(e)}")
+        abort(500)
+
+@app.route('/callback')
+def callback():
+    try:
+        discord.callback()
+        user = discord.fetch_user()
+        session['user'] = {
+            'id': str(user.id),
+            'name': user.name,
+            'avatar': user.avatar_url or ''
+        }
+        session.permanent = True
+        return redirect(url_for('select_guild'))
+    except Unauthorized:
+        flash('Discord authentication failed', 'danger')
+        return redirect(url_for('login'))
+
+@app.route('/select-guild')
+@login_required
+def select_guild():
+    user_guilds = get_user_guilds()
     
-    flash("Appeal submitted successfully!", "success")
-    return redirect(url_for('index'))
-
-# -------------------- Warnings Management --------------------
-@app.route('/warnings')
+    # Prepare guild data for template
+    common_guilds = [{
+        'id': str(g.id),
+        'name': g.name,
+        'icon': g.icon_url or '',
+        'permissions': g.permissions.value
+    } for g in user_guilds]
+    
+    if session.get('admin'):
+        # Get full guild data from DB
+        common_guilds = db.execute_query(
+            'SELECT guild_id as id, name, icon FROM guilds',
+            fetch='all'
+        )
+        
+    return render_template('select_guild.html', guilds=common_guilds)
+    
+@app.route('/admin/guilds')
 @login_required
-def warnings_list():
-    warnings = load_warnings()
-    warned_users = []
-    for user_id, data in warnings.items():
-        warned_users.append({
-            'id': user_id,
-            'username': data.get('username', 'Unknown'),
-            'count': len(data.get('warnings', []))
-        })
-    return render_template('warnings_list.html', users=warned_users)
+@admin_required
+def admin_guilds():
+    if not session.get('admin'):
+        abort(403)
+    
+    guilds = db.execute_query('''
+        SELECT 
+            guild_id as id, 
+            name, 
+            owner_id, 
+            icon, 
+            joined_at,
+            (SELECT COUNT(*) FROM users WHERE guild_id = guilds.guild_id) as member_count
+        FROM guilds
+    ''', fetch='all')
+    
+    return render_template('admin_guilds.html', guilds=guilds)
 
-@app.route('/warnings/<user_id>', methods=['GET', 'POST'])
+@app.route('/dashboard/<guild_id>')
 @login_required
-def view_warnings(user_id):
-    warnings = load_warnings()
-    user_data = warnings.get(user_id)
-    if not user_data:
-        flash('User not found', 'danger')
-        return redirect('/warnings')
+@guild_required
+def guild_dashboard(guild_id):
+    guild = get_guild_or_404(guild_id)
+    return render_template('guilds.html', guild=guild)
+
+# Commands Management
+@app.route('/dashboard/<guild_id>/commands', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def guild_commands(guild_id):
+    guild = get_guild_or_404(guild_id)
     
     if request.method == 'POST':
-        new_warnings = []
+        try:
+            # Verify CSRF first
+            csrf.protect()
+            data = request.get_json()
+            
+            if not data:
+                return jsonify({'success': False, 'error': 'No data provided'}), 400
+
+            # Validate required fields
+            required = ['command_name', 'description', 'content']
+            if not all(key in data for key in required):
+                return jsonify({
+                    'success': False,
+                    'error': 'Missing required fields'
+                }), 400
+
+            command_name = data['command_name'].lower().strip()
+            description = data['description'].strip()
+            content = data['content'].strip()
+            ephemeral = data.get('ephemeral', True)
+
+            # Validate command name
+            if not re.fullmatch(r'^[a-z0-9\-]{1,32}$', command_name):
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid command name (1-32 chars, lowercase, hyphens)'
+                }), 400
+
+            # Database operation
+            try:
+                db.add_command(
+                    guild_id=guild_id,
+                    command_name=command_name,
+                    description=description,
+                    content=content,
+                    ephemeral=ephemeral
+                )
+                return jsonify({
+                    'success': True,
+                    'message': f'Command /{command_name} created!',
+                    'redirect': url_for('guild_commands', guild_id=guild_id)
+                })
+
+            except sqlite3.IntegrityError:
+                return jsonify({
+                    'success': False,
+                    'error': f'Command /{command_name} already exists'
+                }), 409
+
+        except Exception as e:
+            logger.error(f"Command error: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': 'Server error'
+            }), 500
+
+    # GET request
+    try:
+        commands = db.get_commands(guild_id)
+        return render_template('commands.html',
+                             commands=commands,
+                             guild_id=guild_id,
+                             guild=guild)
+    except Exception as e:
+        logger.error(f"Commands fetch error: {str(e)}")
+        abort(500)
+    
+@app.route('/dashboard/<guild_id>/commands/<command_name>/edit', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def edit_command(guild_id, command_name):
+    guild = get_guild_or_404(guild_id)
+    command = db.get_command(guild_id, command_name)
+    
+    if not command:
+        abort(404, description="Command not found")
+    
+    if request.method == 'POST':
+        # Verify CSRF token first
+        try:
+            csrf.protect()
+        except CSRFError:
+            flash('Security token expired. Please submit the form again.', 'danger')
+            return redirect(url_for('edit_command', guild_id=guild_id))
+        try:
+            # Update command in database
+            new_content = request.form['content']
+            new_description = request.form['description']
+            new_ephemeral = 'ephemeral' in request.form
+            
+            db.update_command(
+                guild_id=guild_id,
+                command_name=command_name,
+                content=new_content,
+                description=new_description,
+                ephemeral=new_ephemeral
+            )
+            
+            flash('Command updated successfully', 'success')
+            return redirect(url_for('guild_commands', guild_id=guild_id))
+            
+        except Exception as e:
+            logger.error(f"Error updating command: {str(e)}")
+            flash('Error updating command', 'danger')
+    
+    # GET request - show edit form
+    return render_template('edit.html',
+        guild_id=guild_id,
+        guild=guild,
+        command_name=command_name,
+        command=command
+    )
+
+@app.route('/dashboard/<guild_id>/commands/<command_name>/delete')
+@login_required
+@guild_required
+def delete_command(guild_id, command_name):
+    # Verify CSRF token first
+    try:
+        csrf.protect()
+    except CSRFError:
+        flash('Security token expired. Please submit the form again.', 'danger')
+        return redirect(url_for('level_config', guild_id=guild_id))
+    guild = get_guild_or_404(guild_id)
+    db.remove_command(guild_id, command_name)
+    flash('Command deleted successfully', 'success')
+    return redirect(url_for('guild_commands', guild_id=guild_id))
+
+# Log Configuration
+@app.route('/dashboard/<guild_id>/log-config', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def log_config(guild_id):
+    try:
+        guild = get_guild_or_404(guild_id)
+        config = db.get_log_config(guild_id)
+        if request.method == 'POST':
+            # Verify CSRF token first
+            try:
+                csrf.protect()
+            except CSRFError:
+                flash('Security token expired. Please submit the form again.', 'danger')
+                return redirect(url_for('log_config', guild_id=guild_id))
+            
+            update_data = {
+                'log_channel_id': request.form.get('log_channel_id'),
+                'log_config_update': 'log_config_update' in request.form,
+                'message_delete': 'message_delete' in request.form,
+                'bulk_message_delete': 'bulk_message_delete' in request.form,
+                'message_edit': 'message_edit' in request.form,
+                'invite_create': 'invite_create' in request.form,
+                'invite_delete': 'invite_delete' in request.form,
+                'member_role_add': 'member_role_add' in request.form,
+                'member_role_remove': 'member_role_remove' in request.form,
+                'member_timeout': 'member_timeout' in request.form,
+                'member_warn': 'member_warn' in request.form,
+                'member_unwarn': 'member_unwarn' in request.form,
+                'member_ban': 'member_ban' in request.form,
+                'member_unban': 'member_unban' in request.form,
+                'role_create': 'role_create' in request.form,
+                'role_delete': 'role_delete' in request.form,
+                'role_update': 'role_update' in request.form,
+                'channel_create': 'channel_create' in request.form,
+                'channel_delete': 'channel_delete' in request.form,
+                'channel_update': 'channel_update' in request.form,
+                'emoji_create': 'emoji_create' in request.form,
+                'emoji_name_change': 'emoji_name_change' in request.form,
+                'emoji_delete': 'emoji_delete' in request.form
+            }
+            
+            guild = get_guild_or_404(guild_id)
+            db.update_log_config(guild_id, **update_data)
+            flash('Log configuration updated', 'success')
+            return redirect(url_for('log_config', guild_id=guild_id))
+        
+        return render_template('log_config.html', config=config, guild_id=guild_id, guild=guild)
+        
+    except Exception as e:
+        logger.error(f"Error in log config: {str(e)}")
+        abort(500)
+
+# Blocked Words Management
+@app.route('/dashboard/<guild_id>/blocked-words', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def blocked_words(guild_id):
+    try:
+        guild = get_guild_or_404(guild_id)
+        
+        if request.method == 'POST':
+            # Verify CSRF token first
+            try:
+                csrf.protect()
+            except CSRFError:
+                flash('Security token expired. Please submit the form again.', 'danger')
+                return redirect(url_for('blocked_words', guild_id=guild_id))
+            # Process form data
+            words = [w.strip() for w in request.form.getlist('words') if w.strip()]
+            embed_data = {
+                'title': request.form.get('title', 'Blocked Word Detected!'),
+                'description': request.form.get('description', 'You have used a word that is not allowed.'),
+                'color': request.form.get('color', '#ff0000').lstrip('#')
+            }
+
+            # Convert color to integer
+            try:
+                embed_data['color'] = int(embed_data['color'], 16)
+            except ValueError:
+                embed_data['color'] = 0xff0000  # Default red
+
+            # Update database in transaction
+            with db.conn:
+                # Update blocked words
+                db.execute_query(
+                    'DELETE FROM blocked_words WHERE guild_id = ?',
+                    (guild_id,)
+                )
+                
+                if words:
+                    db.execute_query(
+                        'INSERT INTO blocked_words (guild_id, word) VALUES (?, ?)',
+                        [(guild_id, word) for word in words],
+                        many=True
+                    )
+
+                # Update embed configuration
+                db.execute_query('''
+                    INSERT OR REPLACE INTO blocked_word_embeds 
+                    (guild_id, title, description, color)
+                    VALUES (?, ?, ?, ?)
+                ''', (guild_id, embed_data['title'], embed_data['description'], embed_data['color']))
+
+            flash('Blocked words settings updated successfully', 'success')
+            return redirect(url_for('blocked_words', guild_id=guild_id))
+
+        # GET Request - Load existing data
+        words = db.execute_query(
+            'SELECT word FROM blocked_words WHERE guild_id = ?',
+            (guild_id,),
+            fetch='all'
+        )
+        words_list = [word['word'] for word in words] if words else []
+
+        embed = db.execute_query(
+            'SELECT * FROM blocked_word_embeds WHERE guild_id = ?',
+            (guild_id,),
+            fetch='one'
+        )
+
+        return render_template('blocked_words.html',
+                            words=words_list,
+                            embed=dict(embed) if embed else None,
+                            guild_id=guild_id,
+                            guild=guild)
+
+    except sqlite3.Error as e:
+        logger.error(f"Database error in blocked words: {str(e)}")
+        flash('A database error occurred. Changes were not saved.', 'danger')
+        return redirect(url_for('blocked_words', guild_id=guild_id))
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in blocked words: {str(e)}")
+        abort(500)
+
+# Banned Users
+@app.route('/dashboard/<guild_id>/banned-users')
+@login_required
+@guild_required
+def banned_users(guild_id):
+    try:
+        # Try the modern query first
+        try:
+            bans = db.execute_query('''
+                SELECT w.*, u.username 
+                FROM warnings w
+                LEFT JOIN users u ON w.user_id = u.user_id
+                WHERE w.guild_id = ? AND w.action_type = 'ban'
+                ORDER BY w.timestamp DESC
+            ''', (guild_id,))
+        except sqlite3.OperationalError:
+            # Fallback to legacy query if action_type doesn't exist
+            bans = db.execute_query('''
+                SELECT w.*, u.username 
+                FROM warnings w
+                LEFT JOIN users u ON w.user_id = u.user_id
+                WHERE w.guild_id = ? AND w.reason LIKE '%ban%'
+                ORDER BY w.timestamp DESC
+            ''', (guild_id,))
+        
+        guild = get_guild_or_404(guild_id)
+        return render_template('banned_users.html',
+                            bans=[dict(b) for b in bans],
+                            guild_id=guild_id,
+                            guild=guild)
+    except Exception as e:
+        logger.error(f"Error fetching banned users: {str(e)}")
+        abort(500, description="Could not retrieve banned users")
+
+# Server Leaderboard
+@app.route('/dashboard/<guild_id>/leaderboard')
+@login_required
+@guild_required
+def leaderboard(guild_id):
+    guild = get_guild_or_404(guild_id)
+    
+    users = db.execute_query('''
+        SELECT * FROM user_levels 
+        WHERE guild_id = ?
+        ORDER BY level DESC, xp DESC
+        LIMIT 100
+    ''', (guild_id,), fetch='all')  # Add fetch='all' parameter
+    
+    return render_template('leaderboard.html',
+                         users=users,
+                         guild_id=guild_id,
+                         guild=guild)
+
+# Level System Configuration
+@app.route('/dashboard/<guild_id>/leveling', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def level_config(guild_id):
+    guild = get_guild_or_404(guild_id)
+    
+    # Get existing config and convert to dict if needed
+    db_config = db.get_level_config(guild_id)
+    config = dict(db_config) if db_config else {}
+    
+    # Default configuration template
+    default_config = {
+        'cooldown': 60,
+        'xp_min': 15,
+        'xp_max': 25,
+        'level_channel': None,
+        'announce_level_up': True,
+        'excluded_channels': [],
+        'xp_boost_roles': {},
+        'embed_title': '🎉 Level Up!',
+        'embed_description': '{user} has reached level **{level}**!',
+        'embed_color': 0xFFD700  # Default gold color
+    }
+    
+    # Merge configurations
+    merged_config = default_config.copy()
+    merged_config.update(config)
+    
+    # Handle rewards
+    rewards = db.get_level_rewards(guild_id)
+    rewards_dict = {str(level): role_id for level, role_id in rewards.items()}
+
+    # Handle form submission
+    if request.method == 'POST':
+        # Verify CSRF token first
+        try:
+            csrf.protect()
+        except CSRFError:
+            flash('Security token expired. Please submit the form again.', 'danger')
+            return redirect(url_for('level_config', guild_id=guild_id))
+
+        # Add reward handling
+        if 'add_reward' in request.form:
+            reward_level = request.form.get('reward_level', '').strip()
+            reward_role_id = request.form.get('reward_role_id', '').strip()
+            
+            if not reward_level.isdigit() or not reward_role_id.isdigit():
+                flash('Invalid reward parameters', 'danger')
+                return redirect(url_for('level_config', guild_id=guild_id))
+                
+            try:
+                db.add_level_reward(guild_id, int(reward_level), reward_role_id)
+                flash('Reward added successfully', 'success')
+            except Exception as e:
+                logger.error(f"Reward add error: {str(e)}")
+                flash('Failed to add reward', 'danger')
+            
+            return redirect(url_for('level_config', guild_id=guild_id))
+
+        # Main config update
+        try:
+            new_config = {
+                'cooldown': int(request.form.get('cooldown', 60)),
+                'xp_min': int(request.form.get('xp_min', 15)),
+                'xp_max': int(request.form.get('xp_max', 25)),
+                'level_channel': request.form.get('level_channel', ''),
+                'announce_level_up': 'announce_level_up' in request.form,
+                'excluded_channels': [
+                    s.strip() for s in 
+                    request.form.get('excluded_channels', '').split(',') 
+                    if s.strip()
+                ],
+                'xp_boost_roles': request.form.get('xp_boost_roles', '{}'),
+                'embed_title': request.form.get('embed_title', '🎉 Level Up!'),
+                'embed_description': request.form.get(
+                    'embed_description', 
+                    '{user} has reached level **{level}**!'
+                ),
+                'embed_color': int(
+                    request.form.get('embed_color', 'ffd700').lstrip('#'), 
+                    16
+                )
+            }
+
+            # Validate JSON fields
+            try:
+                json.loads(new_config['xp_boost_roles'])
+            except json.JSONDecodeError:
+                flash('Invalid XP boost roles format', 'danger')
+                return redirect(url_for('level_config', guild_id=guild_id))
+
+            db.update_level_config(guild_id, **new_config)
+            flash('Settings saved successfully', 'success')
+            
+        except ValueError as e:
+            logger.error(f"Config validation error: {str(e)}")
+            flash('Invalid configuration values', 'danger')
+        except Exception as e:
+            logger.error(f"Config save error: {str(e)}")
+            flash('Failed to save configuration', 'danger')
+
+        return redirect(url_for('level_config', guild_id=guild_id))
+
+    # Handle reward deletion
+    if 'delete_reward' in request.args:
+        try:
+            level = int(request.args.get('delete_reward', 0))
+            if level > 0:
+                db.remove_level_reward(guild_id, level)
+                flash('Reward deleted successfully', 'success')
+        except ValueError:
+            flash('Invalid reward level', 'danger')
+        except Exception as e:
+            logger.error(f"Reward delete error: {str(e)}")
+            flash('Failed to delete reward', 'danger')
+        
+        return redirect(url_for('level_config', guild_id=guild_id))
+
+    return render_template('level_config.html',
+                         config=merged_config,
+                         rewards=rewards_dict,
+                         guild_id=guild_id,
+                         guild=guild)
+
+# Warnings Management
+@app.route('/dashboard/<guild_id>/warnings')
+@login_required
+@guild_required
+def warnings(guild_id):
+    try:
+        # First try to update usernames from Discord API
+        update_usernames_from_discord(guild_id)
+        
+        warnings = db.execute_query('''
+            SELECT w.user_id, u.username, COUNT(*) as count 
+            FROM warnings w
+            LEFT JOIN users u ON w.user_id = u.user_id
+            WHERE w.guild_id = ?
+            GROUP BY w.user_id
+            ORDER BY count DESC
+        ''', (guild_id,))
+        
+        guild = get_guild_or_404(guild_id)
+        return render_template('warned_users.html', 
+                             warnings=[dict(w) for w in warnings],
+                             guild_id=guild_id,
+                             guild=guild)
+    except Exception as e:
+        logger.error(f"Error fetching warnings: {str(e)}")
+        abort(500, description="Could not retrieve warnings")
+
+def update_usernames_from_discord(guild_id):
+    """Update usernames from Discord API for users with warnings"""
+    try:
+        # Get unique user IDs with warnings
+        user_ids = db.execute_query('''
+            SELECT DISTINCT user_id FROM warnings 
+            WHERE guild_id = ?
+        ''', (guild_id,))
+        
+        for user in user_ids:
+            user_id = user['user_id']
+            try:
+                headers = {'Authorization': f'Bot {os.getenv("BOT_TOKEN")}'}
+                response = requests.get(
+                    f'https://discord.com/api/v9/users/{user_id}',
+                    headers=headers
+                )
+                if response.status_code == 200:
+                    user_data = response.json()
+                    db.execute_query('''
+                        INSERT OR REPLACE INTO users (user_id, username, avatar_url)
+                        VALUES (?, ?, ?)
+                    ''', (user_id, user_data['username'], user_data.get('avatar')))
+            except Exception as e:
+                logger.warning(f"Could not fetch user {user_id}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error updating usernames: {str(e)}")
+
+@app.route('/dashboard/<guild_id>/warnings/<user_id>', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def user_warnings(guild_id, user_id):
+    if request.method == 'POST':
+        # Verify CSRF token first
+        try:
+            csrf.protect()
+        except CSRFError:
+            flash('Security token expired. Please submit the form again.', 'danger')
+            return redirect(url_for('user_warnings', guild_id=guild_id))
+        # Handle existing warning updates
         for key in request.form:
             if key.startswith('reason_'):
-                index = int(key.split('_')[1])
-                new_warnings.append({
-                    'timestamp': user_data['warnings'][index]['timestamp'],
-                    'reason': request.form[key]
-                })
-        warnings[user_id]['warnings'] = new_warnings
-        save_warnings(warnings)
-        flash('Warnings updated!', 'success')
-        return redirect(f'/warnings/{user_id}')
-    
-    return render_template('user_warnings.html', 
-                         user_data=user_data,
+                warning_id = key.split('_')[1]
+                new_reason = request.form.get(key)
+                if new_reason:
+                    db.update_warning_reason(guild_id, user_id, warning_id, new_reason)
+        
+        # Handle new warning addition
+        new_reason = request.form.get('new_reason')
+        if new_reason:
+            db.add_warning(guild_id, user_id, new_reason)
+            flash('New warning added successfully', 'success')
+        
+        flash('Changes saved successfully', 'success')
+        return redirect(url_for('user_warnings', guild_id=guild_id, user_id=user_id))
+        
+    guild = get_guild_or_404(guild_id)
+    warnings = db.get_warnings(guild_id, user_id)
+    return render_template('user_warnings.html',
+                         warnings=warnings,
+                         guild_id=guild_id,
                          user_id=user_id)
 
-# -------------------- Ban Appeals Management --------------------
-
-def load_ban_appeals():
-    try:
-        with open(BAN_APPEALS_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def save_ban_appeals(appeals):
-    with open(BAN_APPEALS_PATH, 'w') as f:
-        json.dump(appeals, f, indent=4)
-
-@app.route('/ban_appeals')
+@app.route('/dashboard/<guild_id>/warnings/<user_id>/delete/<warning_id>')
 @login_required
-def ban_appeals():
-    appeals = load_appeals()
-    ban_appeals = [a for a in appeals if a.get('type') == 'ban']
-    return render_template('ban_appeals.html', appeals=ban_appeals)
-
-@app.route('/ban_appeals/<appeal_id>/<action>')
+@guild_required
+def delete_warning(guild_id, user_id, warning_id):
+    guild = get_guild_or_404(guild_id)
+    db.remove_warning(guild_id, user_id, warning_id)
+    flash('Warning deleted successfully', 'success')
+    return redirect(url_for('user_warnings', 
+                          guild_id=guild_id, 
+                          user_id=user_id))
+                          
+# Appeal System
+@app.route('/dashboard/<guild_id>/appeal-forms', methods=['GET', 'POST'])
 @login_required
-def handle_appeal(appeal_id, action):
-    appeals = load_appeals()
-    appeal = next((a for a in appeals if a['id'] == appeal_id and a['type'] == 'ban'), None)
-    
-    if not appeal:
-        flash('Appeal not found', 'danger')
-        return redirect('/ban_appeals')
-    
-    index = appeals.index(appeal)
-    
-    if action in ['approve', 'reject', 'delete']:
-        if action == 'delete':
-            del appeals[index]
-        else:
-            appeals[index]['status'] = action
-        save_appeals(appeals)
-        flash(f'Appeal {action}d!', 'success')
-    
-    return redirect('/ban_appeals')
-
-# -------------------- Appeal Forms Backend --------------------
-def generate_appeal_url(appeal_type, appeal_id):
-    forms = load_appeal_forms()
-    base_url = forms.get('base_url', '').rstrip('/')
-    path = forms[appeal_type].get('form_url', '').format(id=appeal_id)
-    
-    if base_url:
-        return f"{base_url}{path}"
-    return path
-
-@app.route('/appeal_forms', methods=['GET', 'POST'])
-@login_required
-def appeal_forms():
-    # Load current configuration
-    config_data = load_appeal_forms()
+@guild_required
+def appeal_forms(guild_id):
+    guild = get_guild_or_404(guild_id)
+    forms = db.get_appeal_forms(guild_id) or {}
     
     if request.method == 'POST':
+        # Verify CSRF token first
         try:
-            # Update base URL
-            config_data['base_url'] = request.form.get('base_url', '').strip()
-
-            # Process each appeal type
-            for appeal_type in ['ban', 'kick', 'timeout']:
-                enabled = request.form.get(f'{appeal_type}_enabled', 'off') == 'on'
-                channel_id = request.form.get(f'{appeal_type}_channel_id', '').strip()
-                
-                # Process form fields
-                raw_fields = request.form.get(f'{appeal_type}_form_fields', '')
-                form_fields = [
-                    line.strip() 
-                    for line in raw_fields.split('\n') 
-                    if line.strip()
-                ]
-                
-                # Update configuration
-                config_data[appeal_type].update({
-                    'enabled': enabled,
-                    'channel_id': channel_id,
-                    'form_fields': form_fields
-                })
-
-            # Save configuration
-            save_appeal_forms(config_data)
-            flash('Configuration successfully saved!', 'success')
-            return redirect(url_for('appeal_forms'))
-            
-        except Exception as e:
-            flash(f'Error saving configuration: {str(e)}', 'danger')
-            return redirect(url_for('appeal_forms'))
-
-    # Prepare template data with proper list->string conversion
-    template_data = {
-        'base_url': config_data.get('base_url', ''),
-        'ban': {
-            'enabled': config_data.get('ban', {}).get('enabled', False),
-            'channel_id': config_data.get('ban', {}).get('channel_id', ''),
-            'form_url': config_data.get('ban', {}).get('form_url', '/ban_appeals/{id}'),
-            'form_fields': config_data.get('ban', {}).get('form_fields', [])  # Pass the list directly
-        },
-        'kick': {
-            'enabled': config_data.get('kick', {}).get('enabled', False),
-            'channel_id': config_data.get('kick', {}).get('channel_id', ''),
-            'form_url': config_data.get('kick', {}).get('form_url', '/kick_appeals/{id}'),
-            'form_fields': config_data.get('kick', {}).get('form_fields', [])
-        },
-        'timeout': {
-            'enabled': config_data.get('timeout', {}).get('enabled', False),
-            'channel_id': config_data.get('timeout', {}).get('channel_id', ''),
-            'form_url': config_data.get('timeout', {}).get('form_url', '/timeout_appeals/{id}'),
-            'form_fields': config_data.get('timeout', {}).get('form_fields', [])
+            csrf.protect()
+        except CSRFError:
+            flash('Security token expired. Please submit the form again.', 'danger')
+            return redirect(url_for('appeal_forms', guild_id=guild_id))
+        update_data = {
+            'base_url': request.form.get('base_url'),
+            'ban_enabled': 'ban_enabled' in request.form,
+            'ban_channel_id': request.form.get('ban_channel_id'),
+            'ban_form_url': request.form.get('ban_form_url'),
+            'ban_form_fields': json.dumps(
+                [f.strip() for f in request.form.get('ban_form_fields', '').split('\n') if f.strip()]
+            ),
+            'kick_enabled': 'kick_enabled' in request.form,
+            'kick_channel_id': request.form.get('kick_channel_id'),
+            'kick_form_url': request.form.get('kick_form_url'),
+            'kick_form_fields': json.dumps(
+                [f.strip() for f in request.form.get('kick_form_fields', '').split('\n') if f.strip()]
+            ),
+            'timeout_enabled': 'timeout_enabled' in request.form,
+            'timeout_channel_id': request.form.get('timeout_channel_id'),
+            'timeout_form_url': request.form.get('timeout_form_url'),
+            'timeout_form_fields': json.dumps(
+                [f.strip() for f in request.form.get('timeout_form_fields', '').split('\n') if f.strip()]
+            )
         }
-    }
-
+        
+        guild = get_guild_or_404(guild_id)
+        db.update_appeal_forms(guild_id, **update_data)
+        flash('Appeal forms updated', 'success')
+        return redirect(url_for('appeal_forms', guild_id=guild_id))
+    
     return render_template('appeal_forms.html',
-                         config=template_data,
-                         base_url=template_data['base_url'],
-                         channel_types=['ban', 'kick', 'timeout'])
+                         forms=forms,
+                         guild_id=guild_id,
+                         guild=guild)
 
-@app.route('/ban_appeals/<appeal_id>')
-def view_ban_appeal(appeal_id):
-    forms = load_appeal_forms()
-    if not forms['ban']['enabled']:
-        return "Ban appeals are not currently enabled", 404
-        
-    # Fetch actual appeal data
-    appeals = load_appeals()
-    appeal = next((a for a in appeals if a['id'] == appeal_id and a['type'] == 'ban'), None)
-    
-    if not appeal:
-        return "Appeal not found", 404
-    
-    # Process form fields with question labels
-    form_fields = forms['ban']['form_fields']
-    processed_data = []
-    for field in form_fields:
-        if '(' in field and ')' in field:
-            question = field.split('(')[0].strip()
-        else:
-            question = field
-        processed_data.append({
-            'question': question,
-            'answer': appeal['data'].get(question, 'No response')
-        })
-    
-    return render_template('view_appeal.html', 
-                         appeal={
-                             'id': appeal_id,
-                             'status': appeal.get('status', 'pending'),
-                             'data': processed_data,
-                             'timestamp': appeal.get('timestamp'),
-                             'type': 'ban'
-                         },
-                         appeal_type='ban')
-
-@app.route('/kick_appeals/<appeal_id>')
-def view_kick_appeal(appeal_id):
-    forms = load_appeal_forms()
-    if not forms['kick']['enabled']:
-        return "Kick appeals are not currently enabled", 404
-        
-    # Fetch actual appeal data
-    appeals = load_appeals()
-    appeal = next((a for a in appeals if a['id'] == appeal_id and a['type'] == 'kick'), None)
-    
-    if not appeal:
-        return "Appeal not found", 404
-    
-    # Process form fields with question labels
-    form_fields = forms['kick']['form_fields']
-    processed_data = []
-    for field in form_fields:
-        if '(' in field and ')' in field:
-            question = field.split('(')[0].strip()
-        else:
-            question = field
-        processed_data.append({
-            'question': question,
-            'answer': appeal['data'].get(question, 'No response')
-        })
-    
-    return render_template('view_appeal.html', 
-                         appeal={
-                             'id': appeal_id,
-                             'status': appeal.get('status', 'pending'),
-                             'data': processed_data,
-                             'timestamp': appeal.get('timestamp'),
-                             'type': 'kick'
-                         },
-                         appeal_type='kick')
-
-@app.route('/timeout_appeals/<appeal_id>')
-def view_timeout_appeal(appeal_id):
-    forms = load_appeal_forms()
-    if not forms['timeout']['enabled']:
-        return "Timeout appeals are not currently enabled", 404
-        
-    # Fetch actual appeal data
-    appeals = load_appeals()
-    appeal = next((a for a in appeals if a['id'] == appeal_id and a['type'] == 'timeout'), None)
-    
-    if not appeal:
-        return "Appeal not found", 404
-    
-    # Process form fields with question labels
-    form_fields = forms['timeout']['form_fields']
-    processed_data = []
-    for field in form_fields:
-        if '(' in field and ')' in field:
-            question = field.split('(')[0].strip()
-        else:
-            question = field
-        processed_data.append({
-            'question': question,
-            'answer': appeal['data'].get(question, 'No response')
-        })
-    
-    return render_template('view_appeal.html', 
-                         appeal={
-                             'id': appeal_id,
-                             'status': appeal.get('status', 'pending'),
-                             'data': processed_data,
-                             'timestamp': appeal.get('timestamp'),
-                             'type': 'timeout'
-                         },
-                         appeal_type='timeout')
-
-@app.route('/appeal/<appeal_id>')
-def view_appeal(appeal_id):
-    appeals = load_appeals()
-    appeal = next((a for a in appeals if a['id'] == appeal_id), None)
-    
-    if not appeal:
-        abort(404)  # Return 404 if appeal not found
-    
-    return render_template('view_appeal.html', appeal=appeal)
-
-# -------------------- Banned/Warned Users --------------------
-@app.route('/banned_users')
+@app.route('/dashboard/<guild_id>/ban-appeals')
 @login_required
-def banned_users():
-    try:
-        response = requests.get('http://localhost:5003/get_bans', timeout=10)
-        if response.status_code == 200:
-            return render_template('banned_users.html', bans=response.json())
-        flash("Failed to fetch bans from bot", "danger")
-    except requests.exceptions.RequestException as e:
-        flash(f"Connection error: {str(e)}", "danger")
-    return render_template('banned_users.html', bans=[])
-
-@app.route('/warned_users')
-@login_required
-def warned_users():
-    warnings = load_warnings()
-    warned_users = [{
-        'id': uid,
-        'username': data.get('username', 'Unknown'),
-        'count': len(data.get('warnings', []))
-    } for uid, data in warnings.items()]
-    return render_template('warned_users.html', users=warned_users)
-
-@app.route('/warnings/<user_id>/delete/<int:warning_index>', methods=['GET'])
-@login_required
-def delete_warning(user_id, warning_index):
-    warnings = load_warnings()
-    if user_id in warnings:
-        user_warnings = warnings[user_id]['warnings']
-        if 0 <= warning_index < len(user_warnings):
-            # Remove the warning
-            del user_warnings[warning_index]
-            
-            # If no warnings are left, remove the user from the warnings dictionary
-            if not user_warnings:
-                del warnings[user_id]
-            
-            # Save the updated warnings to the file
-            save_warnings(warnings)
-            
-            # Sync the bot's in-memory warnings
+@guild_required
+def ban_appeals(guild_id):
+    appeals = db.execute_query('''
+        SELECT * FROM appeals 
+        WHERE guild_id = ?
+        ORDER BY timestamp DESC
+    ''', (guild_id,))
+    
+    processed_appeals = []
+    for appeal in appeals:
+        appeal_dict = dict(appeal)
+        data = appeal_dict.get('data', '')
+        
+        # Handle data processing
+        if isinstance(data, str) and data:
             try:
-                requests.post('http://localhost:5003/sync_warnings')
-            except Exception as e:
-                print(f"Failed to sync warnings: {e}")
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                data = {'answer': data}
+        elif not data:
+            data = {}
             
-            flash('Warning deleted successfully!', 'success')
+        if isinstance(data, dict):
+            appeal_dict['data'] = [data]
+        elif isinstance(data, list):
+            appeal_dict['data'] = data
         else:
-            flash('Invalid warning index', 'danger')
-    else:
-        flash('User not found', 'danger')
-    return redirect(f'/warnings/{user_id}')
-
-# -------------------- Blocked Words Configuration Dashboard --------------------
-@app.template_filter('hex')
-def hex_filter(value):
-    # Assuming the value is an integer, convert it to a hex string
-    if isinstance(value, int):
-        return f'#{value:06x}'
-    return value
+            appeal_dict['data'] = [{'answer': str(data)}]
+            
+        # Get username from Discord API
+        user_id = appeal_dict['user_id']
+        try:
+            headers = {'Authorization': f'Bot {os.getenv("BOT_TOKEN")}'}
+            user_data = requests.get(
+                f'https://discord.com/api/v9/users/{user_id}',
+                headers=headers
+            ).json()
+            
+            # Discord username format (without discriminator)
+            if 'username' in user_data:
+                appeal_dict['username'] = user_data['username']
+            else:
+                appeal_dict['username'] = f"Unknown ({user_id})"
+                
+        except Exception as e:
+            appeal_dict['username'] = f"Unknown ({user_id})"
+            logger.error(f"Error fetching user {user_id}: {str(e)}")
+        
+        processed_appeals.append(appeal_dict)
     
-@app.route('/blocked_words', methods=['GET', 'POST'])
+    guild = get_guild_or_404(guild_id)
+    return render_template('ban_appeals.html',
+                         appeals=processed_appeals,
+                         guild_id=guild_id,
+                         guild=guild)
+
+@app.route('/dashboard/<guild_id>/ban-appeals/<appeal_id>/approve', methods=['POST'])
 @login_required
-def blocked_words():
-    # Load existing data
+@guild_required
+def approve_ban_appeal(guild_id, appeal_id):
     try:
-        with open(Config.BLOCKED_WORDS_FILE, 'r') as f:
-            blocked_data = json.load(f)
-            blocked_words = blocked_data.get('blocked_words', [])
-    except (FileNotFoundError, json.JSONDecodeError):
-        blocked_words = []
-
+        csrf.protect()
+    except CSRFError:
+        return jsonify({'success': False, 'error': 'CSRF token expired'}), 403
     try:
-        with open(Config.BLOCKED_WORDS_EMBED_FILE, 'r') as f:
-            embed_data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        embed_data = {
-            "title": "Blocked Word Detected!",
-            "description": "You have used a word that is not allowed.",
-            "color": 0xff0000
-        }
+        # Get appeal data first
+        appeal = db.execute_query(
+            'SELECT * FROM appeals WHERE appeal_id = ? AND guild_id = ?',
+            (appeal_id, guild_id),
+            fetch='one'
+        )
+        
+        if not appeal:
+            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
+            
+        # Update appeal status
+        db.execute_query(
+            'UPDATE appeals SET status = ? WHERE appeal_id = ?',
+            ('approved', appeal_id)
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Appeal approved successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error approving appeal {appeal_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+        
+@app.route('/dashboard/<guild_id>/ban-appeals/<appeal_id>/reject', methods=['POST'])
+@login_required
+@guild_required
+def reject_ban_appeal(guild_id, appeal_id):
+    try:
+        csrf.protect()
+    except CSRFError:
+        return jsonify({'success': False, 'error': 'CSRF token expired'}), 403
+    try:
+        # Verify appeal exists
+        appeal = db.execute_query(
+            'SELECT * FROM appeals WHERE appeal_id = ? AND guild_id = ?',
+            (appeal_id, guild_id),
+            fetch='one'
+        )
+        
+        if not appeal:
+            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
+            
+        # Update status and optionally store rejection reason
+        rejection_reason = request.json.get('reason', 'No reason provided')
+        
+        db.execute_query(
+            '''UPDATE appeals 
+               SET status = ?, 
+                   moderator_notes = ?
+               WHERE appeal_id = ?''',
+            ('rejected', rejection_reason, appeal_id)
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Appeal rejected successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error rejecting appeal {appeal_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-    if request.method == 'POST':
-        # Process form data
-        new_words = [w.strip() for w in request.form.getlist('blocked_words') if w.strip()]
-        embed_title = request.form['embed_title']
-        embed_description = request.form['embed_description']
-        embed_color = int(request.form['embed_color'].lstrip('#'), 16)
+@app.route('/dashboard/<guild_id>/ban-appeals/<appeal_id>/delete', methods=['POST'])
+@login_required
+@guild_required
+def delete_ban_appeal(guild_id, appeal_id):
+    try:
+        csrf.protect()
+    except CSRFError:
+        return jsonify({'success': False, 'error': 'CSRF token expired'}), 403
+    try:
+        db.execute_query(
+            'DELETE FROM appeals WHERE appeal_id = ? AND guild_id = ?',
+            (appeal_id, guild_id)
+        )
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error deleting appeal {appeal_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-        # Save blocked words
-        with open(Config.BLOCKED_WORDS_FILE, 'w') as f:
-            json.dump({"blocked_words": new_words}, f, indent=4)
+# Kick Appeals Routes
+@app.route('/dashboard/<guild_id>/kick-appeals')
+@login_required
+@guild_required
+def kick_appeals(guild_id):
+    return handle_appeals_page(guild_id, 'kick', 'kick_appeals.html')
 
-        # Save embed settings
-        with open(Config.BLOCKED_WORDS_EMBED_FILE, 'w') as f:
-            json.dump({
-                "title": embed_title,
-                "description": embed_description,
-                "color": embed_color
-            }, f, indent=4)
+@app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/approve', methods=['POST'])
+@login_required
+@guild_required
+def approve_kick_appeal(guild_id, appeal_id):
+    return handle_appeal_action(guild_id, appeal_id, 'kick', 'approved')
 
-        flash('Settings saved successfully!', 'success')
-        return redirect('/blocked_words')
+@app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/reject', methods=['POST'])
+@login_required
+@guild_required
+def reject_kick_appeal(guild_id, appeal_id):
+    return handle_appeal_action(guild_id, appeal_id, 'kick', 'rejected')
 
-    return render_template('blocked_words.html',
-                         blocked_words=blocked_words,
-                         embed=embed_data)
+@app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/delete', methods=['POST'])
+@login_required
+@guild_required
+def delete_kick_appeal(guild_id, appeal_id):
+    return handle_appeal_delete(guild_id, appeal_id, 'kick')
 
-# -------------------- Main Entry --------------------
+# Timeout Appeals Routes
+@app.route('/dashboard/<guild_id>/timeout-appeals')
+@login_required
+@guild_required
+def timeout_appeals(guild_id):
+    return handle_appeals_page(guild_id, 'timeout', 'timeout_appeals.html')
+
+@app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/approve', methods=['POST'])
+@login_required
+@guild_required
+def approve_timeout_appeal(guild_id, appeal_id):
+    return handle_appeal_action(guild_id, appeal_id, 'timeout', 'approved')
+
+@app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/reject', methods=['POST'])
+@login_required
+@guild_required
+def reject_timeout_appeal(guild_id, appeal_id):
+    return handle_appeal_action(guild_id, appeal_id, 'timeout', 'rejected')
+
+@app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/delete', methods=['POST'])
+@login_required
+@guild_required
+def delete_timeout_appeal(guild_id, appeal_id):
+    return handle_appeal_delete(guild_id, appeal_id, 'timeout')
+
+# Shared Appeal Handlers
+def handle_appeals_page(guild_id, appeal_type, template_name):
+    appeals = db.execute_query('''
+        SELECT * FROM appeals 
+        WHERE guild_id = ? AND appeal_type = ?
+        ORDER BY timestamp DESC
+    ''', (guild_id, appeal_type))
+    
+    processed_appeals = []
+    for appeal in appeals:
+        appeal_dict = process_appeal_data(appeal)
+        processed_appeals.append(appeal_dict)
+    
+    guild = get_guild_or_404(guild_id)
+    return render_template(template_name,
+                         appeals=processed_appeals,
+                         guild_id=guild_id,
+                         guild=guild,
+                         appeal_type=appeal_type)
+
+def handle_appeal_action(guild_id, appeal_id, appeal_type, action):
+    try:
+        appeal = db.execute_query(
+            'SELECT * FROM appeals WHERE appeal_id = ? AND guild_id = ? AND appeal_type = ?',
+            (appeal_id, guild_id, appeal_type),
+            fetch='one'
+        )
+        
+        if not appeal:
+            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
+            
+        if action == 'rejected':
+            rejection_reason = request.json.get('reason', 'No reason provided')
+            db.execute_query(
+                '''UPDATE appeals 
+                   SET status = ?, 
+                       moderator_notes = ?
+                   WHERE appeal_id = ?''',
+                (action, rejection_reason, appeal_id)
+            )
+        else:
+            db.execute_query(
+                'UPDATE appeals SET status = ? WHERE appeal_id = ?',
+                (action, appeal_id)
+            )
+        
+        # Add to audit log
+        db.execute_query(
+            'INSERT INTO audit_log (guild_id, user_id, action, details) VALUES (?, ?, ?, ?)',
+            (guild_id, session['user']['id'], f'{appeal_type}_appeal_{action}', 
+             f'{action} appeal {appeal_id} for user {appeal["user_id"]}')
+        )
+        
+        return jsonify({'success': True, 'message': f'Appeal {action} successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error {action} {appeal_type} appeal {appeal_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+def handle_appeal_delete(guild_id, appeal_id, appeal_type):
+    try:
+        db.execute_query(
+            'DELETE FROM appeals WHERE appeal_id = ? AND guild_id = ? AND appeal_type = ?',
+            (appeal_id, guild_id, appeal_type)
+        )
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error deleting {appeal_type} appeal {appeal_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+def process_appeal_data(appeal):
+    appeal_dict = dict(appeal)
+    data = appeal_dict.get('data', '')
+    
+    if isinstance(data, str) and data:
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            data = {'answer': data}
+    elif not data:
+        data = {}
+        
+    if isinstance(data, dict):
+        appeal_dict['data'] = [data]
+    elif isinstance(data, list):
+        appeal_dict['data'] = data
+    else:
+        appeal_dict['data'] = [{'answer': str(data)}]
+        
+    # Get username from Discord API
+    user_id = appeal_dict['user_id']
+    try:
+        headers = {'Authorization': f'Bot {os.getenv("BOT_TOKEN")}'}
+        user_data = requests.get(
+            f'https://discord.com/api/v9/users/{user_id}',
+            headers=headers
+        ).json()
+        appeal_dict['username'] = user_data.get('username', f'Unknown ({user_id})')
+    except Exception as e:
+        appeal_dict['username'] = f'Unknown ({user_id})'
+        logger.error(f"Error fetching user {user_id}: {str(e)}")
+    
+    return appeal_dict
+
+
+@app.template_filter('get_username')
+def get_username_filter(user_id):
+    user = db.execute_query(
+        'SELECT username FROM users WHERE user_id = ?',
+        (user_id,),
+        fetch='one'
+    )
+    return user['username'] if user else None
+    
+
+# Error Handlers
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    flash('Security token expired. Please refresh the page and try again.', 'danger')
+    return redirect(request.referrer or url_for('select_guild'))
+
+@app.errorhandler(401)
+def unauthorized(e):
+    return redirect(url_for('login'))
+
+@app.errorhandler(403)
+def forbidden(e):
+    return render_template('error.html', 
+                         error_message=str(e),
+                         help_message="Contact your server administrator for access"), 403
+
+@app.errorhandler(404)
+def not_found(e):
+    if "RuleKeeper bot is not" in str(e):
+        return render_template('error.html', 
+                            error_message=str(e),
+                            help_message="Please add the bot to your server first"), 404
+    return render_template('404.html'), 404
+
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)

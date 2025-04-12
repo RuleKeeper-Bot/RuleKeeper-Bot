@@ -14,7 +14,7 @@
         <div class="d-flex justify-content-between mb-4">
             <h2>Blocked Words Management</h2>
             <div>
-                <a href="/" class="btn btn-secondary">Back to Commands</a>
+                <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
                 <a href="/logout" class="btn btn-danger">Logout</a>
             </div>
         </div>
@@ -25,11 +25,12 @@
                 <h4 class="mb-0">Blocked Words List</h4>
             </div>
             <div class="card-body">
-                <form method="POST" action="/blocked_words" id="blockedWordsForm">
+                <form method="POST" action="/dashboard/{{ guild_id }}/blocked-words" id="blockedWordsForm">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div id="wordsContainer">
-                        {% for word in blocked_words %}
+                        {% for word in words %}
                         <div class="input-group mb-2">
-                            <input type="text" class="form-control" name="blocked_words" value="{{ word }}">
+                            <input type="text" class="form-control" name="words" value="{{ word }}">
                             <button type="button" class="btn btn-danger remove-word">
                                 <i class="bi bi-trash"></i>
                             </button>
@@ -51,22 +52,23 @@
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label">Embed Title</label>
-                            <input type="text" class="form-control" name="embed_title" 
-                                   value="{{ embed.title }}" required>
+                            <input type="text" class="form-control" name="title" 
+                                   value="{{ embed.title if embed else 'Blocked Word Detected!' }}" required>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Embed Color</label>
                             <div class="input-group">
-                                <input type="text" class="form-control" name="embed_color" 
-                                       value="#{{ '%06x' % embed.color }}" pattern="#[0-9a-fA-F]{6}">
+                                <input type="text" class="form-control" name="color" 
+                                       value="#{% if embed %}{{ '%06x' % embed.color }}{% else %}ff0000{% endif %}" 
+                                       pattern="#[0-9a-fA-F]{6}">
                                 <span class="input-group-text color-preview" 
-                                      style="background-color: #{{ '%06x' % embed.color }}"></span>
+                                      style="background-color: #{% if embed %}{{ '%06x' % embed.color }}{% else %}ff0000{% endif %}"></span>
                             </div>
                         </div>
                         <div class="col-12">
                             <label class="form-label">Embed Description</label>
-                            <textarea class="form-control" name="embed_description" 
-                                      rows="3" required>{{ embed.description }}</textarea>
+                            <textarea class="form-control" name="description" 
+                                      rows="3" required>{% if embed %}{{ embed.description }}{% else %}You have used a word that is not allowed.{% endif %}</textarea>
                         </div>
                     </div>
                 </div>
@@ -83,10 +85,10 @@
         <div class="card mt-4">
             <div class="card-header">Embed Preview</div>
             <div class="card-body embed-preview">
-                <h4 class="card-title" id="previewTitle">{{ embed.title }}</h4>
-                <p class="card-text" id="previewDescription">{{ embed.description }}</p>
+                <h4 class="card-title" id="previewTitle">{{ embed.title if embed else 'Blocked Word Detected!' }}</h4>
+                <p class="card-text" id="previewDescription">{{ embed.description if embed else 'You have used a word that is not allowed.' }}</p>
                 <small class="text-muted" id="previewColor">
-                    Color: #{{ '%06x' % embed.color }}
+                    Color: #{% if embed %}{{ '%06x' % embed.color }}{% else %}ff0000{% endif %}
                 </small>
             </div>
         </div>
@@ -99,7 +101,7 @@
             const newInput = document.createElement('div');
             newInput.className = 'input-group mb-2';
             newInput.innerHTML = `
-                <input type="text" class="form-control" name="blocked_words" required>
+                <input type="text" class="form-control" name="words" required>
                 <button type="button" class="btn btn-danger remove-word">
                     <i class="bi bi-trash"></i>
                 </button>
@@ -114,7 +116,7 @@
         });
 
         // Color Picker Interactions
-        document.querySelector('input[name="embed_color"]').addEventListener('input', (e) => {
+        document.querySelector('input[name="color"]').addEventListener('input', (e) => {
             const color = e.target.value.replace('#', '');
             if(/^[0-9a-f]{6}$/i.test(color)) {
                 document.querySelector('.color-preview').style.backgroundColor = `#${color}`;
@@ -123,16 +125,16 @@
         });
 
         // Live Preview Updates
-        document.querySelectorAll('input[name="embed_title"], textarea[name="embed_description"]').forEach(el => {
+        document.querySelectorAll('input[name="title"], textarea[name="description"]').forEach(el => {
             el.addEventListener('input', (e) => {
-                document.getElementById(`preview${e.target.name.split('_')[1].charAt(0).toUpperCase() +
-                    e.target.name.split('_')[1].slice(1)}`).textContent = e.target.value;
+                const targetId = e.target.name.charAt(0).toUpperCase() + e.target.name.slice(1);
+                document.getElementById(`preview${targetId}`).textContent = e.target.value;
             });
         });
 
         // Form Submission
         document.getElementById('blockedWordsForm').addEventListener('submit', (e) => {
-            const emptyWords = [...document.querySelectorAll('input[name="blocked_words"]')]
+            const emptyWords = [...document.querySelectorAll('input[name="words"]')]
                 .some(input => input.value.trim() === '');
             
             if(emptyWords) {
@@ -141,5 +143,12 @@
             }
         });
     </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
 </body>
 </html>

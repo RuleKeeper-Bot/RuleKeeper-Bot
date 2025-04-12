@@ -51,18 +51,18 @@
 </head>
 <body>
     <div class="container">
-        <h2 class="mb-4">Warnings for {{ user_data.username }}</h2>
+        <h2 class="mb-4">Warnings for User ID {{ user_id }}</h2>
         
         <div class="card">
             <div class="card-header">
-                <i class="bi bi-exclamation-triangle"></i> Warnings ({{ user_data.warnings|length }})
+                <i class="bi bi-exclamation-triangle"></i> Warnings ({{ warnings|length }})
             </div>
             <div class="card-body">
-                <form method="POST">
-                    {% for warning in user_data.warnings %}
+                <form method="POST" action="/dashboard/{{ guild_id }}/warnings/{{ user_id }}">
+                    {% for warning in warnings %}
                     <div class="warning-item">
                         <!-- Delete Button -->
-                        <a href="/warnings/{{ user_id }}/delete/{{ loop.index0 }}" 
+                        <a href="/dashboard/{{ guild_id }}/warnings/{{ user_id }}/delete/{{ warning.warning_id }}" 
                            class="btn btn-danger btn-sm delete-warning-btn"
                            onclick="return confirm('Are you sure you want to delete this warning?');">
                             <i class="bi bi-trash"></i>
@@ -72,7 +72,7 @@
                         <div class="mb-3">
                             <label class="form-label">Warning #{{ loop.index }}</label>
                             <input type="text" class="form-control" 
-                                   name="reason_{{ loop.index0 }}" 
+                                   name="reason_{{ warning.warning_id }}" 
                                    value="{{ warning.reason }}">
                         </div>
                         <small class="text-muted">
@@ -81,12 +81,25 @@
                     </div>
                     {% endfor %}
 
+                    <!-- Add New Warning -->
+                    <div class="mt-4 border-top pt-3">
+                        <h5>Add New Warning</h5>
+                        <div class="input-group">
+                            <input type="text" class="form-control" 
+                                   name="new_reason" 
+                                   placeholder="Enter warning reason">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="bi bi-plus-lg"></i> Add Warning
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- Action Buttons -->
                     <div class="mt-4">
-                        <button type="submit" class="btn btn-primary">
+                        <button type="submit" class="btn btn-primary" name="save_changes">
                             <i class="bi bi-save"></i> Save Changes
                         </button>
-                        <a href="/warned_users" class="btn btn-secondary">
+                        <a href="/dashboard/{{ guild_id }}/warnings" class="btn btn-secondary">
                             <i class="bi bi-arrow-left"></i> Back to List
                         </a>
                     </div>
@@ -96,5 +109,22 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Confirm before clearing all warnings
+        document.querySelectorAll('.delete-warning-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                if (!confirm('Are you sure you want to delete this warning?')) {
+                    e.preventDefault();
+                }
+            });
+        });
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
 </body>
 </html>

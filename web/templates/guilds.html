@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ guild.name }} Management</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
+    <style>
+        .card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: 10px;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        }
+        .card-title i {
+            font-size: 1.2em;
+        }
+        .management-section {
+            margin-bottom: 2rem;
+        }
+        .section-title {
+            border-bottom: 2px solid #0d6efd;
+            padding-bottom: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h1>{{ guild.name }} Management</h1>
+                <a href="{{ url_for('select_guild') }}" class="btn btn-sm btn-outline-secondary">
+                    <i class="bi bi-arrow-left me-1"></i>Back to Servers
+                </a>
+            </div>
+            <div>
+                <a href="{{ url_for('logout') }}" class="btn btn-danger">
+                    <i class="bi bi-box-arrow-right"></i> Logout
+                </a>
+            </div>
+        </div>
+
+        <!-- Server Configuration Section -->
+        <div class="management-section">
+            <h3 class="section-title">Server Configuration</h3>
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                <!-- Commands Card -->
+                <div class="col">
+                    <a href="{{ url_for('guild_commands', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-terminal me-2"></i>Commands
+                            </h5>
+                            <p class="card-text text-muted">Manage custom slash commands and responses</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Blocked Words Card -->
+                <div class="col">
+                    <a href="{{ url_for('blocked_words', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-shield-slash me-2"></i>Blocked Words
+                            </h5>
+                            <p class="card-text text-muted">Manage restricted words and phrases</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Logging Config Card -->
+                <div class="col">
+                    <a href="{{ url_for('log_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-journal-text me-2"></i>Logging
+                            </h5>
+                            <p class="card-text text-muted">Configure server logging settings</p>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Leveling System Section -->
+        <div class="management-section">
+            <h3 class="section-title">Leveling System</h3>
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                <!-- Leveling Config Card -->
+                <div class="col">
+                    <a href="{{ url_for('level_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-graph-up me-2"></i>Leveling
+                            </h5>
+                            <p class="card-text text-muted">Configure experience settings and multipliers</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Level Rewards Card -->
+                <div class="col">
+                    <a href="{{ url_for('level_config', guild_id=guild.guild_id) }}#rewards" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-trophy me-2"></i>Level Rewards
+                            </h5>
+                            <p class="card-text text-muted">Manage role rewards for level achievements</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Leaderboard Card -->
+                <div class="col">
+                    <a href="{{ url_for('leaderboard', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-trophy me-2"></i>Leaderboard
+                            </h5>
+                            <p class="card-text text-muted">View user rankings based on XP</p>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Moderation Section -->
+        <div class="management-section">
+            <h3 class="section-title">Moderation</h3>
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                <!-- Appeal Forms Card -->
+                <div class="col">
+                    <a href="{{ url_for('appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-text me-2"></i>Appeal Forms
+                            </h5>
+                            <p class="card-text text-muted">Configure ban/kick/timeout appeal forms</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Ban Appeals Card -->
+                <div class="col">
+                    <a href="{{ url_for('ban_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-person-x me-2"></i>Ban Appeals
+                            </h5>
+                            <p class="card-text text-muted">Review and manage ban appeals</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Kick Appeals Card -->
+                <div class="col">
+                    <a href="{{ url_for('kick_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-person-dash me-2"></i>Kick Appeals
+                            </h5>
+                            <p class="card-text text-muted">Review and manage kick appeals</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Timeout Appeals Card -->
+                <div class="col">
+                    <a href="{{ url_for('timeout_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-clock-history me-2"></i>Timeout Appeals
+                            </h5>
+                            <p class="card-text text-muted">Review and manage timeout appeals</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Banned Users Card -->
+                <div class="col">
+                    <a href="{{ url_for('banned_users', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-ban me-2"></i>Banned Users
+                            </h5>
+                            <p class="card-text text-muted">View currently banned users</p>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Warned Users Card -->
+                <div class="col">
+                    <a href="{{ url_for('warnings', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-exclamation-triangle me-2"></i>Warned Users
+                            </h5>
+                            <p class="card-text text-muted">Manage user warnings</p>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
+</body>
+</html>

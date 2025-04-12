@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Kick Appeals</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <style>
+        body { padding: 20px; background-color: #f8f9fa; }
+        .table { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .table th { background: #0d6efd; color: white; }
+        .badge-pending { background: #ffc107; }
+        .badge-approved { background: #198754; }
+        .badge-rejected { background: #dc3545; }
+        .user-cell { min-width: 180px; }
+        .user-id { font-size: 0.8em; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="mb-4">Kick Appeals - {{ guild.name }}</h2>
+        <div>
+            <a href="{{ url_for('guild_dashboard', guild_id=guild_id) }}" class="btn btn-secondary">
+                <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
+            </a>
+            <a href="{{ url_for('logout') }}" class="btn btn-danger ms-2">
+                <i class="bi bi-box-arrow-right"></i> Logout
+            </a>
+        </div>
+        
+        {% if not appeals %}
+        <div class="alert alert-info mt-3">No pending kick appeals</div>
+        {% else %}
+        <table class="table table-hover mt-3">
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th>Appeal Date</th>
+                    <th>Reason Preview</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for appeal in appeals %}
+                <tr data-appeal-id="{{ appeal.appeal_id }}">
+                    <td>
+                        <div class="d-flex flex-column">
+                            <span class="fw-bold">{{ appeal.username }}</span>
+                            <small class="text-muted">ID: {{ appeal.user_id }}</small>
+                        </div>
+                    </td>
+                    <td>{{ appeal.timestamp }}</td>
+                    <td>
+                        {% if appeal.data and appeal.data[0] %}
+                            {% set answer = appeal.data[0].get('answer', 'No reason provided') %}
+                            {{ answer if answer is string else answer|tojson|safe }}
+                        {% else %}
+                            No reason provided
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge 
+                            {% if appeal.status == 'pending' %}bg-warning
+                            {% elif appeal.status == 'approved' %}bg-success
+                            {% else %}bg-danger{% endif %}">
+                            {{ appeal.status|title }}
+                        </span>
+                    </td>
+                    <td>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-success btn-sm approve-btn"
+                                    data-user-id="{{ appeal.user_id }}"
+                                    data-guild-id="{{ guild_id }}"
+                                    data-appeal-id="{{ appeal.appeal_id }}"
+                                    data-action="approve">
+                                <i class="bi bi-check-lg"></i>
+                            </button>
+                            <button class="btn btn-danger btn-sm reject-btn"
+                                    data-appeal-id="{{ appeal.appeal_id }}"
+                                    data-action="reject">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                            <button class="btn btn-dark btn-sm delete-btn"
+                                    data-appeal-id="{{ appeal.appeal_id }}"
+                                    data-action="delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    const API_URL = "{{ API_URL }}";
+    const GUILD_ID = "{{ guild_id }}";
+
+    async function handleAppealAction(button, action) {
+        const appealId = button.dataset.appealId;
+        const userId = button.dataset.userId;
+        const guildId = button.dataset.guildId;
+        let endpoint, method, body;
+
+        try {
+            switch(action) {
+                case 'approve':
+                    endpoint = `/dashboard/${guildId}/kick-appeals/${appealId}/approve`;
+                    method = 'POST';
+                    body = null;
+                    break;
+                    
+                case 'reject':
+                    const reason = prompt('Enter rejection reason:', 'Violation of server rules');
+                    if (reason === null) return;
+                    
+                    endpoint = `/dashboard/${guildId}/kick-appeals/${appealId}/reject`;
+                    method = 'POST';
+                    body = JSON.stringify({ reason });
+                    break;
+                    
+                case 'delete':
+                    endpoint = `/dashboard/${guildId}/kick-appeals/${appealId}/delete`;
+                    method = 'POST';
+                    body = null;
+                    break;
+                    
+                default:
+                    throw new Error('Invalid action');
+            }
+
+            const response = await fetch(endpoint, {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token() }}'
+                },
+                body,
+                credentials: 'same-origin'
+            });
+
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Unknown error');
+            }
+            
+            showToast(result.message || 'Action completed successfully', 'success');
+            setTimeout(() => window.location.reload(), 1500);
+            
+        } catch (error) {
+            console.error('Error:', error);
+            showToast(error.message || 'Action failed', 'danger');
+        }
+    }
+
+    function showToast(message, type) {
+        const toast = document.createElement('div');
+        toast.className = `toast align-items-center text-white bg-${type} border-0`;
+        toast.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">${message}</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+        `;
+        document.body.appendChild(toast);
+        new bootstrap.Toast(toast, { autohide: true, delay: 3000 }).show();
+        setTimeout(() => toast.remove(), 3500);
+    }
+
+    // Add event listeners
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('[data-action]').forEach(button => {
+            button.addEventListener('click', function() {
+                if (this.dataset.action === 'delete' || confirm('Are you sure?')) {
+                    handleAppealAction(this, this.dataset.action);
+                }
+            });
+        });
+    });
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
+</body>
+</html>

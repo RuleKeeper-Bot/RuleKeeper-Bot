@@ -12,17 +12,24 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         .appeal-header {
-            background: {{ '#dc3545' if 'ban' in appeal_type else '#ffc107' }};
+            background: {{ '#dc3545' if appeal_type == 'ban' else '#ffc107' if appeal_type == 'kick' else '#0d6efd' }};
             color: white;
             border-radius: 15px 15px 0 0;
         }
+        .required-asterisk { color: #dc3545; }
     </style>
 </head>
 <body>
     <div class="container">
+        {% if not form_config.enabled %}
+        <div class="alert alert-danger mt-4">
+            This appeal form is currently disabled by the server administrators.
+        </div>
+        {% else %}
         <div class="appeal-card">
             <div class="appeal-header p-4">
                 <h2 class="mb-0">{{ form_config.title }} Appeal</h2>
+                <small class="d-block mt-2">Server: {{ guild_name }}</small>
             </div>
             
             <div class="card-body p-4">
@@ -32,54 +39,73 @@
                 </div>
                 {% endif %}
                 
-                <form method="POST" class="needs-validation" novalidate>
-					<input type="hidden" name="user_id" value="{{ request.args.get('user_id', '') }}">
-					
-					{% for field in form_config.form_fields %}
-					{% set field_parts = field.split('(') %}
-					{% set field_name = field_parts[0].strip() %}
-					{% set field_type = 'textarea' if 'textarea' in field else 'text' %}
-					{% set required = 'required' if 'required' in field else '' %}
-					
-					<div class="mb-4">
-						<label class="form-label fs-5">
-							{{ field_name }}
-							{% if required %}*{% endif %}
-						</label>
-						
-						{% if field_type == 'textarea' %}
-						<textarea class="form-control" name="{{ field_name }}" {{ required }} rows="4"></textarea>
-						{% else %}
-						<input type="{{ field_type }}" class="form-control" name="{{ field_name }}" {{ required }}>
-						{% endif %}
-					</div>
-					{% endfor %}
-					
-					<div class="d-grid mt-5">
-						<button type="submit" class="btn btn-lg btn-primary">
-							Submit Appeal
-						</button>
-					</div>
-				</form>
+                <form method="POST" action="{{ base_url }}/submit-appeal/{{ guild_id }}" class="needs-validation" novalidate>
+                    <input type="hidden" name="guild_id" value="{{ guild_id }}">
+                    <input type="hidden" name="type" value="{{ appeal_type }}">
+                    <input type="hidden" name="user_id" value="{{ request.args.get('user_id', '') }}">
+                    
+                    {% for field in form_config.form_fields|json_loads %}
+                    {% set field_parts = field.split('(') %}
+                    {% set field_name = field_parts[0].strip() %}
+                    {% set field_type = 'textarea' if 'textarea' in field else 'text' %}
+                    {% set required = 'required' in field %}
+                    
+                    <div class="mb-4">
+                        <label class="form-label fs-5">
+                            {{ field_name }}
+                            {% if required %}<span class="required-asterisk">*</span>{% endif %}
+                        </label>
+                        
+                        {% if field_type == 'textarea' %}
+                        <textarea class="form-control" 
+                                  name="{{ field_name }}" 
+                                  {% if required %}required{% endif %} 
+                                  rows="4"></textarea>
+                        {% else %}
+                        <input type="{{ field_type }}" 
+                               class="form-control" 
+                               name="{{ field_name }}" 
+                               {% if required %}required{% endif %}>
+                        {% endif %}
+                        
+                        <div class="invalid-feedback">
+                            Please provide a valid response for this field.
+                        </div>
+                    </div>
+                    {% endfor %}
+                    
+                    <div class="d-grid mt-5">
+                        <button type="submit" class="btn btn-lg btn-primary">
+                            Submit Appeal
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
+        {% endif %}
     </div>
 
     <script>
-    // Basic form validation
     (() => {
-      'use strict'
-      const forms = document.querySelectorAll('.needs-validation')
-      Array.from(forms).forEach(form => {
-        form.addEventListener('submit', event => {
-          if (!form.checkValidity()) {
-            event.preventDefault()
-            event.stopPropagation()
-          }
-          form.classList.add('was-validated')
-        }, false)
-      })
+        'use strict'
+        const forms = document.querySelectorAll('.needs-validation')
+        Array.from(forms).forEach(form => {
+            form.addEventListener('submit', event => {
+                if (!form.checkValidity()) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                }
+                form.classList.add('was-validated')
+            }, false)
+        })
     })()
     </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
+	  </p>
+	</footer>
 </body>
 </html>
