@@ -204,6 +204,10 @@ def privacy_policy():
 def terms_of_service():
     return render_template("terms.html")
 
+@app.route("/end-user-license-agreement")
+def end_user_license_agreement():
+    return render_template("eula.html")
+
 @app.route('/login')
 def login():
     if request.args.get('admin') and request.args.get('password') == ADMIN_PASSWORD:
