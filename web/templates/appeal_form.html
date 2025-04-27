@@ -3,9 +3,9 @@
 <head>
     <title>{{ form_config.title }} Appeal</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-	<link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
     <style>
-        body { background: #f8f9fa; }
+        body { background: #f8f9fa; padding-bottom: 60px; }
         .appeal-card {
             max-width: 800px;
             margin: 2rem auto;
@@ -13,45 +13,54 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         .appeal-header {
-            background: {{ '#dc3545' if appeal_type == 'ban' else '#ffc107' if appeal_type == 'kick' else '#0d6efd' }};
+            background: #dc3545;
             color: white;
             border-radius: 15px 15px 0 0;
+            padding: 2rem;
         }
         .required-asterisk { color: #dc3545; }
+        .response-field { margin-bottom: 1.5rem; }
+        footer {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            background: white;
+            padding: 1rem;
+            border-top: 1px solid #dee2e6;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        {% if not form_config.enabled %}
+        {% if not form_config.get('enabled', False) %}
         <div class="alert alert-danger mt-4">
-            This appeal form is currently disabled by the server administrators.
+            <h4 class="alert-heading">Form Disabled</h4>
+            <p>This ban appeal form is currently not accepting submissions.</p>
         </div>
         {% else %}
         <div class="appeal-card">
-            <div class="appeal-header p-4">
-                <h2 class="mb-0">{{ form_config.title }} Appeal</h2>
-                <small class="d-block mt-2">Server: {{ guild_name }}</small>
+            <div class="appeal-header">
+                <h2 class="mb-3">Ban Appeal</h2>
+                <div class="appeal-meta">
+                    <p class="mb-1"><strong>Server:</strong> {{ guild_name }}</p>
+                    {% if expires_at %}
+                    <p class="mb-0"><strong>Expires:</strong> <span id="expiryTime"></span></p>
+                    {% endif %}
+                </div>
             </div>
             
             <div class="card-body p-4">
-                {% if form_config.description %}
-                <div class="alert alert-info">
-                    {{ form_config.description }}
-                </div>
-                {% endif %}
-                
-                <form method="POST" action="{{ base_url }}/submit-appeal/{{ guild_id }}" class="needs-validation" novalidate>
-                    <input type="hidden" name="guild_id" value="{{ guild_id }}">
-                    <input type="hidden" name="type" value="{{ appeal_type }}">
-                    <input type="hidden" name="user_id" value="{{ request.args.get('user_id', '') }}">
-                    
-                    {% for field in form_config.form_fields|json_loads %}
-                    {% set field_parts = field.split('(') %}
-                    {% set field_name = field_parts[0].strip() %}
+                <form method="POST" action="{{ url_for('submit_appeal') }}" class="needs-validation" novalidate>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <input type="hidden" name="token" value="{{ token }}">
+                    <input type="hidden" name="appeal_type" value="ban">
+
+                    {% for field in form_config.form_fields %}
+                    {% set field_name = field.split('(')[0].strip() %}
                     {% set field_type = 'textarea' if 'textarea' in field else 'text' %}
                     {% set required = 'required' in field %}
                     
-                    <div class="mb-4">
+                    <div class="response-field">
                         <label class="form-label fs-5">
                             {{ field_name }}
                             {% if required %}<span class="required-asterisk">*</span>{% endif %}
@@ -59,14 +68,16 @@
                         
                         {% if field_type == 'textarea' %}
                         <textarea class="form-control" 
-                                  name="{{ field_name }}" 
-                                  {% if required %}required{% endif %} 
-                                  rows="4"></textarea>
+                                name="response_{{ loop.index }}" 
+                                {% if required %}required{% endif %} 
+                                rows="4"
+                                placeholder="Type your response here..."></textarea>
                         {% else %}
                         <input type="{{ field_type }}" 
                                class="form-control" 
-                               name="{{ field_name }}" 
-                               {% if required %}required{% endif %}>
+                               name="response_{{ loop.index }}" 
+                               {% if required %}required{% endif %}
+                               placeholder="Enter your response...">
                         {% endif %}
                         
                         <div class="invalid-feedback">
@@ -74,10 +85,10 @@
                         </div>
                     </div>
                     {% endfor %}
-                    
-                    <div class="d-grid mt-5">
-                        <button type="submit" class="btn btn-lg btn-primary">
-                            Submit Appeal
+
+                    <div class="d-grid gap-2 mt-4">
+                        <button type="submit" class="btn btn-lg btn-primary py-3">
+                            <i class="bi bi-send-fill me-2"></i>Submit Appeal
                         </button>
                     </div>
                 </form>
@@ -86,27 +97,72 @@
         {% endif %}
     </div>
 
+    <footer>
+        <div class="container text-center">
+            <p class="mb-0 text-muted">
+                &copy; 2025 RuleKeeper. All rights reserved. 
+                <a href="/privacy-policy" class="text-decoration-none">Privacy Policy</a> | 
+                <a href="/terms-of-service" class="text-decoration-none">Terms of Service</a> |
+				<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+            </p>
+        </div>
+    </footer>
+
     <script>
     (() => {
         'use strict'
         const forms = document.querySelectorAll('.needs-validation')
+        
         Array.from(forms).forEach(form => {
-            form.addEventListener('submit', event => {
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault()
+                
                 if (!form.checkValidity()) {
-                    event.preventDefault()
                     event.stopPropagation()
+                    form.classList.add('was-validated')
+                    return
                 }
-                form.classList.add('was-validated')
-            }, false)
+
+                const formData = new FormData(form)
+                const submitBtn = form.querySelector('button[type="submit"]')
+                submitBtn.disabled = true
+                submitBtn.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div> Submitting...'
+
+                try {
+                    const response = await fetch(form.action, {
+                        method: 'POST',
+                        body: formData
+                    })
+                    
+                    const result = await response.json()
+                    
+                    if (response.ok) {
+                        form.reset()
+                        alert(result.message + '\nYour appeal ID: ' + result.appeal_id)
+                        window.location.href = "{{ FRONTEND_URL }}"
+                    } else {
+                        alert(result.error || 'Submission failed. Please try again.')
+                    }
+                } catch (error) {
+                    console.error('Submission error:', error)
+                    alert('Failed to submit appeal. Please check your connection.')
+                } finally {
+                    submitBtn.disabled = false
+                    submitBtn.innerHTML = '<i class="bi bi-send-fill me-2"></i>Submit Appeal'
+                }
+            })
         })
+
+        // Expiry time formatting
+        const expiryElement = document.getElementById('expiryTime')
+        {% if expires_at %}
+        const expiryDate = new Date({{ expires_at }} * 1000)
+        expiryElement.textContent = new Intl.DateTimeFormat('en-US', {
+            dateStyle: 'long',
+            timeStyle: 'short'
+        }).format(expiryDate)
+        {% endif %}
     })()
     </script>
-	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
-	  <p>
-		&copy; 2025 RuleKeeper. All rights reserved. |
-		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
-		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a>
-	  </p>
-	</footer>
 </body>
 </html>
