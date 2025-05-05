@@ -1,12 +1,20 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from functools import partial
 from bot.bot import log_event
+from typing import Optional
+import re
 
 class UtilitiesCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db = bot.db   
+        self.db = bot.db
+        
+    @staticmethod
+    def validate_command_name(name: str) -> bool:
+        """Validate command name format"""
+        return re.fullmatch(r'^[\w-]{1,32}$', name) is not None
     
     @app_commands.command(name="create_command", description="Create a custom command")
     @app_commands.describe(
@@ -14,7 +22,6 @@ class UtilitiesCog(commands.Cog):
         content="Response content",
         description="Command description",
         ephemeral="Hide response from others"
-        # global_command="Make available to all servers"
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def create_custom_command(
@@ -23,80 +30,98 @@ class UtilitiesCog(commands.Cog):
         command_name: str,
         content: str,
         description: str = "Custom command",
-        ephemeral: bool = True,
-        global_command: bool = False
+        ephemeral: bool = True
     ):
-        if global_command and not await self.bot.is_owner(interaction.user):
-            await interaction.response.send_message(
-                "Only bot owner can create global commands",
-                ephemeral=True
-            )
-            return
-            
+        guild_id = str(interaction.guild.id)
+
         # Validate command name
-        if ' ' in command_name or not command_name.islower():
+        if not self.validate_command_name(command_name):
             await interaction.response.send_message(
-                "Command names must be lowercase with no spaces!",
+                "Invalid command name! Use 1-32 letters, numbers, hyphens or underscores",
                 ephemeral=True
             )
             return
 
-        guild_id = '0' if global_command else str(interaction.guild.id)
-        
         # Create command data dictionary
         cmd_data = {
+            'guild_id': guild_id,
+            'command_name': command_name,
             'content': content,
             'description': description,
             'ephemeral': ephemeral
         }
-        
+
         # Check for existing command
-        existing = self.db.conn.execute('''
-            SELECT 1 FROM commands 
-            WHERE command_name = ? AND (guild_id = ? OR guild_id = '0')
-        ''', (command_name, guild_id)).fetchone()
-        
+        existing = self.db.get_command(guild_id, command_name)
         if existing:
             await interaction.response.send_message(
-                f"Command '/{command_name}' already exists in this scope!",
+                f"Command '/{command_name}' already exists in this server!",
                 ephemeral=True
             )
             return
 
-        # Insert into database
-        self.db.conn.execute('''
-            INSERT INTO commands 
-            (guild_id, command_name, content, description, ephemeral, is_global)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (guild_id, command_name, content, description, int(ephemeral), int(global_command)))
-        self.db.conn.commit()
+        # Create proper callback with closure
+        async def command_callback(interaction: discord.Interaction):
+            await self.handle_custom_command(interaction, cmd_data)
 
-        # Register command
-        guild_obj = None if global_command else interaction.guild
-        cmd = app_commands.Command(
-            name=command_name,
-            description=description,
-            callback=partial(self.custom_command_handler, cmd_data=cmd_data)
-        )
-        self.bot.tree.add_command(cmd, guild=guild_obj)
-        
-        # Sync commands
         try:
-            if global_command:
-                await self.bot.tree.sync()
-            else:
-                await self.bot.tree.sync(guild=interaction.guild)
+            # Insert into database
+            self.db.add_command(
+                guild_id=guild_id,
+                command_name=command_name,
+                description=description,
+                content=content,
+                ephemeral=ephemeral
+            )
+
+            # Create and register command
+            cmd = app_commands.Command(
+                name=command_name,
+                description=description,
+                callback=command_callback
+            )
+            
+            # Store in bot registry
+            self.bot._command_registry[f"{guild_id}_{command_name}"] = cmd_data
+            
+            # Add to command tree
+            self.bot.tree.add_command(cmd, guild=interaction.guild)
+            await self.bot.tree.sync(guild=interaction.guild)
+
+            await interaction.response.send_message(
+                f"Command '/{command_name}' created successfully!",
+                ephemeral=True
+            )
+
         except Exception as e:
             await interaction.response.send_message(
-                f"Command created but sync failed: {str(e)}",
+                f"Failed to create command: {str(e)}",
                 ephemeral=True
             )
-            return
+            traceback.print_exc()
 
-        await interaction.response.send_message(
-            f"Command '/{command_name}' created successfully!",
-            ephemeral=True
-        )
+    async def handle_custom_command(self, interaction: discord.Interaction, cmd_data: dict):
+        """Handler for custom commands"""
+        try:
+            response = cmd_data['content']
+            ephemeral = cmd_data.get('ephemeral', True)
+            
+            # Handle different response types
+            if response.startswith(('http://', 'https://')):
+                if any(response.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif']):
+                    embed = discord.Embed().set_image(url=response)
+                    await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+                else:
+                    await interaction.response.send_message(response, ephemeral=ephemeral)
+            else:
+                await interaction.response.send_message(response, ephemeral=ephemeral)
+                
+        except Exception as e:
+            await interaction.response.send_message(
+                "❌ Error executing command",
+                ephemeral=True
+            )
+            print(f"Custom command error: {str(e)}")
 
     @app_commands.command(name="delete_command", description="Remove a custom command")
     @app_commands.describe(command_name="Name of command to remove")
@@ -278,6 +303,34 @@ class UtilitiesCog(commands.Cog):
         else:
             await interaction.response.send_message("⚠️ An error occurred while processing this command.", ephemeral=True)
             print(f"Purge After Error: {str(error)}")
+            
+    @app_commands.command(name="messages", description="Check a user's message count")
+    @app_commands.describe(user="The user to check (optional)")
+    async def message_count(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
+        # Set user to interaction.user if not provided
+        if user is None:
+            user = interaction.user
+        
+        guild_id = str(interaction.guild.id)
+        user_id = str(user.id)
+        
+        # Get message count from database
+        user_data = self.db.execute_query(
+            '''SELECT message_count FROM user_levels 
+            WHERE guild_id = ? AND user_id = ?''',
+            (guild_id, user_id),
+            fetch='one'
+        )
+        
+        count = user_data['message_count'] if user_data else 0
+        
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="Message Count",
+                description=f"{user.mention} has sent **{count}** messages in this server",
+                color=discord.Color.blue()
+            )
+        )
                 
     @app_commands.command(name="setlogchannel", description="Set the channel for logging events")
     @app_commands.describe(channel="The channel to use for logging")

@@ -2,6 +2,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import logging
+import sqlite3
+from datetime import datetime
+from collections import defaultdict
 
 class DebugCog(commands.Cog):
     def __init__(self, bot):
@@ -60,7 +64,7 @@ class DebugCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def list_commands(self, interaction: discord.Interaction):
         guild_id = str(interaction.guild.id)
-        commands = self.db.get_guild_commands(guild_id)
+        commands = self.db.get_guild_commands_list(guild_id)
         
         embed = discord.Embed(
             title=f"Custom Commands for {interaction.guild.name}",
@@ -70,20 +74,157 @@ class DebugCog(commands.Cog):
         if not commands:
             embed.description = "No custom commands configured"
         else:
-            command_list = []
+            current_field = []
+            current_length = 0
+            field_number = 1
+            
             for cmd in commands:
-                command_list.append(
+                entry = (
                     f"**/{cmd['command_name']}**\n"
-                    f"Description: {cmd['description']}\n"
-                    f"Response: {cmd['content'][:50]}..."
+                    f"Desc: {cmd.get('description', 'No description')[:25]}\n"
+                    f"Response: {cmd.get('content', 'No content')[:30]}...\n\n"
                 )
-            embed.add_field(
-                name=f"Total Commands: {len(commands)}",
-                value="\n\n".join(command_list),
-                inline=False
-            )
+                
+                # Check if adding this entry would exceed the limit
+                if current_length + len(entry) > 1000:  # Leave buffer for markdown
+                    embed.add_field(
+                        name=f"Commands ({field_number})",
+                        value="".join(current_field),
+                        inline=False
+                    )
+                    current_field = []
+                    current_length = 0
+                    field_number += 1
+                    
+                current_field.append(entry)
+                current_length += len(entry)
+            
+            # Add remaining commands
+            if current_field:
+                embed.add_field(
+                    name=f"Commands ({field_number})",
+                    value="".join(current_field),
+                    inline=False
+                )
+                
+            embed.set_footer(text=f"Total commands: {len(commands)}")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    async def _update_message_counts(self, message_counts, guild_id: str):
+        """Atomic update with retry logic"""
+        retries = 0
+        while retries < 3:
+            try:
+                with self.db.conn:
+                    for user_id, count in message_counts.items():
+                        self.db.conn.execute('''
+                            INSERT INTO user_levels (guild_id, user_id, message_count)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(guild_id, user_id) 
+                            DO UPDATE SET 
+                                message_count = message_count + excluded.message_count
+                        ''', (guild_id, user_id, count))
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e):
+                    retries += 1
+                    await asyncio.sleep(2 ** retries)
+                else:
+                    raise
+        raise Exception("Failed to update after 3 retries")
+    
+    # @app_commands.command(name="backfillmessages", description="Backfill historical message counts (Admin)")
+    # @app_commands.checks.has_permissions(administrator=True)
+    # async def backfill_messages(self, interaction: discord.Interaction):
+        # """Backfill message counts from channel history with concurrency control"""
+        # await interaction.response.defer(ephemeral=True)
+        
+        # guild = interaction.guild
+        # guild_id = str(guild.id)
+        # start_time = datetime.now()
+        # message_counts = defaultdict(int)
+        # processed_channels = 0
+        # total_messages = 0
+        # lock_retries = 0
+        # max_retries = 3
+        
+        # # Ensure message_count column exists
+        # try:
+            # self.db.conn.execute('''
+                # ALTER TABLE user_levels 
+                # ADD COLUMN IF NOT EXISTS message_count INTEGER DEFAULT 0
+            # ''')
+            # self.db.conn.commit()
+        # except sqlite3.OperationalError:
+            # pass  # Column already exists
+        
+        # # Get text channels sorted by position
+        # channels = sorted(guild.text_channels, key=lambda c: c.position)
+        
+        # for channel in channels:
+            # try:
+                # # Check permissions and channel type
+                # if not isinstance(channel, discord.TextChannel):
+                    # continue
+                    
+                # if not channel.permissions_for(guild.me).read_message_history:
+                    # continue
+
+                # # Process channel history in batches
+                # batch_count = 0
+                # async for message in channel.history(limit=None, oldest_first=True):
+                    # if message.author.bot:
+                        # continue
+                        
+                    # user_id = str(message.author.id)
+                    # message_counts[user_id] += 1
+                    # total_messages += 1
+                    # batch_count += 1
+                    
+                    # # Commit every 500 messages to reduce locking
+                    # if batch_count % 500 == 0:
+                        # await self._update_message_counts(message_counts, guild_id)
+                        # message_counts.clear()
+                        # await asyncio.sleep(1)  # Release lock
+
+                # # Final batch commit for channel
+                # if message_counts:
+                    # await self._update_message_counts(message_counts, guild_id)
+                    # message_counts.clear()
+                    
+                # processed_channels += 1
+                
+                # # Progress update
+                # elapsed = (datetime.now() - start_time).total_seconds()
+                # await interaction.followup.send(
+                    # f"✅ Processed {channel.mention} ({processed_channels}/{len(channels)})\n"
+                    # f"• Messages: {total_messages:,}\n"
+                    # f"• Elapsed: {elapsed:.1f}s",
+                    # ephemeral=True
+                # )
+                
+                # # Rate limit buffer
+                # await asyncio.sleep(5)
+
+            # except Exception as e:
+                # logging.error(f"Channel {channel.name} error: {str(e)}", exc_info=True)
+                # await interaction.followup.send(
+                    # f"⚠️ Stopped at {channel.mention} due to error: {str(e)}",
+                    # ephemeral=True
+                # )
+                # return
+
+        # # Final report
+        # elapsed = (datetime.now() - start_time).total_seconds()
+        # await interaction.followup.send(
+            # f"🏁 Backfill complete!\n"
+            # f"• Channels processed: {processed_channels}/{len(channels)}\n"
+            # f"• Total messages: {total_messages:,}\n"
+            # f"• Time taken: {elapsed:.1f} seconds\n"
+            # f"• Avg speed: {total_messages/elapsed:.1f} msg/s",
+            # ephemeral=True
+        # )
     
     # @app_commands.command(name="sync", description="Force command synchronization")
     # @app_commands.checks.has_permissions(administrator=True)

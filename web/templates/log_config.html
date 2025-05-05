@@ -47,21 +47,26 @@
             </div>
 
             <div class="mb-4">
-                <h4>Log Channel</h4>
-                <div class="input-group">
-                    <input type="text" 
-                           class="form-control" 
-                           name="log_channel_id"
-                           placeholder="Enter Channel ID"
-                           value="{{ config.log_channel_id if config.log_channel_id else '' }}">
-                    <div class="input-group-append">
-                        <span class="input-group-text">Channel ID</span>
-                    </div>
-                </div>
-                <small class="form-text text-muted">
-                    Use /setlogchannel command in Discord or enter numeric ID here
-                </small>
-            </div>
+				<h4>Log Channel</h4>
+				<select class="form-control" name="log_channel_id">
+					<option value="">Select a channel...</option>
+					{% if channels %}
+						{% for channel in channels %}
+						<option value="{{ channel.id }}" 
+							{% if config.log_channel_id == channel.id %}selected{% endif %}>
+							#{{ channel.name }}
+						</option>
+						{% endfor %}
+					{% else %}
+						<option value="" disabled>
+							{% if discord_guild %}No text channels found{% else %}Bot not in server{% endif %}
+						</option>
+					{% endif %}
+				</select>
+				<small class="form-text text-muted">
+					Select the channel where logs should be sent or use /setlogchannel in Discord.
+				</small>
+			</div>
 
             <button type="submit" class="btn btn-primary" id="saveConfigButton">
                 <span id="saveConfigText">Save Configuration</span>

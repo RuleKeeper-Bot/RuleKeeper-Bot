@@ -12,6 +12,7 @@ import os
 import threading
 import random
 import math
+import logging
 from aiohttp import web, hdrs
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
@@ -25,7 +26,20 @@ import asyncio
 import sqlite3
 from functools import partial
 import traceback
+from cachetools import TTLCache
 
+_bot_loop = None
+_loop_lock = threading.Lock()
+def get_event_loop():
+    """Safely retrieve the current event loop"""
+    with _loop_lock:
+        return _bot_loop
+
+def set_event_loop(loop):
+    """Update the event loop reference"""
+    global _bot_loop
+    with _loop_lock:
+        _bot_loop = loop
 
 # -------------------- API and Frontend URLs -----------------
 API_URL = os.getenv('API_URL', 'http://localhost:5003')  # Default for local dev
@@ -33,6 +47,10 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5000')  # Default for
 
 # -------------------- Load Secrets --------------------
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+
+# -------------------- Caching --------------------
+level_config_cache = TTLCache(maxsize=100, ttl=300)  # 10 minutes
+logger = logging.getLogger(__name__)
 
 # -------------------- Log Config --------------------
 
@@ -248,7 +266,7 @@ def get_blocked_embed(guild_id: int) -> dict:
 # -------------------- Spam and Warning Tracking --------------------
 message_count = defaultdict(int)
 user_mentions = defaultdict(list)
-last_message_time = defaultdict(float)
+last_message_timestamps = defaultdict(float)
 
 def get_warnings(guild_id: str, user_id: str) -> list:
     """Get warnings for a specific user in a guild"""
@@ -266,10 +284,6 @@ def update_warning(guild_id: str, user_id: str, warning_id: str, new_reason: str
     """Update a warning's reason"""
     db.update_warning_reason(str(guild_id), str(user_id), warning_id, new_reason)
 
-SPAM_THRESHOLD = 5
-SPAM_TIME_WINDOW = 10
-MENTION_THRESHOLD = 3
-MENTION_TIME_WINDOW = 30
 WARNING_ACTIONS = {
     2: "timeout",
     3: "ban"
@@ -309,18 +323,13 @@ class CustomBot(commands.Bot):
         
         if self._command_initialized:
             return
-            
-        print("🔄 Starting command initialization...")
         
         try:
             # Clear existing guild commands
-            print("🧹 Clearing guild-specific commands...")
             for guild in self.guilds:
                 self.tree.clear_commands(guild=guild)
-                print(f"  ✅ Cleared commands for {guild.name}")
 
             # Load and process custom commands
-            print("📦 Loading commands from database...")
             raw_commands = self.db.execute_query(
                 'SELECT guild_id, command_name, content, description, ephemeral FROM commands',
                 fetch='all'
@@ -336,21 +345,14 @@ class CustomBot(commands.Bot):
                 else:
                     print(f"⚠️ Invalid command format: {cmd_data}")
 
-            print(f"🔍 Found {len(valid_commands)} valid command entries")
-
             # Group commands by guild
             guild_groups = defaultdict(list)
             for cmd in valid_commands:
                 guild_id = str(cmd['guild_id']).strip()
                 guild_groups[guild_id].append(cmd)
 
-            print("\n📊 Command Distribution:")
-            for guild_id, cmds in guild_groups.items():
-                print(f" - Guild {guild_id}: {len(cmds)} commands")
-
             # Process global commands
             global_commands = guild_groups.get('0', [])
-            print(f"\n🌍 Registering {len(global_commands)} global commands")
             for cmd_data in global_commands:
                 try:
                     callback = self._create_command_callback(cmd_data)
@@ -360,12 +362,10 @@ class CustomBot(commands.Bot):
                         callback=callback
                     )
                     self.tree.add_command(cmd)
-                    print(f"  ➕ Global: /{cmd_data['command_name']}")
                 except Exception as e:
                     print(f"  🚨 Global command error: {str(e)}")
 
             # Process guild-specific commands
-            print("\n🔨 Processing guild-specific commands:")
             for guild_id_str, cmds in guild_groups.items():
                 if guild_id_str == '0':
                     continue
@@ -375,12 +375,9 @@ class CustomBot(commands.Bot):
                 except (discord.NotFound, discord.Forbidden):
                     print(f"  🚫 Guild {guild_id_str} not accessible")
                     continue
-
-                print(f"\n🔄 Processing {guild.name} ({guild.id})")
-                print("  🧹 Clearing existing commands...")
+                    
                 self.tree.clear_commands(guild=guild)
 
-                print(f"  ➕ Adding {len(cmds)} commands")
                 for cmd_data in cmds:
                     try:
                         callback = self._create_command_callback(cmd_data)
@@ -390,7 +387,6 @@ class CustomBot(commands.Bot):
                             callback=callback
                         )
                         self.tree.add_command(cmd, guild=guild)
-                        # print(f"    - /{cmd_data['command_name']}")
                     except Exception as e:
                         print(f"    🚨 Command error: {str(e)}")
 
@@ -398,7 +394,6 @@ class CustomBot(commands.Bot):
                 await self.safe_sync(guild=guild)
 
             # Final global sync
-            print("\n🌐 Performing final global sync")
             await self.safe_sync()
             
             # Initialize components
@@ -413,13 +408,11 @@ class CustomBot(commands.Bot):
     async def safe_sync(self, guild=None):
         """Sync commands with rate limit handling"""
         target = "global" if guild is None else f"guild {guild.id}"
-        print(f"  🔄 Syncing {target} commands...")
         
         for attempt in range(3):
             try:
                 synced = await self.tree.sync(guild=guild)
                 count = len(synced)
-                print(f"  ✅ Synced {count} commands (attempt {attempt+1})")
                 return True
             except discord.HTTPException as e:
                 if e.status == 429:
@@ -594,7 +587,9 @@ async def webserver():
     # Create app with CORS middleware
     app = web.Application(middlewares=[cors_middleware])
     
-    # Add your routes (remove any explicit OPTIONS handlers)
+    # Routes
+    app.router.add_post('/send_appeal_to_discord', handle_send_to_discord)
+    app.router.add_get('/health', lambda _: web.Response(text="OK"))
     app.router.add_post('/sync', handle_sync)
     app.router.add_post('/sync_warnings', handle_sync_warnings)
     app.router.add_post('/appeal', handle_appeal_submission)
@@ -608,6 +603,23 @@ async def webserver():
     site = web.TCPSite(runner, '0.0.0.0', 5003)
     await site.start()
     print("Sync endpoint running on port 5003")
+
+async def validate_appeal_token(request):
+    data = await request.json()
+    token = data.get('token')
+    
+    appeal = db.conn.execute('''
+        SELECT * FROM appeals 
+        WHERE appeal_token = ?
+        AND expires_at > ?
+        AND status = 'pending'
+    ''', (token, int(time.time()))).fetchone()
+    
+    if not appeal:
+        return web.json_response({"error": "Invalid or expired token"}, status=400)
+    
+    request['appeal_data'] = dict(appeal)
+    return None
 
 async def handle_options(request):
     return web.Response(
@@ -719,29 +731,7 @@ async def handle_appeal_submission(request):
     except Exception as e:
         print(f"Unexpected error processing appeal: {str(e)}")
         return web.Response(status=500, text="Internal server error")
-
-def migrate_appeals():
-    try:
-        with open('appeals.json', 'r') as f:
-            old_appeals = json.load(f)
-            
-        for appeal in old_appeals:
-            # Let database.py handle UUID generation
-            guild_id = str(appeal.get('guild_id', 'legacy'))
-            db.create_appeal(
-                guild_id=guild_id,
-                appeal_data={
-                    'user_id': appeal['user_id'],
-                    'type': appeal['type'],
-                    'data': appeal['data'],
-                    'status': appeal.get('status', 'pending'),
-                    'channel_id': appeal['channel_id']
-                }
-            )
-            
-        print(f"Migrated {len(old_appeals)} appeals successfully")
-    except FileNotFoundError:
-        print("No legacy appeals found")
+        return web.Response(status=500, text="Internal server error")
 
 def validate_uuid(uuid_str):
     """Validate UUIDv4 format"""
@@ -798,6 +788,20 @@ async def cleanup():
 
 @bot_instance.event
 async def on_ready():
+    set_event_loop(bot_instance.loop)
+    print("""
+    +==============================================================+
+    |  _____         _        _   __                               |
+    | | ___ \       | |      | | / /                               |
+    | | |_/ / _   _ | |  ___ | |/ /   ___   ___  _ __    ___  _ __ |
+    | |    / | | | || | / _ \|    \  / _ \ / _ \| '_ \  / _ \| '__||
+    | | |\ \ | |_| || ||  __/| |\  \|  __/|  __/| |_) ||  __/| |   |
+    | \_| \_| \__,_||_| \___|\_| \_/ \___| \___|| .__/  \___||_|   |
+    |                                           | |                |
+    |                                           |_|                |
+    +==============================================================+
+    """)
+    
     print(f'Logged in as {bot_instance.user}')
     if not bot_instance.guilds:
         print("⚠️ Bot not in any guilds, skipping command sync")
@@ -805,23 +809,18 @@ async def on_ready():
     
     # Temporary guild verification
     for guild in bot_instance.guilds:
-        print(f"🔍 Checking guild {guild.name} ({guild.id})")
         cmds = bot_instance.db.conn.execute(
             'SELECT command_name FROM commands WHERE guild_id = ?',
             (str(guild.id),)
         ).fetchall()
-        print(f"   📝 Found {len(cmds)} commands in database")
-        print(f"   🤖 Guild in cache: {guild in bot_instance.guilds}")
         
     cleanup.start()
     # Get current guild IDs as strings
     current_guild_ids = {str(g.id) for g in bot_instance.guilds}
-    print(f"🤖 Bot's actual guild count: {len(current_guild_ids)}")
     
     # Get database guild IDs
     db_guilds = db.get_all_guilds()
     db_guild_ids = {g['id'] for g in db_guilds}
-    print(f"🗃️ Database guild count before sync: {len(db_guilds)}")
     
     # Add missing guilds
     added = 0
@@ -829,27 +828,22 @@ async def on_ready():
         if str(guild.id) not in db_guild_ids:
             db.add_guild(str(guild.id), guild.name, str(guild.owner_id))
             added += 1
-    print(f"➕ Added {added} missing guilds to DB")
     
     # Remove orphaned guilds
     removed = 0
     for db_guild_id in db_guild_ids - current_guild_ids:
         db.remove_guild(db_guild_id)
         removed += 1
-    print(f"➖ Removed {removed} orphaned guilds from DB")
     
     # Final verification
     new_count = len(db.get_all_guilds())
-    print(f"🔄 Sync complete. New DB guild count: {new_count}")
     
     try:
         test_uuid = uuid.uuid4()
-        print(f"🔑 Runtime UUID verification: {test_uuid}")
     except NameError:
         print("❌ UUID MODULE NOT LOADED - CHECK IMPORTS")
         raise
     bot_instance.loop.create_task(webserver())
-    migrate_appeals()
     await bot_instance.role_batcher.initialize()
 
 def load_appeal_forms(guild_id: str) -> dict:
@@ -884,196 +878,310 @@ def reload_warnings(guild_id: str):
     warnings = [dict(w) for w in warnings]
 
 # -------------------- Appeal Embed ------------------
-async def send_appeal_to_discord(channel_id, appeal_data):
-    channel = bot.get_channel(int(channel_id))
-    if not channel:
-        return
+async def handle_send_to_discord(request):
+    """Handle appeal sending with full data validation"""
+    try:
+        data = await request.json()
+        appeal_id = data.get('appeal_id')
+        guild_id = data.get('guild_id')
 
-    embed = discord.Embed(
-        title=f"🚨 New {appeal_data['type'].title()} Appeal",
-        color=discord.Color.orange(),
-        description=f"**Appeal ID:** `{appeal_data['appeal_id']}`\n"
-                    f"**Submitted:** <t:{int(datetime.now().timestamp())}:R>"
-    )
-    
-    # Add fields with emoji icons
-    for field in json.loads(appeal_data['data']):
+        if not appeal_id or not guild_id:
+            return web.Response(status=400, text="Missing appeal_id or guild_id")
+
+        # Get full appeal data from database
+        appeal = db.get_appeal(guild_id, appeal_id)
+        if not appeal:
+            return web.Response(status=404, text="Appeal not found")
+
+        # Get channel ID from appeal form config
+        form_config = db.get_appeal_forms(guild_id) or {}
+        channel_id = form_config.get(f"{appeal['type']}_channel_id")
+        if not channel_id:
+            return web.Response(status=400, text="No channel configured for this appeal type")
+
+        # Send to Discord
+        success = await send_appeal_to_discord(
+            channel_id=int(channel_id),
+            appeal_data={
+                'id': appeal['appeal_id'],
+                'user_id': appeal['user_id'],
+                'guild_id': guild_id,
+                'type': appeal['type'],
+                'data': appeal.get('appeal_data', {})
+            }
+        )
+
+        if success:
+            return web.Response(text="Appeal sent to Discord")
+        return web.Response(status=500, text="Failed to send appeal")
+
+    except Exception as e:
+        logger.error(f"Send error: {traceback.format_exc()}")
+        return web.Response(status=500, text="Internal server error")
+
+async def send_appeal_to_discord(channel_id: int, appeal_data: dict) -> bool:
+    """Final version with complete data handling"""
+    try:
+        # Validate required data
+        required_keys = ['id', 'user_id', 'guild_id', 'type', 'data']
+        if any(key not in appeal_data for key in required_keys):
+            logger.error(f"Missing keys in appeal_data: {required_keys}")
+            return False
+
+        # Get form configuration
+        form_config = db.get_appeal_forms(appeal_data['guild_id']) or {}
+        form_fields = json.loads(form_config.get(f"{appeal_data['type']}_form_fields", "[]"))
+        
+        # Create embed with questions
+        embed = discord.Embed(
+            title=f"{appeal_data['type'].title()} Appeal - {appeal_data['id'][:8]}",
+            description=(
+                f"**User ID:** {appeal_data['user_id']}\n"
+                f"**Submitted:** <t:{int(time.time())}:R>\n"
+                f"**Appeal ID:** `{appeal_data['id'][:8]}`"
+            ),
+            color=0xFFA500
+        )
+
+        # Add form fields and answers
+        for idx, question in enumerate(form_fields, 1):
+            answer = appeal_data['data'].get(f'response_{idx}', 'No response')
+            embed.add_field(
+                name=f"{idx}. {question}",
+                value=str(answer)[:1024],
+                inline=False
+            )
+            
         embed.add_field(
-            name=f"📌 {field.get('question', 'Question')}",
-            value=field.get('answer', '*Not provided*'),
+            name="Visit in Dashboard",
+            value=f"[Manage Appeal]({FRONTEND_URL}/dashboard/{appeal_data['guild_id']}/appeals/{appeal_data['id']})",
             inline=False
         )
-    
-    embed.set_footer(text="Use the buttons below to manage this appeal")
 
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(
-        style=discord.ButtonStyle.success,
-        label="Approve",
-        custom_id=f"approve_{appeal_data['appeal_id']}",
-        emoji="✅"
-    ))
-    view.add_item(discord.ui.Button(
-        style=discord.ButtonStyle.danger,
-        label="Reject",
-        custom_id=f"reject_{appeal_data['appeal_id']}",
-        emoji="❌"
-    ))
-    view.add_item(discord.ui.Button(
-        style=discord.ButtonStyle.link,
-        label="View Online",
-        url=f"{FRONTEND_URL}/appeals/{appeal_data['appeal_id']}",
-        emoji="🌐"
-    ))
+        # Create action buttons
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.green,
+            custom_id=f"approve_{appeal_data['type']}_{appeal_data['id']}",
+            label="Approve"
+        ))
+        view.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.red,
+            custom_id=f"reject_{appeal_data['type']}_{appeal_data['id']}",
+            label="Reject"
+        ))
 
-    await channel.send(embed=embed, view=view)
+        # Send message
+        channel = bot_instance.get_channel(channel_id)
+        await channel.send(embed=embed, view=view)
+        return True
+
+    except Exception as e:
+        logger.error(f"Send failed: {traceback.format_exc()}")
+        return False
 
 @bot_instance.event
-async def on_interaction(interaction):
+async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.component:
         custom_id = interaction.data.get('custom_id', '')
         
         # Handle approve/reject actions
-        if custom_id.startswith('approve_') or custom_id.startswith('reject_'):
-            parts = custom_id.split('_')
-            if len(parts) != 2:
-                await interaction.response.send_message("Invalid custom ID format.", ephemeral=True)
-                return
-
-            action = parts[0]  # 'approve' or 'reject'
-            appeal_id = parts[1]  # The unique appeal ID
-            guild_id = str(interaction.guild.id)
-
+        if custom_id.startswith(('approve_', 'reject_')):
             try:
-                # Load appeal data from database
+                # Split into action_type_appealid format
+                parts = custom_id.split('_', 2)  # Split into max 3 parts
+                if len(parts) != 3:
+                    raise ValueError("Invalid custom ID format")
+
+                action, appeal_type, appeal_id = parts
+                guild_id = str(interaction.guild.id)
+
+                # Get full appeal data
                 appeal = db.get_appeal(guild_id, appeal_id)
                 if not appeal:
-                    await interaction.response.send_message("Appeal not found.", ephemeral=True)
+                    await interaction.response.send_message("Appeal not found", ephemeral=True)
                     return
 
-                # Update appeal status in database
-                db.update_appeal_status(guild_id, appeal_id, action)
-                
-                # Fetch the user
-                user_id = appeal['user_id']
-                user = await bot.fetch_user(int(user_id))
-                guild = interaction.guild
-
-                # Perform the action based on appeal type
-                try:
-                    if action == 'approve':
-                        if appeal['type'] == 'ban':
-                            await guild.unban(user, reason="Appeal approved")
-                            await interaction.response.send_message(
-                                f"{user.mention} has been unbanned.", 
-                                ephemeral=True
-                            )
-                        elif appeal['type'] == 'timeout':
-                            member = await guild.fetch_member(user.id)
-                            await member.timeout(None, reason="Appeal approved")
-                            await interaction.response.send_message(
-                                f"Timeout removed for {member.mention}.", 
-                                ephemeral=True
-                            )
-                        elif appeal['type'] == 'kick':
-                            invite = await interaction.channel.create_invite(
-                                max_uses=1, 
-                                reason="Appeal approved"
-                            )
-                            await user.send(f"Your kick appeal was approved. You may rejoin here: {invite.url}")
-                            await interaction.response.send_message("Invite sent to user.", ephemeral=True)
-                            
-                    elif action == 'reject':
-                        await interaction.response.send_message("Appeal rejected.", ephemeral=True)
-
-                    # Disable buttons and update embed
-                    view = discord.ui.View()
-                    for component in interaction.message.components:
-                        if component.type == discord.ComponentType.button:
-                            btn = discord.ui.Button.from_component(component)
-                            btn.disabled = True
-                            view.add_item(btn)
-
-                    embed = interaction.message.embeds[0]
-                    embed.color = discord.Color.green() if action == 'approve' else discord.Color.red()
-                    
-                    # Find and update the status field
-                    for index, field in enumerate(embed.fields):
-                        if field.name == "Status":
-                            embed.set_field_at(
-                                index,
-                                name="Status",
-                                value="✅ Approved" if action == 'approve' else "❌ Rejected",
-                                inline=False
-                            )
-                            break
-
-                    await interaction.message.edit(embed=embed, view=view)
-
-                except discord.Forbidden:
-                    await interaction.response.send_message(
-                        "I don't have permission to perform this action.", 
-                        ephemeral=True
-                    )
-                except discord.NotFound:
-                    await interaction.response.send_message(
-                        "User not found in this server.", 
-                        ephemeral=True
-                    )
-                except Exception as e:
-                    await interaction.response.send_message(
-                        f"Error processing appeal: {str(e)}", 
-                        ephemeral=True
-                    )
-
-            except Exception as e:
-                await interaction.response.send_message(
-                    f"Error loading appeal data: {str(e)}", 
-                    ephemeral=True
+                # Update appeal status
+                new_status = 'approved' if action == 'approve' else 'rejected'
+                db.update_appeal(
+                    appeal_id=appeal_id,
+                    status=new_status,
+                    reviewed_by=str(interaction.user.id),
+                    reviewed_at=int(time.time())
                 )
 
-        # Handle other component interactions
+                # Handle actions
+                user = await bot_instance.fetch_user(int(appeal['user_id']))
+                if action == 'approve':
+                    if appeal_type == 'ban':
+                        await interaction.guild.unban(user, reason=f"Appeal {appeal_id} approved")
+                    elif appeal_type == 'timeout':
+                        member = await interaction.guild.fetch_member(user.id)
+                        await member.timeout(None, reason=f"Appeal {appeal_id} approved")
+                    elif appeal_type == 'kick':
+                        invite = await interaction.channel.create_invite(max_uses=1, reason="Appeal approved")
+                        await user.send(f"Your kick appeal was approved: {invite.url}")
+
+                # Update message components
+                embed = interaction.message.embeds[0].copy()
+                embed.color = discord.Color.green() if action == 'approve' else discord.Color.red()
+                
+                # Add status field if missing
+                status_exists = any(field.name.lower() == "status" for field in embed.fields)
+                if not status_exists:
+                    embed.add_field(name="Status", value=new_status.capitalize(), inline=False)
+                
+                # Disable all buttons
+                view = discord.ui.View()
+                for component in interaction.message.components:
+                    if component.type == discord.ComponentType.button:
+                        btn = discord.ui.Button.from_component(component)
+                        btn.disabled = True
+                        view.add_item(btn)
+
+                await interaction.message.edit(embed=embed, view=view)
+                await interaction.response.send_message(f"Appeal {new_status}", ephemeral=True)
+
+            except discord.Forbidden:
+                await interaction.response.send_message("Missing permissions to perform this action", ephemeral=True)
+            except discord.NotFound:
+                await interaction.response.send_message("User not found", ephemeral=True)
+            except Exception as e:
+                logger.error(f"Appeal handling error: {traceback.format_exc()}")
+                await interaction.response.send_message("Error processing appeal", ephemeral=True)
+                return
+
         else:
             await bot.process_commands(interaction)
 
 # -------------------- Level System --------------------
 def get_level_data(guild_id, user_id):
-    data = db.get_user_level(str(guild_id), str(user_id))
-    if not data:
-        # Initialize new user
-        data = {
-            "xp": 0,
-            "level": 0,
-            "username": "",
-            "last_message": 0
-        }
-        db.update_user_level(str(guild_id), str(user_id), **data)
-    return data
+    try:
+        data = db.get_user_level(str(guild_id), str(user_id))
+        if not data:
+            # Create new user with default values
+            db.conn.execute('''
+                INSERT INTO user_levels 
+                (guild_id, user_id, xp, level, username, last_message, message_count)
+                VALUES (?, ?, 0, 0, ?, 0, 0)
+            ''', (str(guild_id), str(user_id), ""))
+            db.conn.commit()
+            return {
+                "xp": 0,
+                "level": 0,
+                "username": "",
+                "last_message": 0,
+                "message_count": 0
+            }
+        return data
+    except Exception as e:
+        print(f"Error getting level data: {str(e)}")
+        traceback.print_exc()
+        return None
 
 def save_level_data(guild_id, user_id, data):
     db.update_user_level(str(guild_id), str(user_id), **data)
 
-def get_level_config(guild_id):
-    config = db.get_level_config(str(guild_id))
-    if not config:
-        # Create default config
-        default_config = {
-            "cooldown": 60,
-            "xp_min": 15,
-            "xp_max": 25,
-            "level_channel": None,
-            "announce_level_up": True,
-            "excluded_channels": "[]",
-            "xp_boost_roles": "{}",
-            "embed_title": "🎉 Level Up!",
-            "embed_description": "{user} has reached level **{level}**!",
-            "embed_color": 0xffd700
-        }
-        db.update_level_config(str(guild_id), **default_config)
-        config = default_config
-    return config
+def get_level_config(guild_id: str) -> dict:
+    """Get validated level configuration with caching and type safety"""
+    # Default configuration template (create new copy each call)
+    default_config = {
+        'cooldown': 60,
+        'xp_min': 15,
+        'xp_max': 25,
+        'level_channel': None,
+        'announce_level_up': True,
+        'excluded_channels': [],
+        'xp_boost_roles': {},
+        'embed_title': '🎉 Level Up!',
+        'embed_description': '{user} has reached level **{level}**!',
+        'embed_color': 0xffd700
+    }
 
-user_cooldowns = defaultdict(dict)
+    try:
+        # Check cache first
+        cached_config = level_config_cache.get(guild_id)
+        if cached_config:
+            return cached_config.copy()
+
+        # Get raw config from database
+        raw_config = db.get_level_config(guild_id)
+        if not raw_config:
+            # Store default in cache
+            level_config_cache[guild_id] = default_config.copy()
+            return default_config.copy()
+
+        # Convert to dict if needed (SQLite Row object)
+        config = dict(raw_config) if not isinstance(raw_config, dict) else raw_config.copy()
+        validated = default_config.copy()
+
+        # Validate integer fields
+        int_fields = ['cooldown', 'xp_min', 'xp_max']
+        for field in int_fields:
+            try:
+                value = int(config.get(field, default_config[field]))
+                validated[field] = max(value, 1)  # Ensure minimum 1
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid {field} value, using default")
+                validated[field] = default_config[field]
+
+        # Validate color (0-0xFFFFFF)
+        try:
+            color = int(config.get('embed_color', default_config['embed_color']))
+            validated['embed_color'] = max(0, min(color, 0xFFFFFF))
+        except (ValueError, TypeError):
+            logger.warning("Invalid embed color, using default gold")
+            validated['embed_color'] = 0xffd700
+
+        # Validate boolean
+        validated['announce_level_up'] = bool(config.get(
+            'announce_level_up', 
+            default_config['announce_level_up']
+        ))
+
+        # Validate JSON fields
+        json_fields = {
+            'excluded_channels': list,
+            'xp_boost_roles': dict
+        }
+        for field, expected_type in json_fields.items():
+            raw_value = config.get(field, default_config[field])
+            
+            if isinstance(raw_value, str):
+                try:
+                    parsed = json.loads(raw_value)
+                    if isinstance(parsed, expected_type):
+                        validated[field] = parsed
+                    else:
+                        raise ValueError("Invalid type")
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Invalid {field} JSON: {str(e)}")
+                    validated[field] = default_config[field].copy()
+            elif isinstance(raw_value, expected_type):
+                validated[field] = raw_value.copy() if isinstance(raw_value, (list, dict)) else raw_value
+            else:
+                logger.warning(f"Invalid {field} type, using default")
+                validated[field] = default_config[field].copy()
+
+        # Validate string fields
+        str_fields = ['level_channel', 'embed_title', 'embed_description']
+        for field in str_fields:
+            value = str(config.get(field, default_config[field]))
+            validated[field] = value[:255]  # Prevent overly long strings
+
+        # Final sanity checks
+        validated['xp_min'] = min(validated['xp_min'], validated['xp_max'])
+        validated['xp_max'] = max(validated['xp_min'], validated['xp_max'])
+        
+        # Update cache
+        level_config_cache[guild_id] = validated.copy()
+        return validated.copy()
+
+    except Exception as e:
+        logger.error(f"Critical error loading level config: {str(e)}")
+        # Return fresh default copy
+        return default_config.copy()
 
 def calculate_xp_for_level(level: int) -> int:
     """Calculate total XP required to reach a specific level"""
@@ -1086,12 +1194,11 @@ def calculate_level(xp: float) -> int:
     return int((xp / 100) ** (1/1.7))
 
 def calculate_progress(xp: float) -> tuple:
-    """Calculate progress to next level"""
     current_level = calculate_level(xp)
-    current_level_xp = current_level * 100
-    next_level_xp = (current_level + 1) * 100
+    current_level_xp = calculate_xp_for_level(current_level)
+    next_level_xp = calculate_xp_for_level(current_level + 1)
     progress = xp - current_level_xp
-    return progress, next_level_xp
+    return progress, next_level_xp - current_level_xp
 
 def calculate_xp_with_boost(base_xp, user_roles, xp_boost_roles):
     boost = 0
@@ -1103,239 +1210,251 @@ def calculate_xp_with_boost(base_xp, user_roles, xp_boost_roles):
     return base_xp * (1 + boost / 100)
 
 async def handle_level_up(user, guild, channel):
-    guild_id = guild.id
-    user_id = user.id
+    try:
+        guild_id = guild.id
+        user_id = user.id
+        
+        user_data = get_level_data(guild_id, user_id)
+        total_xp = user_data['xp']
+        new_level = calculate_level(total_xp)
+        
+        # Handle multiple level jumps
+        old_level = user_data['level']
+        if new_level > old_level:
+            # Update to new level
+            save_level_data(guild_id, user_id, {'level': new_level})
+            
+            # Get rewards for all levels between old and new
+            rewards = db.get_level_rewards(str(guild_id))
+            roles_to_add = []
+            for level in range(old_level + 1, new_level + 1):
+                role_id = rewards.get(str(level))
+                if role_id:
+                    role = guild.get_role(int(role_id))
+                    if role:
+                        roles_to_add.append(role)
+            
+            if roles_to_add:
+                try:
+                    await user.add_roles(*roles_to_add, reason=f"Level {new_level} rewards")
+                except discord.Forbidden:
+                    print(f"Missing permissions to assign roles in {guild.name}")
+                except Exception as e:
+                    print(f"Error assigning roles: {str(e)}")
+            
+            # Send notifications for each level up if configured
+            config = get_level_config(guild_id)
+            if config['announce_level_up']:
+                await send_level_up_notification(user, guild, channel, new_level, config)
     
-    # Get user data from database
-    user_data = get_level_data(guild_id, user_id)
-    total_xp = user_data['xp']
-    
-    # Calculate current and new level based on total XP
-    current_level = calculate_level(total_xp - 1)  # Previous level
-    new_level = calculate_level(total_xp)          # Current level
-    
-    if new_level > current_level:
-        # Update level in database
-        save_level_data(guild_id, user_id, {'level': new_level})
-    
-    # Load rewards from database
-    rewards = db.get_level_rewards(str(guild_id))
-    
-    # Check for rewards
-    roles_to_add = []
-    for level, role_id in rewards.items():
-        if new_level >= int(level):
-            role = guild.get_role(int(role_id))
-            if role:
-                roles_to_add.append(role)
-    
-    # Assign roles
-    if roles_to_add:
-        try:
-            await user.add_roles(*roles_to_add, reason=f"Level {new_level} rewards")
-        except Forbidden:
-            print(f"Missing permissions to assign roles in {guild.name}")
-        except Exception as e:
-            print(f"Error assigning roles: {str(e)}")
-    
-    # Get level config
-    config = get_level_config(guild_id)
-    
-    # Create embed
-    embed = discord.Embed(
-        title=config['embed_title'],
-        description=config['embed_description'].format(user=user.mention, level=new_level),
-        color=config['embed_color']
-    )
-    embed.set_thumbnail(url=user.display_avatar.url)
-    
-    # Get announcement channel
-    target_channel = guild.get_channel(int(config['level_channel'])) if config['level_channel'] else channel
-    
-    # Send announcement if enabled
-    if config['announce_level_up'] and target_channel:
-        try:
+    except Exception as e:
+        print(f"Error handling level up: {str(e)}")
+        traceback.print_exc()
+
+async def send_level_up_notification(user, guild, channel, new_level, config):
+    try:
+        target_channel = guild.get_channel(int(config['level_channel'])) if config['level_channel'] else channel
+        if target_channel:
+            embed = discord.Embed(
+                title=config['embed_title'],
+                description=config['embed_description'].format(
+                    user=user.mention, 
+                    level=new_level
+                ),
+                color=config['embed_color']
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
             await target_channel.send(embed=embed)
-        except Exception as e:
-            print(f"Error sending level up message: {str(e)}")
+    except Exception as e:
+        print(f"Error sending level up notification: {str(e)}")
             
 # -------------------- Message Processing --------------------
 @bot_instance.event
 async def on_message(message):
     if message.author.bot or not message.guild:
-        return
+        return await bot_instance.process_commands(message)
 
-    guild_id = str(message.guild.id)
-    user_id = str(message.author.id)
-    current_time = time.time()
+    try:
+        guild_id = str(message.guild.id)
+        user_id = str(message.author.id)
+        current_time = time.time()
 
-    # Get level config from database
-    level_config = db.get_level_config(guild_id) or {
-        "cooldown": 60,
-        "xp_min": 15,
-        "xp_max": 25,
-        "excluded_channels": "[]",
-        "xp_boost_roles": "{}",
-        "announce_level_up": True
-    }
+        # ===== LEVEL SYSTEM PROCESSING =====
+        level_config = get_level_config(guild_id)
+        spam_config = db.get_spam_config(guild_id)
+        
+        # Process XP if not in excluded level channels
+        if str(message.channel.id) not in level_config['excluded_channels']:
+            # XP processing logic
+            cooldown_seconds = level_config['cooldown']
+            user_data = get_level_data(guild_id, user_id)
+            last_cooldown_time = user_data.get('last_message', 0)
 
-    excluded_channels = level_config.get('excluded_channels', []) or []
-    if isinstance(excluded_channels, str):
-        excluded_channels = json.loads(excluded_channels)
+            if (current_time - last_cooldown_time) >= cooldown_seconds:
+                # Update message count and last message time
+                db.conn.execute('''
+                    INSERT INTO user_levels (guild_id, user_id, username, message_count, last_message, xp)
+                    VALUES (?, ?, ?, 1, ?, 0)
+                    ON CONFLICT(guild_id, user_id) 
+                    DO UPDATE SET 
+                        message_count = message_count + 1,
+                        username = excluded.username,
+                        last_message = excluded.last_message
+                ''', (guild_id, user_id, message.author.name, current_time))
 
-    xp_boost_roles = level_config.get('xp_boost_roles', {}) or {}
-    if isinstance(xp_boost_roles, str):
-        xp_boost_roles = json.loads(xp_boost_roles)
+                # Calculate XP with boost
+                base_xp = random.randint(level_config['xp_min'], level_config['xp_max'])
+                xp_multiplier = 1.0 + sum(
+                    level_config['xp_boost_roles'].get(str(role.id), 0) / 100 
+                    for role in message.author.roles
+                )
+                earned_xp = int(base_xp * xp_multiplier)
 
-    # Check if message is in excluded channel
-    if str(message.channel.id) in excluded_channels:
-        return
+                # Update XP
+                db.conn.execute('''
+                    UPDATE user_levels 
+                    SET xp = xp + ?,
+                        last_message = ?
+                    WHERE guild_id = ? AND user_id = ?
+                ''', (earned_xp, current_time, guild_id, user_id))
+                db.conn.commit()
 
-    # Check cooldown
-    cooldown = level_config.get('cooldown', 60)
-    user_data = db.get_user_level(guild_id, user_id) or {'xp': 0, 'level': 0, 'last_message': 0}
-    
-    if (current_time - user_data['last_message']) < cooldown:
-        return
-
-    # Update last message time
-    db.conn.execute('''
-        UPDATE user_levels 
-        SET last_message = ?
-        WHERE guild_id = ? AND user_id = ?
-    ''', (current_time, guild_id, user_id))
-    db.conn.commit()
-
-    # Calculate base XP with randomness
-    base_xp = random.randint(
-        int(level_config.get('xp_min', 15)),
-        int(level_config.get('xp_max', 25))
-    )
-
-    # Apply role-based XP boosts
-    xp_multiplier = 1.0
-    for role in message.author.roles:
-        role_id = str(role.id)
-        if role_id in xp_boost_roles:
-            xp_multiplier += xp_boost_roles[role_id] / 100
-
-    earned_xp = int(base_xp * xp_multiplier)
-
-    # Get current total XP and level
-    user_data = db.get_user_level(guild_id, user_id) or {'xp': 0, 'level': 0}
-    total_xp = user_data['xp'] + earned_xp
-    new_level = 0
-
-    # Calculate new level based on TOTAL XP
-    while total_xp >= calculate_xp_for_level(new_level):
-        new_level += 1
-    new_level -= 1  # Adjust to actual current level
-
-    # Update database with TOTAL XP and new level
-    db.conn.execute('''
-        INSERT OR REPLACE INTO user_levels 
-        (guild_id, user_id, xp, level, username)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (guild_id, user_id, total_xp, new_level, message.author.name))
-    db.conn.commit()
-
-    # Check for level up
-    if new_level > user_data['level']:
-        await handle_level_up(message.author, message.guild, message.channel)
-
-    # Check blocked words
-    blocked_words = db.get_blocked_words(guild_id)
-    embed_config = db.get_blocked_embed(guild_id) or {
-        "title": "Blocked Word Detected!",
-        "description": "You have used a word that is not allowed.",
-        "color": 0xff0000
-    }
-
-    content_lower = message.content.lower()
-    for word in blocked_words:
-        if word.lower() in content_lower:
-            try:
-                await message.delete()
-                try:
-                    embed = discord.Embed(
-                        title=embed_config.get('title'),
-                        description=embed_config.get('description'),
-                        color=discord.Color(embed_config.get('color', 0xff0000))
-                    )
-                    await message.author.send(embed=embed)
-                except discord.Forbidden:
-                    pass
+                # Check for level up
+                new_total_xp = db.get_user_level(guild_id, user_id)['xp']
+                new_level = calculate_level(new_total_xp)
                 
-                await log_event(message.guild, "message_delete", "Blocked Word Detected",
-                              f"**User:** {message.author.mention}\n**Message:** {message.content}",
-                              color=discord.Color.red())
+                if new_level > user_data.get('level', 0):
+                    db.conn.execute('''
+                        UPDATE user_levels 
+                        SET level = ?
+                        WHERE guild_id = ? AND user_id = ?
+                    ''', (new_level, guild_id, user_id))
+                    db.conn.commit()
+                    await handle_level_up(message.author, message.guild, message.channel)
+
+        # ===== BLOCKED WORDS CHECK =====
+        content_lower = message.content.lower()
+        blocked_words = db.get_blocked_words(guild_id)
+        
+        for word in blocked_words:
+            if word.lower() in content_lower:
+                try:
+                    await message.delete()
+                    embed_config = db.get_blocked_embed(guild_id) or {
+                        "title": "Blocked Word Detected!",
+                        "description": "You have used a word that is not allowed.",
+                        "color": 0xff0000
+                    }
+                    
+                    try:
+                        embed = discord.Embed(
+                            title=embed_config['title'],
+                            description=embed_config['description'],
+                            color=discord.Color(embed_config['color'])
+                        )
+                        await message.author.send(embed=embed)
+                    except discord.Forbidden:
+                        pass
+                    
+                    await log_event(
+                        message.guild,
+                        "message_delete",
+                        "Blocked Word Detected",
+                        f"**User:** {message.author.mention}\n**Word:** ||{word}||",
+                        color=discord.Color.red()
+                    )
+                    return
+                except Exception as e:
+                    print(f"Blocked word handling error: {str(e)}")
                 return
-            except Exception as e:
-                print(f"Error handling blocked word: {str(e)}")
-            return
 
-    # Spam detection (now guild-specific)
-    spam_key = f"{guild_id}:{user_id}"
-    current_time = discord.utils.utcnow().timestamp()
-    
-    if current_time - last_message_time.get(spam_key, 0) < SPAM_TIME_WINDOW:
-        message_count[spam_key] = message_count.get(spam_key, 0) + 1
-    else:
-        message_count[spam_key] = 1
-    last_message_time[spam_key] = current_time
+        # ===== SPAM DETECTION =====
+        # Check if user/channel is excluded
+        user_roles = [str(role.id) for role in message.author.roles]
+        is_excluded = (
+            str(message.channel.id) in spam_config["excluded_channels"] or
+            any(role in spam_config["excluded_roles"] for role in user_roles)
+        )
 
-    if message_count[spam_key] > SPAM_THRESHOLD:
-        await message.channel.send(embed=discord.Embed(
-            title="Spam Detected",
-            description="Please stop spamming or you will get a warning.",
-            color=discord.Color.red()
-        ))
-        message_count[spam_key] = 0
+        if not is_excluded:
+            # Spam detection
+            spam_key = f"{guild_id}:{user_id}"
+            message_count[spam_key] = message_count.get(spam_key, 0) + 1
+            last_message_timestamps[spam_key] = current_time
 
-    # Mention detection
-    mention_count_current = len(message.mentions)
-    if mention_count_current > 0:
-        mention_key = f"{guild_id}:{user_id}"
-        current_time = discord.utils.utcnow().timestamp()
-        
-        user_mentions[mention_key] = user_mentions.get(mention_key, []) + [current_time] * mention_count_current
-        
-        # Filter mentions within time window
-        window_start = current_time - MENTION_TIME_WINDOW
-        user_mentions[mention_key] = [t for t in user_mentions[mention_key] if t >= window_start]
-        
-        if len(user_mentions[mention_key]) > MENTION_THRESHOLD:
-            await message.channel.send(embed=discord.Embed(
-                title="Too Many Mentions",
-                description="Please do not mention too many users at once or you will get a warning.",
-                color=discord.Color.red()
-            ))
-            user_mentions[mention_key] = []
-    
+            # Check spam threshold
+            if message_count[spam_key] >= spam_config["spam_threshold"]:
+                try:
+                    await message.channel.send(
+                        embed=discord.Embed(
+                            title="Spam Detected",
+                            description=f"{message.author.mention} Please stop spamming!",
+                            color=discord.Color.red()
+                        ),
+                        delete_after=10
+                    )
+                    await message.delete()
+                    await log_event(
+                        message.guild,
+                        "message_delete",
+                        "Spam Detected",
+                        f"**User:** {message.author.mention}\n**Count:** {message_count[spam_key]} messages\n**Threshold:** {spam_config['spam_threshold']}/{spam_config['spam_time_window']}s",
+                        color=discord.Color.orange()
+                    )
+                    message_count[spam_key] = 0
+                except Exception as e:
+                    print(f"Spam handling error: {str(e)}")
+
+            # Mention flood detection
+            mention_count = len(message.mentions)
+            if mention_count > 0:
+                mention_key = f"{guild_id}:{user_id}"
+                user_mentions[mention_key] = user_mentions.get(mention_key, []) + [current_time] * mention_count
+                
+                # Cleanup old mentions
+                window_start = current_time - spam_config["mention_time_window"]
+                user_mentions[mention_key] = [t for t in user_mentions[mention_key] if t >= window_start]
+                
+                if len(user_mentions[mention_key]) > spam_config["mention_threshold"]:
+                    try:
+                        await message.channel.send(
+                            embed=discord.Embed(
+                                title="Mention Flood",
+                                description=f"{message.author.mention} Too many mentions!",
+                                color=discord.Color.orange()
+                            ),
+                            delete_after=10
+                        )
+                        await message.delete()
+                        await log_event(
+                            message.guild,
+                            "message_delete",
+                            "Mention Flood",
+                            f"**User:** {message.author.mention}\n**Count:** {len(user_mentions[mention_key])} mentions\n**Threshold:** {spam_config['mention_threshold']}/{spam_config['mention_time_window']}s",
+                            color=discord.Color.orange()
+                        )
+                        user_mentions[mention_key] = []
+                    except Exception as e:
+                        print(f"Mention flood handling error: {str(e)}")
+
+        # Track processed messages
+        processed_messages[message.id] = True
+        if len(processed_messages) > 1000:
+            processed_messages.clear()
+
+    except Exception as e:
+        print(f"Error in on_message handler: {str(e)}")
+        traceback.print_exc()
+
     await bot_instance.process_commands(message)
-    
-    # Track processed messages
-    processed_messages[message.id] = True
-    if len(processed_messages) > 1000:
-        processed_messages.clear()
 
 # -------------------- Logging Event Handlers --------------------
-
-# Add this helper function at the top with other config functions
-def get_log_config(guild_id):
-    config = db.get_log_config(str(guild_id))
-    if not config:
-        # Create default config if not found
-        db.conn.execute('INSERT INTO log_config (guild_id) VALUES (?)', (str(guild_id),))
-        db.conn.commit()
-        config = db.get_log_config(str(guild_id))
-    return dict(config)
 
 @bot_instance.event
 async def on_message_delete(message):
     if message.guild is None or message.author.bot:
         return
-    config = get_log_config(message.guild.id)
+    config = load_log_config(message.guild.id)
     if config.get("message_delete", True):
         description = (
             f"**Author:** {message.author.mention}\n"
@@ -1354,6 +1473,91 @@ async def on_message_delete(message):
                     await log_event(message.guild, "message_delete", "Image Deleted", img_description, color=discord.Color.dark_red())
                     
 #--------------------- Events ------------------------
+@bot_instance.event
+async def on_member_join(member):
+    try:
+        config = db.get_welcome_config(str(member.guild.id))
+        if not config or not config.get('enabled'):
+            return
+
+        channel = member.guild.get_channel(int(config['channel_id']))
+        if not channel:
+            return
+
+        replacements = {
+            '{user}': member.mention,
+            '{server}': member.guild.name,
+            '{member_count}': str(member.guild.member_count)
+        }
+
+        if config.get('message_type', 'text') == 'embed':
+            # Create both content and embed
+            content = replace_placeholders(config.get('message_content', ''), replacements)
+            embed = discord.Embed(
+                title=replace_placeholders(config.get('embed_title', 'Welcome!'), replacements),
+                description=replace_placeholders(config.get('embed_description', 'Welcome to {server}!'), replacements),
+                color=config.get('embed_color', 0x00FF00)
+            )
+            
+            if config.get('embed_thumbnail', True):
+                embed.set_thumbnail(url=member.display_avatar.url)
+            
+            if config.get('show_server_icon', False) and member.guild.icon:
+                embed.set_author(name=member.guild.name, icon_url=member.guild.icon.url)
+
+            await channel.send(content=content, embed=embed)
+        else:
+            # Text-only message
+            content = replace_placeholders(config.get('message_content', 'Welcome {user} to {server}!'), replacements)
+            await channel.send(content)
+
+    except Exception as e:
+        print(f"Welcome message error: {str(e)}")
+
+def replace_placeholders(text, replacements):
+    for placeholder, value in replacements.items():
+        text = text.replace(placeholder, value)
+    return text
+    
+@bot_instance.event
+async def on_member_remove(member):
+    try:
+        config = db.get_goodbye_config(str(member.guild.id))
+        if not config or not config.get('enabled'):
+            return
+
+        channel = member.guild.get_channel(int(config['channel_id']))
+        if not channel:
+            return
+
+        replacements = {
+            '{user}': member.mention,
+            '{server}': member.guild.name,
+            '{member_count}': str(member.guild.member_count)
+        }
+
+        if config.get('message_type', 'text') == 'embed':
+            content = replace_placeholders(config.get('message_content', ''), replacements)
+            embed = discord.Embed(
+                title=replace_placeholders(config.get('embed_title', 'Goodbye!'), replacements),
+                description=replace_placeholders(config.get('embed_description', '{user} has left {server}'), replacements),
+                color=config.get('embed_color', 0xFF0000)
+            )
+            
+            if config.get('embed_thumbnail', True):
+                embed.set_thumbnail(url=member.display_avatar.url)
+            
+            if config.get('show_server_icon', False) and member.guild.icon:
+                embed.set_author(name=member.guild.name, icon_url=member.guild.icon.url)
+
+            await channel.send(content=content, embed=embed)
+        else:
+            content = replace_placeholders(config.get('message_content', 'Goodbye {user}!'), replacements)
+            await channel.send(content)
+
+    except Exception as e:
+        print(f"Goodbye message error: {str(e)}")
+
 @bot_instance.event
 async def on_guild_available(guild):
     if not db.get_guild(str(guild.id)):
@@ -1417,7 +1621,7 @@ async def on_bulk_message_delete(messages):
     guild = messages[0].guild
     if guild is None:
         return
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("bulk_message_delete", True):
         description = f"Bulk deleted {len(messages)} messages in {messages[0].channel.mention}"
         await log_event(guild, "bulk_message_delete", "Bulk Message Delete", description, color=discord.Color.dark_red())
@@ -1428,7 +1632,7 @@ async def on_message_edit(before, after):
         return
     if before.content == after.content:
         return
-    config = get_log_config(before.guild.id)
+    config = load_log_config(before.guild.id)
     if config.get("message_edit", True):
         description = (
             f"**Author:** {before.author.mention}\n"
@@ -1441,7 +1645,7 @@ async def on_message_edit(before, after):
 @bot_instance.event
 async def on_invite_create(invite):
     guild = invite.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("invite_create", True):
         description = (
             f"**Invite Code:** {invite.code}\n"
@@ -1455,7 +1659,7 @@ async def on_invite_create(invite):
 @bot_instance.event
 async def on_invite_delete(invite):
     guild = invite.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("invite_delete", True):
         description = (
             f"**Invite Code:** {invite.code}\n"
@@ -1466,14 +1670,14 @@ async def on_invite_delete(invite):
         
 @bot_instance.event
 async def on_member_ban(guild, user):
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("member_ban", True):
         description = f"**Member:** {user.mention} has been banned."
         await log_event(guild, "member_ban", "Member Banned", description, color=discord.Color.dark_red())
 
 @bot_instance.event
 async def on_member_unban(guild, user):
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("member_unban", True):
         description = f"**Member:** {user.mention} has been unbanned."
         await log_event(guild, "member_unban", "Member Unbanned", description, color=discord.Color.green())
@@ -1481,7 +1685,7 @@ async def on_member_unban(guild, user):
 @bot_instance.event
 async def on_guild_role_create(role):
     guild = role.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("role_create", True):
         description = f"**Role Created:** {role.name}\n**ID:** {role.id}"
         await log_event(guild, "role_create", "Role Created", description, color=discord.Color.green())
@@ -1489,7 +1693,7 @@ async def on_guild_role_create(role):
 @bot_instance.event
 async def on_guild_role_delete(role):
     guild = role.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("role_delete", True):
         description = f"**Role Deleted:** {role.name}\n**ID:** {role.id}"
         await log_event(guild, "role_delete", "Role Deleted", description, color=discord.Color.red())
@@ -1497,7 +1701,7 @@ async def on_guild_role_delete(role):
 @bot_instance.event
 async def on_guild_role_update(before, after):
     guild = before.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("role_update", True):
         changes = []
         if before.name != after.name:
@@ -1509,7 +1713,7 @@ async def on_guild_role_update(before, after):
 @bot_instance.event
 async def on_guild_channel_create(channel):
     guild = channel.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("channel_create", True):
         description = f"**Channel Created:** {channel.mention}\n**Type:** {channel.type}"
         await log_event(guild, "channel_create", "Channel Created", description, color=discord.Color.green())
@@ -1517,7 +1721,7 @@ async def on_guild_channel_create(channel):
 @bot_instance.event
 async def on_guild_channel_delete(channel):
     guild = channel.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("channel_delete", True):
         description = f"**Channel Deleted:** {channel.name}\n**Type:** {channel.type}"
         await log_event(guild, "channel_delete", "Channel Deleted", description, color=discord.Color.red())
@@ -1525,7 +1729,7 @@ async def on_guild_channel_delete(channel):
 @bot_instance.event
 async def on_guild_channel_update(before, after):
     guild = before.guild
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     if config.get("channel_update", True):
         changes = []
         if before.name != after.name:
@@ -1536,7 +1740,7 @@ async def on_guild_channel_update(before, after):
 
 @bot_instance.event
 async def on_guild_emojis_update(guild, before, after):
-    config = get_log_config(guild.id)
+    config = load_log_config(guild.id)
     before_dict = {e.id: e for e in before}
     after_dict = {e.id: e for e in after}
     

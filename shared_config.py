@@ -9,4 +9,3 @@ class Config:
     def verify_paths(cls):
         if not cls.DATABASE_PATH.exists():
             raise FileNotFoundError(f"Database not found at {cls.DATABASE_PATH}")
-        print(f"🔍 Verified database path: {cls.DATABASE_PATH}")

@@ -83,6 +83,42 @@
                         </div>
                     </a>
                 </div>
+				
+				<!-- Welcome Messages Card -->
+                <div class="col">
+                    <a href="{{ url_for('welcome_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-person me-2"></i>Welcome Messages
+                            </h5>
+                            <p class="card-text text-muted">Configure join messages and embeds</p>
+                        </div>
+                    </a>
+                </div>
+				
+				<!-- Goodbye Messages Card -->
+                <div class="col">
+                    <a href="{{ url_for('goodbye_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-person me-2"></i>Goodbye Messages
+                            </h5>
+                            <p class="card-text text-muted">Configure goodbye messages and embeds</p>
+                        </div>
+                    </a>
+                </div>
+				
+				<!-- Spam Config Card -->
+                <div class="col">
+                    <a href="{{ url_for('spam_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-x-octagon me-2"></i>Spam
+                            </h5>
+                            <p class="card-text text-muted">Configure spam settings</p>
+                        </div>
+                    </a>
+                </div>
             </div>
         </div>
 
@@ -132,18 +168,78 @@
         <div class="management-section">
             <h3 class="section-title">Moderation</h3>
             <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Appeal Forms Card -->
+                <!-- Banned Users Card -->
                 <div class="col">
-                    <a href="{{ url_for('appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                    <a href="{{ url_for('banned_users', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
                         <div class="card-body">
                             <h5 class="card-title">
-                                <i class="bi bi-file-earmark-text me-2"></i>Appeal Forms
+                                <i class="bi bi-exclamation-triangle me-2"></i>Banned Users
                             </h5>
-                            <p class="card-text text-muted">Configure ban/kick/timeout appeal forms</p>
+                            <p class="card-text text-muted">View currently banned users</p>
                         </div>
                     </a>
                 </div>
 
+                <!-- Warned Users Card -->
+                <div class="col">
+                    <a href="{{ url_for('warnings', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-exclamation-triangle me-2"></i>Warned Users
+                            </h5>
+                            <p class="card-text text-muted">Manage user warnings</p>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+		
+		<!-- Configure Appeals Section -->
+        <div class="management-section">
+            <h3 class="section-title">Configure Appeals</h3>
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                <!-- Ban Appeal Forms Card -->
+                <div class="col">
+                    <a href="{{ url_for('ban_appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-text me-2"></i>Ban Appeal Forms
+                            </h5>
+                            <p class="card-text text-muted">Configure ban appeal form</p>
+                        </div>
+                    </a>
+                </div>
+				
+				<!-- Kick Appeal Forms Card -->
+                <div class="col">
+                    <a href="{{ url_for('kick_appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-text me-2"></i>Kick Appeal Forms
+                            </h5>
+                            <p class="card-text text-muted">Configure kick appeal form</p>
+                        </div>
+                    </a>
+                </div>
+				
+				<!-- Timeout Appeal Forms Card -->
+                <div class="col">
+                    <a href="{{ url_for('timeout_appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-text me-2"></i>Timeout Appeal Forms
+                            </h5>
+                            <p class="card-text text-muted">Configure timeout appeal form</p>
+                        </div>
+                    </a>
+                </div>
+			</div>
+        </div>
+		
+		<!-- Manage Appeals Section -->
+        <div class="management-section">
+            <h3 class="section-title">Manage Appeals</h3>
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
                 <!-- Ban Appeals Card -->
                 <div class="col">
                     <a href="{{ url_for('ban_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
@@ -176,30 +272,6 @@
                                 <i class="bi bi-clock-history me-2"></i>Timeout Appeals
                             </h5>
                             <p class="card-text text-muted">Review and manage timeout appeals</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Banned Users Card -->
-                <div class="col">
-                    <a href="{{ url_for('banned_users', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-ban me-2"></i>Banned Users
-                            </h5>
-                            <p class="card-text text-muted">View currently banned users</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Warned Users Card -->
-                <div class="col">
-                    <a href="{{ url_for('warnings', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-exclamation-triangle me-2"></i>Warned Users
-                            </h5>
-                            <p class="card-text text-muted">Manage user warnings</p>
                         </div>
                     </a>
                 </div>

@@ -200,14 +200,14 @@ class LevelingCog(commands.Cog):
     @app_commands.command(name="setlevel", description="Set a user's level (Admin only)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
-    async def setlevel(self, ctx, user: discord.Member, level: int):
+    @app_commands.describe(user="User to modify", level="New level (0-1000)")
+    async def setlevel(self, interaction: discord.Interaction, user: discord.Member, level: app_commands.Range[int, 0, 1000]):
         """Set a user's level (Admin)"""
-        if level < 0 or level > 1000:
-            await ctx.send("❌ Level must be between 0 and 1000!", ephemeral=True)
-            return
-
         try:
-            # Calculate XP for target level using your level formula
+            # Immediately acknowledge the interaction
+            await interaction.response.defer(ephemeral=True)
+            
+            # Calculate XP for target level
             xp_required = 100 * (level ** 1.7)
             
             # Update database
@@ -215,16 +215,22 @@ class LevelingCog(commands.Cog):
                 INSERT OR REPLACE INTO user_levels 
                 (guild_id, user_id, level, xp, username)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (str(ctx.guild.id), str(user.id), level, xp_required, user.name))
+            ''', (str(interaction.guild.id), str(user.id), level, xp_required, user.name))
             
             self.bot.db.conn.commit()
             
-            await ctx.send(f"✅ Set {user.mention}'s level to {level} with {xp_required:.0f} XP!", 
-                          ephemeral=True)
+            # Send follow-up response
+            await interaction.followup.send(
+                f"✅ Set {user.mention}'s level to {level} with {xp_required:.0f} XP!",
+                ephemeral=True
+            )
             
         except Exception as e:
-            await ctx.send("❌ Failed to update level. Check logs.", ephemeral=True)
-            logging.error(f"Setlevel error: {str(e)}")
+            logging.error(f"Setlevel error: {str(e)}", exc_info=True)
+            await interaction.followup.send(
+                "❌ Failed to update level. Check logs.",
+                ephemeral=True
+            )
 
     @add_xp.error
     @set_xp.error

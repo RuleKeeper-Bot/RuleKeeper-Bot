@@ -1,9 +1,14 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import timedelta
-from bot.bot import log_event, get_log_config
+from datetime import datetime, timedelta, timezone
+from bot.bot import log_event, load_log_config
 from config import Config
+import uuid
+import traceback
+import sqlite3
+import json
+import time
 
 WARNING_ACTIONS = {2: "timeout", 3: "ban"}
 
@@ -87,7 +92,7 @@ class ModerationCog(commands.Cog):
                 )
                     
                 if ban_config.get('enabled', False) and ban_config.get('form_url'):
-                    appeal_url = f"{config.FRONTEND_URL}{ban_config['form_url']}?user_id={member.id}"
+                    appeal_url = f"{Config.FRONTEND_URL}{ban_config['form_url']}?user_id={member.id}"
                     ban_embed.add_field(
                         name="Appeal Form",
                         value=f"[Click here to appeal]({appeal_url})",
@@ -248,74 +253,120 @@ class ModerationCog(commands.Cog):
     @app_commands.checks.has_permissions(ban_members=True)
     async def ban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
         try:
-            if not interaction.guild.me.guild_permissions.ban_members:
-                await interaction.response.send_message("I don't have permission to ban users.", ephemeral=True)
-                return
+            await interaction.response.defer()
             
-            if isinstance(user, discord.Member):  # Only check if user is in server
+            # Check bot permissions
+            if not interaction.guild.me.guild_permissions.ban_members:
+                await interaction.followup.send("❌ I don't have permission to ban users.", ephemeral=True)
+                return
+
+            # Check role hierarchy if user is a member
+            if isinstance(user, discord.Member):
                 if interaction.user.top_role <= user.top_role:
-                    await interaction.response.send_message(
-                        "You can't ban someone with equal/higher role than you.",
-                        ephemeral=True
-                    )
+                    await interaction.followup.send("❌ You can't ban someone with equal/higher role.", ephemeral=True)
                     return
                 if interaction.guild.me.top_role <= user.top_role:
-                    await interaction.response.send_message(
-                        "I can't ban someone with equal/higher role than me.",
-                        ephemeral=True
-                    )
+                    await interaction.followup.send("❌ I can't ban someone with equal/higher role than me.", ephemeral=True)
                     return
 
-            guild_id = str(interaction.guild.id)
-            appeal_config = self.db.get_appeal_forms(guild_id)
-                
-            # Get ban-specific config from appeal forms
+            guild = interaction.guild
+            guild_id = str(guild.id)
+            user_id = str(user.id)
+            moderator_id = str(interaction.user.id)
+            timestamp = int(time.time())
+
+            # Generate appeal data
+            appeal_token = str(uuid.uuid4())
+            appeal_expires = timestamp + (7 * 24 * 3600)  # 1 week
+
+            # Get appeal configuration
+            appeal_config = self.db.get_appeal_forms(guild_id) or {}
             ban_enabled = appeal_config.get('ban_enabled', False)
             ban_form_url = appeal_config.get('ban_form_url', '')
-            base_url = appeal_config.get('base_url', config.FRONTEND_URL)
-            ban_channel_id = appeal_config.get('ban_channel_id', '')
+            ban_channel_id = appeal_config.get('ban_channel_id')
 
+            # Build appeal message
+            appeal_message = "Contact server staff to appeal your ban"
+            appeal_url = ""
+            if ban_enabled and ban_form_url and Config.FRONTEND_URL:
+                try:
+                    appeal_url = f"{Config.FRONTEND_URL}{ban_form_url}?token={appeal_token}"
+                    appeal_message = f"[Appeal Your Ban]({appeal_url})\nExpires <t:{appeal_expires}:R>"
+                    
+                    # Database operations
+                    with self.db.conn:
+                        self.db.conn.execute('''
+                            INSERT INTO appeals 
+                            (appeal_id, guild_id, user_id, type, appeal_data, 
+                             status, appeal_token, expires_at, moderator_id, submitted_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            str(uuid.uuid4()),
+                            guild_id,
+                            user_id,
+                            'ban',
+                            json.dumps({"reason": reason}),
+                            'pending',
+                            appeal_token,
+                            appeal_expires,
+                            moderator_id,
+                            timestamp
+                        ))
+                        
+                except Exception as e:
+                    print(f"[APPEAL ERROR] {str(e)}")
+                    appeal_message = "⚠️ Temporary appeal system issue"
+
+            # Create ban embed
             ban_embed = discord.Embed(
-                title="You have been banned!",
-                description=f"**Reason:** {reason}\n\nYou have been banned from {interaction.guild.name}.",
+                title="🔨 Account Banned",
+                description=f"You've been banned from **{guild.name}**",
                 color=discord.Color.red()
             )
-                
-            if ban_enabled and ban_form_url:
-                appeal_url = f"{base_url}{ban_form_url}?user_id={user.id}&guild_id={guild_id}"
-                ban_embed.add_field(
-                    name="Appeal Form",
-                    value=f"[Click here to appeal]({appeal_url})",
-                    inline=False
-                )
+            ban_embed.add_field(name="Reason", value=reason, inline=False)
+            ban_embed.add_field(name="Appeal Information", value=appeal_message, inline=False)
 
+            # Execute ban
             try:
                 await user.send(embed=ban_embed)
+                dm_success = True
             except discord.Forbidden:
-                pass
+                dm_success = False
 
-            await interaction.guild.ban(user, reason=reason, delete_message_days=0)
-            await interaction.response.send_message(
-                f"{user.mention} has been banned. Reason: {reason}",
-                ephemeral=True
-            )
-                
-            # Log to database
-            self.db.add_warning(guild_id, str(user.id), reason, action_type='ban')
-                
+            await guild.ban(user, reason=reason, delete_message_days=0)
+
+            # Send response
+            response = f"✅ {user.mention} has been banned"
+            response += "\n📩 Appeal link sent" if dm_success else "\n⚠️ Couldn't send DM"
+            await interaction.followup.send(response, ephemeral=True)
+
+            # Log event
             await log_event(
-                interaction.guild,
+                guild,
                 "member_ban",
                 "Member Banned",
-                f"**User:** {user.mention}\n**Reason:** {reason}\n**Moderator:** {interaction.user.mention}",
+                f"**User:** {user.mention}\n**Reason:** {reason}\n"
+                f"**Appeal Token:** `{appeal_token or 'None'}`",
                 color=discord.Color.red()
             )
 
+            # Send to ban appeals channel
+            if ban_channel_id:
+                try:
+                    channel = guild.get_channel(int(ban_channel_id))
+                    if channel:
+                        await channel.send(
+                            f"New ban appeal created: {appeal_url}" if appeal_url else
+                            f"User {user.mention} was banned without appeal system"
+                        )
+                except Exception as e:
+                    print(f"[CHANNEL ERROR] {str(e)}")
+
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to ban this user.", ephemeral=True)
+            await interaction.followup.send("❌ Missing permissions to ban this user", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
-            print(f"Ban error: {str(e)}")
+            await interaction.followup.send(f"❌ Ban failed: {str(e)}", ephemeral=True)
+            print(f"[BAN ERROR] {traceback.format_exc()}")
 
     @app_commands.command(name="unban", description="Unban a user from the server")
     @app_commands.describe(user="The user to unban", reason="The reason for the unban")
@@ -378,7 +429,7 @@ class ModerationCog(commands.Cog):
             )
                 
             if kick_config.get('enabled') and kick_config.get('form_url'):
-                appeal_url = f"{kick_config.get('base_url', config.FRONTEND_URL)}{kick_config['form_url']}?user_id={member.id}"
+                appeal_url = f"{kick_config.get('base_url', Config.FRONTEND_URL)}{kick_config['form_url']}?user_id={member.id}"
                 kick_embed.add_field(
                     name="Appeal Form",
                     value=f"[Click here to appeal]({appeal_url})",
@@ -513,7 +564,7 @@ class ModerationCog(commands.Cog):
                 
             # Add appeal form if configured in database
             if timeout_config.get('enabled') and timeout_config.get('form_url'):
-                appeal_url = f"{config.FRONTEND_URL}{timeout_config['form_url']}?user_id={member.id}"
+                appeal_url = f"{Config.FRONTEND_URL}{timeout_config['form_url']}?user_id={member.id}"
                 timeout_embed.add_field(
                     name="Appeal Form",
                     value=f"[Click here to appeal]({appeal_url})",
@@ -601,7 +652,7 @@ class ModerationCog(commands.Cog):
     
         try:
             guild_id = str(interaction.guild.id)
-            log_config = get_log_config(guild_id)
+            log_config = load_log_config(guild_id)
             
             # Create an invite for rejoining
             try:

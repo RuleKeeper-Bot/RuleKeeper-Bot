@@ -194,6 +194,7 @@
     </div>
 
         <form method="POST" action="/dashboard/{{ guild_id }}/appeal-forms">
+		<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="card mb-3">
                 <div class="card-body">
                     <h5>Base URL Configuration</h5>
@@ -239,12 +240,23 @@
                         </textarea>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Ban Appeal Channel ID</label>
-                        <input type="text" class="form-control" 
-                               name="ban_channel_id" 
-                               value="{{ forms.ban_channel_id if forms.ban_channel_id else '' }}" 
-                               required>
-                    </div>
+						<label class="form-label">Ban Appeal Channel</label>
+						<select class="form-control" name="ban_channel_id">
+							<option value="">Select a channel...</option>
+							{% if channels %}
+								{% for channel in channels %}
+								<option value="{{ channel.id }}" 
+									{% if forms.ban_channel_id == channel.id %}selected{% endif %}>
+									#{{ channel.name }}
+								</option>
+								{% endfor %}
+							{% else %}
+								<option value="" disabled>
+									{% if discord_guild %}No text channels found{% else %}Bot not in server{% endif %}
+								</option>
+							{% endif %}
+						</select>
+					</div>
                 </div>
             </div>
 
@@ -275,12 +287,23 @@
                         </textarea>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Kick Appeal Channel ID</label>
-                        <input type="text" class="form-control" 
-                               name="kick_channel_id" 
-                               value="{{ forms.kick_channel_id if forms.kick_channel_id else '' }}" 
-                               required>
-                    </div>
+						<label class="form-label">Kick Appeal Channel</label>
+						<select class="form-control" name="kick_channel_id">
+							<option value="">Select a channel...</option>
+							{% if channels %}
+								{% for channel in channels %}
+								<option value="{{ channel.id }}" 
+									{% if forms.ban_channel_id == channel.id %}selected{% endif %}>
+									#{{ channel.name }}
+								</option>
+								{% endfor %}
+							{% else %}
+								<option value="" disabled>
+									{% if discord_guild %}No text channels found{% else %}Bot not in server{% endif %}
+								</option>
+							{% endif %}
+						</select>
+					</div>
                 </div>
             </div>
 
@@ -311,12 +334,23 @@
                         </textarea>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Timeout Appeal Channel ID</label>
-                        <input type="text" class="form-control" 
-                               name="timeout_channel_id" 
-                               value="{{ forms.timeout_channel_id if forms.timeout_channel_id else '' }}" 
-                               required>
-                    </div>
+						<label class="form-label">Timeout Appeal Channel</label>
+						<select class="form-control" name="timeout_channel_id">
+							<option value="">Select a channel...</option>
+							{% if channels %}
+								{% for channel in channels %}
+								<option value="{{ channel.id }}" 
+									{% if forms.ban_channel_id == channel.id %}selected{% endif %}>
+									#{{ channel.name }}
+								</option>
+								{% endfor %}
+							{% else %}
+								<option value="" disabled>
+									{% if discord_guild %}No text channels found{% else %}Bot not in server{% endif %}
+								</option>
+							{% endif %}
+						</select>
+					</div>
                 </div>
             </div>
 

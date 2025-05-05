@@ -2,9 +2,10 @@ import sqlite3
 import json
 import logging
 import threading
+import uuid
+import time
 from typing import Optional, List, Dict, Any
 from config import Config
-import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +14,9 @@ class Database:
         self.db_path = db_path
         self.local = threading.local()
         self._verify_connection()
+        self.conn.row_factory = sqlite3.Row
         
     def _verify_connection(self):
-        """Verify database connection during initialization"""
         try:
             conn = sqlite3.connect(self.db_path)
             conn.execute("SELECT 1")
@@ -27,27 +28,24 @@ class Database:
 
     @property
     def conn(self):
-        """Thread-local connection property"""
         if not hasattr(self.local, 'conn') or self.local.conn is None:
             self._connect()
         return self.local.conn
 
     def _connect(self):
-        """Create a new thread-local connection"""
         self.local.conn = sqlite3.connect(self.db_path)
         self.local.conn.row_factory = sqlite3.Row
         self.local.conn.execute("PRAGMA foreign_keys = ON")
+        self.local.conn.execute("PRAGMA journal_mode=WAL;")
         logger.debug(f"Created new connection in thread {threading.get_ident()}")
 
     def close(self):
-        """Close the thread-local connection"""
         if hasattr(self.local, 'conn') and self.local.conn:
             self.local.conn.close()
             self.local.conn = None
             logger.debug(f"Closed connection in thread {threading.get_ident()}")
 
     def execute_query(self, query: str, params=(), fetch: str = 'all', many: bool = False):
-        """Safe query execution with connection handling"""
         conn = None
         try:
             conn = sqlite3.connect(self.db_path)
@@ -78,12 +76,11 @@ class Database:
                 conn.close()
 
     def initialize_db(self):
-        """Initialize database structure"""
         try:
             self._connect()
             cursor = self.conn.cursor()
 
-            # Guilds Table
+            # Tables creation with full schema
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS guilds (
                     guild_id TEXT PRIMARY KEY,
@@ -91,20 +88,16 @@ class Database:
                     owner_id TEXT NOT NULL,
                     icon TEXT,
                     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+                )''')
             
-            # Users Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
                     username TEXT,
                     avatar_url TEXT,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+                )''')
 
-            # Log Config Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS log_config (
                     guild_id TEXT PRIMARY KEY,
@@ -132,18 +125,15 @@ class Database:
                     emoji_name_change BOOLEAN DEFAULT 1,
                     emoji_delete BOOLEAN DEFAULT 1,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
-            # Blocked Words Tables
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS blocked_words (
                     guild_id TEXT,
                     word TEXT,
                     PRIMARY KEY(guild_id, word),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS blocked_word_embeds (
@@ -152,10 +142,8 @@ class Database:
                     description TEXT DEFAULT 'You have used a word that is not allowed.',
                     color INTEGER DEFAULT 16711680,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
-            # Commands Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS commands (
                     guild_id TEXT,
@@ -165,10 +153,8 @@ class Database:
                     ephemeral BOOLEAN DEFAULT 1,
                     PRIMARY KEY(guild_id, command_name),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
-            # Level System Tables
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS level_config (
                     guild_id TEXT PRIMARY KEY,
@@ -183,8 +169,7 @@ class Database:
                     embed_description TEXT DEFAULT '{user} has reached level **{level}**!',
                     embed_color INTEGER DEFAULT 16766720,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS level_rewards (
@@ -193,8 +178,7 @@ class Database:
                     role_id TEXT,
                     PRIMARY KEY(guild_id, level),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_levels (
@@ -204,58 +188,101 @@ class Database:
                     level INTEGER DEFAULT 0,
                     username TEXT,
                     last_message TIMESTAMP DEFAULT 0,
+                    message_count INTEGER DEFAULT 0,
                     PRIMARY KEY(guild_id, user_id),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
-            # Warnings Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS warnings (
                     guild_id TEXT,
                     user_id TEXT,
                     warning_id TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    reason TEXT,
+                    reason TEXT NOT NULL,
                     action_type TEXT DEFAULT 'warn',
                     moderator_id TEXT,
                     PRIMARY KEY(guild_id, user_id, warning_id),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
-            # Appeal System Tables
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS appeal_forms (
                     guild_id TEXT PRIMARY KEY,
-                    base_url TEXT,
                     ban_enabled BOOLEAN DEFAULT 0,
-                    ban_channel_id TEXT,
-                    ban_form_url TEXT,
                     ban_form_fields TEXT DEFAULT '[]',
+                    ban_form_description TEXT,
+                    ban_channel_id TEXT,
                     kick_enabled BOOLEAN DEFAULT 0,
-                    kick_channel_id TEXT,
-                    kick_form_url TEXT,
                     kick_form_fields TEXT DEFAULT '[]',
+                    kick_form_description TEXT,
+                    kick_channel_id TEXT,
                     timeout_enabled BOOLEAN DEFAULT 0,
-                    timeout_channel_id TEXT,
-                    timeout_form_url TEXT,
                     timeout_form_fields TEXT DEFAULT '[]',
+                    timeout_form_description TEXT,
+                    timeout_channel_id TEXT,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )
-            ''')
+                )''')
 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS appeals (
-                    guild_id TEXT,
-                    appeal_id TEXT,
-                    user_id TEXT,
-                    type TEXT,
-                    data TEXT,
-                    status TEXT DEFAULT 'pending',
+                    appeal_id TEXT PRIMARY KEY,
+                    guild_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    appeal_data TEXT NOT NULL,
+                    status TEXT
+                    appeal_token TEXT UNIQUE NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    moderator_id TEXT NOT NULL,
+                    submitted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
+                    preview_text TEXT,
+                    reviewed_by TEXT,
+                    reviewed_at INTEGER,
+                    moderator_notes TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS welcome_config (
+                    guild_id TEXT PRIMARY KEY,
+                    enabled BOOLEAN DEFAULT 0,
                     channel_id TEXT,
-                    PRIMARY KEY(guild_id, appeal_id),
+                    message_type TEXT DEFAULT 'text',
+                    message_content TEXT,
+                    embed_title TEXT,
+                    embed_description TEXT,
+                    embed_color INTEGER DEFAULT 0x00FF00,
+                    embed_thumbnail BOOLEAN DEFAULT 1,
+                    show_server_icon BOOLEAN DEFAULT 0,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS goodbye_config (
+                    guild_id TEXT PRIMARY KEY,
+                    enabled BOOLEAN DEFAULT 0,
+                    channel_id TEXT,
+                    message_type TEXT DEFAULT 'text',
+                    message_content TEXT,
+                    embed_title TEXT,
+                    embed_description TEXT,
+                    embed_color INTEGER DEFAULT 0xFF0000,
+                    embed_thumbnail BOOLEAN DEFAULT 1,
+                    show_server_icon BOOLEAN DEFAULT 0,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS spam_detection_config (
+                    guild_id TEXT PRIMARY KEY,
+                    spam_threshold INTEGER DEFAULT 5,
+                    spam_time_window INTEGER DEFAULT 10,
+                    mention_threshold INTEGER DEFAULT 3,
+                    mention_time_window INTEGER DEFAULT 30,
+                    excluded_channels TEXT DEFAULT '[]',
+                    excluded_roles TEXT DEFAULT '[]',
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 )
             ''')
@@ -267,16 +294,43 @@ class Database:
                     added_roles TEXT,
                     removed_roles TEXT,
                     expiration_time TIMESTAMP,
-                    PRIMARY KEY (user_id, guild_id)
-                )
-            ''')
+                    PRIMARY KEY (user_id, guild_id),
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_appeals_token 
+                ON appeals(appeal_token)''')
 
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_appeals_user 
+                ON appeals(user_id, guild_id)''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_appeals_status 
+                ON appeals(status, expires_at)
+            ''')
+                
+            # Add message_count column if missing
+            cursor.execute('''
+                PRAGMA table_info(user_levels)
+            ''')
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'message_count' not in columns:
+                cursor.execute('''
+                    ALTER TABLE user_levels 
+                    ADD COLUMN message_count INTEGER DEFAULT 0
+                ''')
+                
             self.conn.commit()
             logger.info("Database initialized successfully")
+        except sqlite3.Error as e:
+            logger.error(f"Database initialization failed: {str(e)}")
+            raise
         finally:
             self.close()
 
-    # Username Methods
+    # User Methods
     def get_or_create_user(self, user_id: str, username: str = None, avatar_url: str = None):
         self.execute_query(
             '''INSERT OR IGNORE INTO users 
@@ -299,7 +353,7 @@ class Database:
             fetch='one'
         )
 
-    # Guild Management
+    # Guild Methods
     def get_guild(self, guild_id: str) -> Optional[dict]:
         return self.execute_query(
             'SELECT * FROM guilds WHERE guild_id = ?',
@@ -315,18 +369,14 @@ class Database:
                 VALUES (?, ?, ?, ?)''',
                 (guild_id, name, owner_id, icon)
             )
-            print(f"✅ Saved guild {guild_id} to database")
         except Exception as e:
             print(f"❌ Database error adding guild: {str(e)}")
             raise
 
     def remove_guild(self, guild_id: str):
-        """Remove a guild and all its data"""
         try:
             with self.conn:
-                # Delete guild and let foreign keys clean up related data
                 self.conn.execute('DELETE FROM guilds WHERE guild_id = ?', (guild_id,))
-            print(f"🗑️ Removed guild {guild_id} and all related data")
         except sqlite3.Error as e:
             print(f"Database error removing guild: {str(e)}")
             raise
@@ -337,26 +387,33 @@ class Database:
             fetch='all'
         )
            
-    # All Commands Methods
+    # Command Methods
     def get_all_commands(self):
-        """Get all commands from all guilds"""
         return self.execute_query(
             'SELECT * FROM commands',
             fetch='all'
         )
 
     def get_guild_commands(self, guild_id):
-        """Get all commands for a specific guild"""
         result = self.execute_query(
             'SELECT * FROM commands WHERE guild_id = ?',
             (guild_id,),
             fetch='all'
         )
         return {row['command_name']: dict(row) for row in result} if result else {}
-
-    def get_commands(self, guild_id: str) -> dict:
-        """Get all commands for a specific guild as {command_name: command_data}"""
+        
+    def get_guild_commands_list(self, guild_id: str) -> list:
+        """Get list of command dictionaries (safe for iteration)"""
         result = self.execute_query(
+            'SELECT * FROM commands WHERE guild_id = ?',
+            (guild_id,),
+            fetch='all'
+        )
+        return [dict(row) for row in result] if result else []
+
+    def get_commands(self, guild_id: str) -> list:
+        """Get list of command dictionaries"""
+        return self.execute_query(
             '''SELECT * FROM commands 
             WHERE guild_id = ? 
             AND command_name IS NOT NULL 
@@ -365,6 +422,35 @@ class Database:
             fetch='all'
         )
         return {row['command_name']: dict(row) for row in result} if result else {}
+        
+    def get_command(self, guild_id: str, command_name: str) -> Optional[dict]:
+        """Get a single command by name"""
+        return self.execute_query(
+            '''SELECT * FROM commands 
+            WHERE guild_id = ? 
+            AND command_name = ?''',
+            (guild_id, command_name),
+            fetch='one'
+        )
+
+    def add_command(self, guild_id: str, command_name: str, content: str, 
+               description: str = "Custom command", ephemeral: bool = True):
+        self.execute_query(
+            '''INSERT INTO commands 
+            (guild_id, command_name, content, description, ephemeral)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, command_name) 
+            DO UPDATE SET 
+                content = excluded.content,
+                description = excluded.description,
+                ephemeral = excluded.ephemeral''',
+            (guild_id, command_name, content, description, int(ephemeral)))
+
+    def remove_command(self, guild_id: str, command_name: str):
+        self.execute_query(
+            'DELETE FROM commands WHERE guild_id = ? AND command_name = ?',
+            (guild_id, command_name)
+        )
 
     # Log Config Methods
     def get_log_config(self, guild_id: str) -> dict:
@@ -380,6 +466,22 @@ class Database:
         self.execute_query(
             f'UPDATE log_config SET {columns} WHERE guild_id = ?',
             tuple(values)
+        )
+        
+    # Welcome Message Method
+    def get_welcome_config(self, guild_id: str) -> dict:
+        return self.execute_query(
+            'SELECT * FROM welcome_config WHERE guild_id = ?',
+            (guild_id,),
+            fetch='one'
+        )
+        
+    # Goodbye Message Method
+    def get_goodbye_config(self, guild_id: str) -> dict:
+        return self.execute_query(
+            'SELECT * FROM goodbye_config WHERE guild_id = ?',
+            (guild_id,),
+            fetch='one'
         )
 
     # Blocked Words Methods
@@ -403,7 +505,7 @@ class Database:
             (guild_id, word)
         )
 
-    # Blocked Word Embed Methods
+    # Blocked Embed Methods
     def get_blocked_embed(self, guild_id: str) -> dict:
         return self.execute_query(
             'SELECT * FROM blocked_word_embeds WHERE guild_id = ?',
@@ -419,33 +521,6 @@ class Database:
             tuple(values)
         )
 
-    # Commands Methods
-    def get_commands(self, guild_id: str) -> list:
-        commands = self.execute_query(
-            '''SELECT * FROM commands 
-            WHERE guild_id = ? 
-            AND command_name IS NOT NULL 
-            AND content IS NOT NULL''',
-            (guild_id,),
-            fetch='all'
-        )
-        return [dict(c) for c in commands] if commands else []
-
-    def add_command(self, guild_id: str, command_name: str, content: str, 
-                   description: str = "Custom command", ephemeral: bool = True):
-        self.execute_query(
-            '''INSERT OR REPLACE INTO commands 
-            (guild_id, command_name, content, description, ephemeral)
-            VALUES (?, ?, ?, ?, ?)''',
-            (guild_id, command_name, content, description, int(ephemeral))
-        )
-
-    def remove_command(self, guild_id: str, command_name: str):
-        self.execute_query(
-            'DELETE FROM commands WHERE guild_id = ? AND command_name = ?',
-            (guild_id, command_name)
-        )
-
     # Level System Methods
     def get_level_config(self, guild_id: str) -> dict:
         config = self.execute_query(
@@ -453,43 +528,60 @@ class Database:
             (guild_id,),
             fetch='one'
         )
-        # Ensure proper deserialization
-        if config and 'excluded_channels' in config and isinstance(config['excluded_channels'], str):
-            config['excluded_channels'] = json.loads(config['excluded_channels'])
-        if config and 'xp_boost_roles' in config and isinstance(config['xp_boost_roles'], str):
-            config['xp_boost_roles'] = json.loads(config['xp_boost_roles'])
+        
+        if config:
+            config = dict(config)
+            try:
+                # Handle excluded_channels
+                excluded_channels = config.get('excluded_channels', '[]')
+                if isinstance(excluded_channels, str):
+                    config['excluded_channels'] = json.loads(excluded_channels)
+                if not isinstance(config['excluded_channels'], list):
+                    config['excluded_channels'] = []
+
+                # Handle xp_boost_roles with enhanced validation
+                xp_boost = config.get('xp_boost_roles', '{}')
+                
+                # Convert bytes to string if needed
+                if isinstance(xp_boost, bytes):
+                    xp_boost = xp_boost.decode('utf-8')
+                
+                # Clean JSON string
+                if isinstance(xp_boost, str):
+                    xp_boost = xp_boost.strip().strip('"').replace("\\", "")
+                
+                # Parse JSON with type checking
+                parsed_boost = {}
+                if xp_boost:
+                    try:
+                        temp = json.loads(xp_boost)
+                        if isinstance(temp, dict):
+                            parsed_boost = temp
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON decode error: {str(e)}")
+                        logger.error(f"Problematic JSON: {xp_boost}")
+
+                # Validate and convert types
+                valid_boosts = {}
+                for key, value in parsed_boost.items():
+                    try:
+                        valid_boosts[str(key)] = int(value)
+                    except (ValueError, TypeError):
+                        continue
+                    
+                config['xp_boost_roles'] = valid_boosts
+
+            except Exception as e:
+                logger.error(f"Error parsing level config: {str(e)}")
+                config['xp_boost_roles'] = {}
+                config['excluded_channels'] = []
+                
         return config or {}
             
-        config = dict(config)  # Convert sqlite3.Row to dict
-        
-        # Ensure xp_boost_roles is properly decoded
-        if 'xp_boost_roles' in config and isinstance(config['xp_boost_roles'], str):
-            try:
-                config['xp_boost_roles'] = json.loads(config['xp_boost_roles'])
-            except json.JSONDecodeError:
-                config['xp_boost_roles'] = {}
-        
-        # Ensure excluded_channels is properly decoded
-        if 'excluded_channels' in config and isinstance(config['excluded_channels'], str):
-            try:
-                config['excluded_channels'] = json.loads(config['excluded_channels'])
-            except json.JSONDecodeError:
-                config['excluded_channels'] = []
-        
-        return config
-
     def update_level_config(self, guild_id: str, **kwargs):
-        # Serialize JSON fields
-        if 'excluded_channels' in kwargs and not isinstance(kwargs['excluded_channels'], str):
-            kwargs['excluded_channels'] = json.dumps(kwargs['excluded_channels'])
-        if 'xp_boost_roles' in kwargs and not isinstance(kwargs['xp_boost_roles'], str):
-            kwargs['xp_boost_roles'] = json.dumps(kwargs['xp_boost_roles'])
-        # Prepare the data for update
         update_data = {}
-        
         for key, value in kwargs.items():
             if key in ['xp_boost_roles', 'excluded_channels']:
-                # Ensure these fields are properly JSON encoded
                 update_data[key] = json.dumps(value) if value else '{}' if key == 'xp_boost_roles' else '[]'
             else:
                 update_data[key] = value
@@ -508,7 +600,6 @@ class Database:
             (guild_id,),
             fetch='all'
         )
-        # Always return a dict, even if empty
         return {row['level']: row['role_id'] for row in result} if result else {}
 
     def add_level_reward(self, guild_id: str, level: int, role_id: str):
@@ -539,7 +630,7 @@ class Database:
             tuple(values)
         )
 
-    # Warnings Methods
+    # Warning Methods
     def get_warnings(self, guild_id: str, user_id: str) -> list:
         return self.execute_query(
             '''SELECT w.*, u.username 
@@ -551,8 +642,15 @@ class Database:
             fetch='all'
         )
 
-    def add_warning(self, guild_id: str, user_id: str, reason: str) -> str:
-        return self.add_warning_with_action(guild_id, user_id, reason, 'warn')
+    def add_warning(self, guild_id: str, user_id: str, reason: str, moderator_id: str = None) -> str:
+        warning_id = str(uuid.uuid4())
+        self.execute_query(
+            '''INSERT INTO warnings 
+            (guild_id, user_id, warning_id, reason, moderator_id) 
+            VALUES (?, ?, ?, ?, ?)''',
+            (guild_id, user_id, warning_id, reason, moderator_id)
+        )
+        return warning_id
 
     def remove_warning(self, guild_id: str, user_id: str, warning_id: str):
         self.execute_query(
@@ -569,28 +667,58 @@ class Database:
             (new_reason, guild_id, user_id, warning_id)
         )
         
-    def add_warning_with_action(self, guild_id: str, user_id: str, reason: str, action_type: str = 'warn', moderator_id: str = None) -> str:
-        warning_id = str(uuid.uuid4())
+    # Spam config methods
+    def get_spam_config(self, guild_id: str) -> dict:
+        default = {
+            "spam_threshold": 5,
+            "spam_time_window": 10,
+            "mention_threshold": 3,
+            "mention_time_window": 30,
+            "excluded_channels": [],
+            "excluded_roles": []
+        }
+        config = self.execute_query(
+            'SELECT * FROM spam_detection_config WHERE guild_id = ?',
+            (guild_id,),
+            fetch='one'
+        )
+        if not config:
+            return default
+        config = dict(config)
+        config["excluded_channels"] = json.loads(config.get("excluded_channels", "[]"))
+        config["excluded_roles"] = json.loads(config.get("excluded_roles", "[]"))
+        return {**default, **config}
+
+    def update_spam_config(self, guild_id: str, **kwargs):
+        # Ensure all possible columns are present with defaults
+        full_data = {
+            "spam_threshold": 5,
+            "spam_time_window": 10,
+            "mention_threshold": 3,
+            "mention_time_window": 30,
+            "excluded_channels": [],
+            "excluded_roles": [],
+            **kwargs
+        }
+        
+        # Convert list fields to JSON strings
+        full_data["excluded_channels"] = json.dumps(full_data["excluded_channels"])
+        full_data["excluded_roles"] = json.dumps(full_data["excluded_roles"])
+        
+        columns = list(full_data.keys())
+        values = list(full_data.values())
+        
         self.execute_query(
-            '''INSERT INTO warnings 
-            (guild_id, user_id, warning_id, reason, action_type, moderator_id) 
-            VALUES (?, ?, ?, ?, ?, ?)''',
-            (guild_id, user_id, warning_id, reason, action_type, moderator_id)
-        )
-        return warning_id
-
-    def get_warnings_by_action(self, guild_id: str, action_type: str) -> list:
-        return self.execute_query(
-            '''SELECT w.*, u.username 
-            FROM warnings w
-            LEFT JOIN users u ON w.user_id = u.user_id
-            WHERE w.guild_id = ? AND w.action_type = ?
-            ORDER BY timestamp DESC''',
-            (guild_id, action_type),
-            fetch='all'
+            '''INSERT INTO spam_detection_config 
+                (guild_id, ''' + ', '.join(columns) + ''')
+                VALUES (?, ''' + ', '.join(['?']*len(columns)) + ''')
+                ON CONFLICT(guild_id) DO UPDATE SET 
+                ''' + ', '.join([f"{col} = excluded.{col}" for col in columns]),
+            [guild_id] + values,
+            many=False
         )
 
-    # Appeal System Methods
+    # Appeal Methods
     def get_appeal_forms(self, guild_id: str) -> dict:
         return self.execute_query(
             'SELECT * FROM appeal_forms WHERE guild_id = ?',
@@ -599,47 +727,139 @@ class Database:
         )
 
     def update_appeal_forms(self, guild_id: str, **kwargs):
-        columns = ', '.join(f"{k} = ?" for k in kwargs)
-        values = list(kwargs.values()) + [guild_id]
-        self.execute_query(
-            f'UPDATE appeal_forms SET {columns} WHERE guild_id = ?',
-            tuple(values)
-        )
+        existing = self.get_appeal_forms(guild_id) or {}
+        merged = {**existing, **kwargs}
+        
+        # Convert boolean values to integers for SQLite
+        for key in ['ban_enabled', 'kick_enabled', 'timeout_enabled']:
+            merged[key] = int(bool(merged.get(key, 0)))
 
-    def create_appeal(self, guild_id, appeal_data) -> str:
+        columns = ', '.join(f"{k} = ?" for k in merged)
+        values = list(merged.values()) + [guild_id]
+        
+        self.execute_query(f'''
+            INSERT INTO appeal_forms 
+            (guild_id, {', '.join(merged.keys())})
+            VALUES (?{', ?' * len(merged)})
+            ON CONFLICT(guild_id) DO UPDATE SET 
+            {columns}
+        ''', [guild_id] + list(merged.values()) + list(merged.values()))
+    
+    def create_appeal(self, guild_id: str, appeal_data: dict) -> str:
         appeal_id = str(uuid.uuid4())
         self.execute_query(
             '''INSERT INTO appeals 
-            (guild_id, appeal_id, user_id, type, data, status, channel_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (appeal_id, guild_id, user_id, type, appeal_data,
+             status, appeal_token, expires_at, moderator_id, preview_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
-                str(guild_id),
                 appeal_id,
+                str(guild_id),
                 str(appeal_data['user_id']),
-                str(appeal_data['type']),
-                str(appeal_data['data']),
-                str(appeal_data.get('status', 'pending')),
-                str(appeal_data['channel_id'])
+                appeal_data['type'],
+                json.dumps(appeal_data.get('data', {})),
+                'pending',  # Initial status
+                appeal_data['appeal_token'],
+                int(appeal_data['expires_at']),
+                str(appeal_data['moderator_id']),
+                appeal_data.get('preview_text', '')
             )
         )
         return appeal_id
 
-    def get_appeal(self, guild_id: str, appeal_id: str) -> dict:
+    def get_appeal(self, guild_id: str, appeal_id: str) -> Optional[dict]:
         result = self.execute_query(
             'SELECT * FROM appeals WHERE guild_id = ? AND appeal_id = ?',
-            (guild_id, appeal_id),
+            (str(guild_id), appeal_id),
             fetch='one'
         )
         if result:
-            result['data'] = json.loads(result['data'])
-        return result
+            result = dict(result)
+            result['appeal_data'] = json.loads(result['appeal_data'])
+            return result
+        return None
 
     def update_appeal_status(self, guild_id: str, appeal_id: str, status: str):
+        valid_statuses = ['pending', 'under_review', 'approved', 'rejected']
+        if status not in valid_statuses:
+            raise ValueError(f"Invalid status: {status}")
+        
         self.execute_query(
-            'UPDATE appeals SET status = ? WHERE guild_id = ? AND appeal_id = ?',
-            (status, guild_id, appeal_id)
+            '''UPDATE appeals 
+            SET status = ? 
+            WHERE guild_id = ? AND appeal_id = ?''',
+            (status, str(guild_id), appeal_id)
+        )
+        
+    def get_appeal_by_token(self, appeal_token: str) -> Optional[dict]:
+        result = self.execute_query(
+            'SELECT * FROM appeals WHERE appeal_token = ?',
+            (appeal_token,),
+            fetch='one'
+        )
+        if result:
+            result = dict(result)
+            try:
+                result['appeal_data'] = json.loads(result['appeal_data'])
+            except (json.JSONDecodeError, TypeError):
+                result['appeal_data'] = {}
+            return result
+        return None
+
+    def update_appeal(self, appeal_id: str, **kwargs):
+        if 'appeal_data' in kwargs:
+            kwargs['appeal_data'] = json.dumps(kwargs['appeal_data'])
+        
+        # Convert reviewed_by to string if present
+        if 'reviewed_by' in kwargs and kwargs['reviewed_by'] is not None:
+            kwargs['reviewed_by'] = str(kwargs['reviewed_by'])
+            
+        set_clause = ', '.join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [appeal_id]
+        
+        self.execute_query(
+            f'''UPDATE appeals 
+            SET {set_clause} 
+            WHERE appeal_id = ?''',
+            tuple(values)
         )
 
-# Initialize database instance
+    # Pending Role Changes
+    def get_pending_role_changes(self, user_id: str, guild_id: str) -> dict:
+        return self.execute_query(
+            'SELECT * FROM pending_role_changes WHERE user_id = ? AND guild_id = ?',
+            (user_id, guild_id),
+            fetch='one'
+        )
+
+    def clear_pending_role_changes(self, user_id: str, guild_id: str):
+        self.execute_query(
+            'DELETE FROM pending_role_changes WHERE user_id = ? AND guild_id = ?',
+            (user_id, guild_id)
+        )
+
+    # Database Validation
+    def validate_schema(self):
+        required_tables = {
+            'appeals': ['appeal_id', 'guild_id', 'user_id', 'type',
+                       'appeal_token', 'expires_at', 'status'],
+            'warnings': ['guild_id', 'user_id', 'warning_id', 'reason']
+        }
+        
+        for table, columns in required_tables.items():
+            result = self.execute_query(f'PRAGMA table_info({table})', fetch='all')
+            existing = [row['name'] for row in result]
+            missing = set(columns) - set(existing)
+            
+            if missing:
+                raise RuntimeError(f"Missing columns in {table}: {', '.join(missing)}")
+
+# Initialize database with validation
 db = Database()
 db.initialize_db()
+try:
+    db.validate_schema()
+    print("✅ Database schema validation passed")
+except RuntimeError as e:
+    print(f"❌ Database schema validation failed: {str(e)}")
+    raise
