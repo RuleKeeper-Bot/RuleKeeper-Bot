@@ -108,6 +108,18 @@
                     </a>
                 </div>
 				
+				<!-- Auto Roles Config Card -->
+                <div class="col">
+                    <a href="{{ url_for('auto_roles_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-file-earmark-person me-2"></i>Auto Assign Roles
+                            </h5>
+                            <p class="card-text text-muted">Configure role(s) that will be given to the user when they join the server</p>
+                        </div>
+                    </a>
+                </div>
+				
 				<!-- Spam Config Card -->
                 <div class="col">
                     <a href="{{ url_for('spam_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
@@ -119,6 +131,18 @@
                         </div>
                     </a>
                 </div>
+				
+				<!-- Game Roles Card -->
+				<div class="col">
+					<a href="{{ url_for('game_roles_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+						<div class="card-body">
+							<h5 class="card-title">
+								<i class="bi bi-controller me-2"></i>Game Roles
+							</h5>
+							<p class="card-text text-muted">Automate roles based on game activity</p>
+						</div>
+					</a>
+				</div>
             </div>
         </div>
 
@@ -134,18 +158,6 @@
                                 <i class="bi bi-graph-up me-2"></i>Leveling
                             </h5>
                             <p class="card-text text-muted">Configure experience settings and multipliers</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Level Rewards Card -->
-                <div class="col">
-                    <a href="{{ url_for('level_config', guild_id=guild.guild_id) }}#rewards" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-trophy me-2"></i>Level Rewards
-                            </h5>
-                            <p class="card-text text-muted">Manage role rewards for level achievements</p>
                         </div>
                     </a>
                 </div>

@@ -5,6 +5,7 @@ antiorm==1.2.1
 asgiref==3.8.1
 attrs==25.1.0
 auth==0.5.3
+bcrypt==4.3.0
 black==25.1.0
 blinker==1.9.0
 cachetools==5.5.2
@@ -63,4 +64,3 @@ Werkzeug==3.1.3
 wsproto==1.2.0
 WTForms==3.2.1
 yarl==1.18.3
-zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability

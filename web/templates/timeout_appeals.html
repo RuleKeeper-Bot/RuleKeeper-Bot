@@ -1,186 +1,138 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Timeout Appeals</title>
+    <title>Timeout Appeals - {{ guild.name }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
-	<link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
     <style>
-        body { padding: 20px; background-color: #f8f9fa; }
-        .table { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .table th { background: #0d6efd; color: white; }
-        .badge-pending { background: #ffc107; }
-        .badge-approved { background: #198754; }
-        .badge-rejected { background: #dc3545; }
-        .user-cell { min-width: 180px; }
-        .user-id { font-size: 0.8em; opacity: 0.7; }
+        .appeal-card { border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .status-badge { min-width: 80px; }
+        .action-buttons .btn { min-width: 90px; }
+        .response-item { margin-bottom: 1.5rem; }
+        .question-text { font-weight: 500; color: #2c3e50; }
+        .response-text { margin-left: 1rem; color: #4a5568; }
+        .delete-btn { margin-left: auto; }
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="container py-4">
         <h2 class="mb-4">Timeout Appeals - {{ guild.name }}</h2>
-        <div>
-            <a href="{{ url_for('guild_dashboard', guild_id=guild_id) }}" class="btn btn-secondary">
-                <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
-            </a>
-            <a href="{{ url_for('logout') }}" class="btn btn-danger ms-2">
-                <i class="bi bi-box-arrow-right"></i> Logout
-            </a>
-        </div>
         
+		<div>
+            <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+		
         {% if not appeals %}
-        <div class="alert alert-info mt-3">No pending timeout appeals</div>
+        <div class="alert alert-info">No timeout appeals found</div>
         {% else %}
-        <table class="table table-hover mt-3">
-            <thead>
-                <tr>
-                    <th>User</th>
-                    <th>Appeal Date</th>
-                    <th>Reason Preview</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for appeal in appeals %}
-                <tr data-appeal-id="{{ appeal.appeal_id }}">
-                    <td>
-                        <div class="d-flex flex-column">
-                            <span class="fw-bold">{{ appeal.username }}</span>
-                            <small class="text-muted">ID: {{ appeal.user_id }}</small>
-                        </div>
-                    </td>
-                    <td>{{ appeal.timestamp }}</td>
-                    <td>
-                        {% if appeal.data and appeal.data[0] %}
-                            {% set answer = appeal.data[0].get('answer', 'No reason provided') %}
-                            {{ answer if answer is string else answer|tojson|safe }}
-                        {% else %}
-                            No reason provided
-                        {% endif %}
-                    </td>
-                    <td>
-                        <span class="badge 
-                            {% if appeal.status == 'pending' %}bg-warning
-                            {% elif appeal.status == 'approved' %}bg-success
-                            {% else %}bg-danger{% endif %}">
-                            {{ appeal.status|title }}
-                        </span>
-                    </td>
-                    <td>
-                        <div class="d-flex gap-2">
-                            <button class="btn btn-success btn-sm approve-btn"
-                                    data-user-id="{{ appeal.user_id }}"
-                                    data-guild-id="{{ guild_id }}"
-                                    data-appeal-id="{{ appeal.appeal_id }}"
-                                    data-action="approve">
-                                <i class="bi bi-check-lg"></i>
-                            </button>
-                            <button class="btn btn-danger btn-sm reject-btn"
-                                    data-appeal-id="{{ appeal.appeal_id }}"
-                                    data-action="reject">
-                                <i class="bi bi-x-lg"></i>
-                            </button>
-                            <button class="btn btn-dark btn-sm delete-btn"
-                                    data-appeal-id="{{ appeal.appeal_id }}"
-                                    data-action="delete">
-                                <i class="bi bi-trash"></i>
-                            </button>
-                        </div>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="card shadow">
+            <div class="card-body">
+                <table class="table table-hover align-middle">
+                    <thead class="table-primary">
+                        <tr>
+                            <th>User ID</th>
+                            <th>Submitted</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for appeal in appeals %}
+                        <tr>
+                            <td class="font-monospace">{{ appeal.user_id }}</td>
+                            <td>{{ appeal.date }}</td>
+                            <td>
+                                <span class="badge rounded-pill 
+                                    {% if appeal.status == 'approved' %}bg-success
+                                    {% elif appeal.status == 'rejected' %}bg-danger
+                                    {% else %}bg-warning text-dark{% endif %} status-badge">
+                                    {{ appeal.status|title }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="d-flex gap-2 action-buttons">
+                                    {% if appeal.status == 'under_review' %}
+                                    <button class="btn btn-sm btn-success" 
+                                            onclick="handleAppealAction('{{ appeal.id }}', 'approve')">
+                                        <i class="bi bi-check-lg"></i> Approve
+                                    </button>
+                                    <button class="btn btn-sm btn-danger" 
+                                            onclick="handleAppealAction('{{ appeal.id }}', 'reject')">
+                                        <i class="bi bi-x-lg"></i> Deny
+                                    </button>
+                                    {% endif %}
+                                    <button class="btn btn-sm btn-primary" 
+                                            data-bs-toggle="modal" 
+                                            data-bs-target="#detailsModal"
+                                            data-appeal='{{ appeal|tojson|safe }}'>
+                                        <i class="bi bi-eye"></i> Details
+                                    </button>
+                                    <button class="btn btn-sm btn-danger delete-btn"
+                                            onclick="confirmDelete('{{ appeal.id }}')">
+                                        <i class="bi bi-trash"></i> Delete
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
         {% endif %}
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-    const API_URL = "{{ API_URL }}";
-    const GUILD_ID = "{{ guild_id }}";
 
-    async function handleAppealAction(button, action) {
-        const appealId = button.dataset.appealId;
-        const userId = button.dataset.userId;
-        const guildId = button.dataset.guildId;
-        let endpoint, method, body;
+    <!-- Details Modal -->
+    <div class="modal fade" id="detailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Appeal Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="appeal-info">
+                        <div class="row mb-3">
+                            <div class="col-4 fw-bold">Appeal ID:</div>
+                            <div class="col-8 font-monospace" id="modalAppealId"></div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-4 fw-bold">User ID:</div>
+                            <div class="col-8 font-monospace" id="modalUserId"></div>
+                        </div>
+                        <div class="row mb-4">
+                            <div class="col-4 fw-bold">Submitted:</div>
+                            <div class="col-8" id="modalDate"></div>
+                        </div>
 
-        try {
-            switch(action) {
-                case 'approve':
-                    endpoint = `/dashboard/${guildId}/timeout-appeals/${appealId}/approve`;
-                    method = 'POST';
-                    body = null;
-                    break;
-                    
-                case 'reject':
-                    const reason = prompt('Enter rejection reason:', 'Violation of server rules');
-                    if (reason === null) return;
-                    
-                    endpoint = `/dashboard/${guildId}/timeout-appeals/${appealId}/reject`;
-                    method = 'POST';
-                    body = JSON.stringify({ reason });
-                    break;
-                    
-                case 'delete':
-                    endpoint = `/dashboard/${guildId}/timeout-appeals/${appealId}/delete`;
-                    method = 'POST';
-                    body = null;
-                    break;
-                    
-                default:
-                    throw new Error('Invalid action');
-            }
+                        <h5 class="mb-3">Appeal Responses</h5>
+                        <div id="modalResponses"></div>
 
-            const response = await fetch(endpoint, {
-                method,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRFToken': '{{ csrf_token() }}'
-                },
-                body,
-                credentials: 'same-origin'
-            });
-
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result.error || 'Unknown error');
-            }
-            
-            showToast(result.message || 'Action completed successfully', 'success');
-            setTimeout(() => window.location.reload(), 1500);
-            
-        } catch (error) {
-            console.error('Error:', error);
-            showToast(error.message || 'Action failed', 'danger');
-        }
-    }
-
-    function showToast(message, type) {
-        const toast = document.createElement('div');
-        toast.className = `toast align-items-center text-white bg-${type} border-0`;
-        toast.innerHTML = `
-            <div class="d-flex">
-                <div class="toast-body">${message}</div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                        <div class="review-details mt-4" id="reviewDetails" style="display: none;">
+                            <h5 class="mb-3">Review Information</h5>
+                            <div class="row mb-2">
+                                <div class="col-4 fw-bold">Reviewed By:</div>
+                                <div class="col-8" id="modalReviewedBy"></div>
+                            </div>
+                            <div class="row mb-2">
+                                <div class="col-4 fw-bold">Review Date:</div>
+                                <div class="col-8" id="modalReviewedAt"></div>
+                            </div>
+                            <div class="row">
+                                <div class="col-4 fw-bold">Moderator Notes:</div>
+                                <div class="col-8" id="modalReviewNotes"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
             </div>
-        `;
-        document.body.appendChild(toast);
-        new bootstrap.Toast(toast, { autohide: true, delay: 3000 }).show();
-        setTimeout(() => toast.remove(), 3500);
-    }
-
-    // Add event listeners
-    document.addEventListener('DOMContentLoaded', () => {
-        document.querySelectorAll('[data-action]').forEach(button => {
-            button.addEventListener('click', function() {
-                if (this.dataset.action === 'delete' || confirm('Are you sure?')) {
-                    handleAppealAction(this, this.dataset.action);
-                }
-            });
-        });
-    });
-    </script>
+        </div>
+    </div>
+	
 	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
 	  <p>
 		&copy; 2025 RuleKeeper. All rights reserved. |
@@ -189,5 +141,105 @@
 		<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
 	  </p>
 	</footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const modal = new bootstrap.Modal('#detailsModal');
+        
+        document.getElementById('detailsModal').addEventListener('show.bs.modal', (event) => {
+            const button = event.relatedTarget;
+            const appeal = JSON.parse(button.dataset.appeal);
+            
+            // Set basic info
+            document.getElementById('modalAppealId').textContent = appeal.id;
+            document.getElementById('modalUserId').textContent = appeal.user_id;
+            document.getElementById('modalDate').textContent = appeal.date;
+
+            // Build responses
+            const responsesContainer = document.getElementById('modalResponses');
+            responsesContainer.innerHTML = '';
+            
+            if (appeal.questions && appeal.questions.length > 0) {
+                appeal.questions.forEach((question, index) => {
+                    const responseKey = `response_${index + 1}`;
+                    const response = appeal.full_data[responseKey] || 'No response provided';
+                    responsesContainer.innerHTML += `
+                        <div class="response-item">
+                            <div class="question-text">${index + 1}. ${question}</div>
+                            <div class="response-text">${response}</div>
+                        </div>
+                    `;
+                });
+            } else {
+                responsesContainer.innerHTML = '<div class="text-muted">No questions available</div>';
+            }
+
+            // Handle review details
+            const reviewDetails = document.getElementById('reviewDetails');
+            if (appeal.reviewed_by) {
+                reviewDetails.style.display = 'block';
+                document.getElementById('modalReviewedBy').textContent = appeal.reviewed_by;
+                document.getElementById('modalReviewedAt').textContent = appeal.reviewed_at || 'N/A';
+                document.getElementById('modalReviewNotes').textContent = appeal.moderator_notes || 'No notes provided';
+            } else {
+                reviewDetails.style.display = 'none';
+            }
+        });
+    });
+
+    function handleAppealAction(appealId, action) {
+        const confirmation = action === 'approve' 
+            ? 'Approve this appeal and untimeout the user?'
+            : 'Reject this appeal? This cannot be undone.';
+        
+        if (confirm(confirmation)) {
+            const endpoint = `/dashboard/{{ guild_id }}/timeout-appeals/${appealId}/${action}`;
+            const options = {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token() }}',
+                    'Content-Type': 'application/json'
+                }
+            };
+
+            if (action === 'reject') {
+                const reason = prompt('Enter rejection reason:') || 'No reason provided';
+                options.body = JSON.stringify({ reason });
+            }
+
+            fetch(endpoint, options)
+                .then(response => response.ok && window.location.reload())
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Action failed. Please try again.');
+                });
+        }
+    }
+
+    function confirmDelete(appealId) {
+        if (confirm('Permanently delete this appeal record? This action cannot be undone.')) {
+            fetch(`/dashboard/{{ guild_id }}/timeout-appeals/${appealId}/delete`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token() }}',
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => {
+                if (response.ok) {
+                    window.location.reload();
+                } else {
+                    alert('Failed to delete appeal');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Delete failed. Please try again.');
+            });
+        }
+    }
+    </script>
 </body>
+</html>
 </html>

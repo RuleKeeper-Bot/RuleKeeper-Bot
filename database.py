@@ -74,6 +74,16 @@ class Database:
         finally:
             if conn:
                 conn.close()
+        
+        # Ensure params are SQLite compatible types
+        validated_params = []
+        for p in params:
+            if isinstance(p, (int, float, str, bytes, bool, type(None))):
+                validated_params.append(p)
+            else:
+                validated_params.append(str(p))
+        
+        params = tuple(validated_params)
 
     def initialize_db(self):
         try:
@@ -81,6 +91,22 @@ class Database:
             cursor = self.conn.cursor()
 
             # Tables creation with full schema
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bot_admins (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_privileges (
+                    username TEXT PRIMARY KEY,
+                    can_manage_servers BOOLEAN DEFAULT 1,
+                    can_edit_config BOOLEAN DEFAULT 1,
+                    can_remove_bot BOOLEAN DEFAULT 0,
+                    FOREIGN KEY(username) REFERENCES bot_admins(username) ON DELETE CASCADE
+                )''')
+    
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS guilds (
                     guild_id TEXT PRIMARY KEY,
@@ -288,6 +314,43 @@ class Database:
             ''')
             
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS autoroles (
+                    guild_id TEXT,
+                    role_id TEXT,
+                    PRIMARY KEY (guild_id, role_id),
+                    FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    changes TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    user_id TEXT
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS game_roles (
+                    guild_id TEXT,
+                    game_name TEXT,
+                    role_id TEXT,
+                    required_minutes INTEGER,
+                    PRIMARY KEY(guild_id, game_name)
+                )''')
+                
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_game_time (
+                    user_id TEXT,
+                    guild_id TEXT,
+                    game_name TEXT,
+                    total_time INTEGER DEFAULT 0,
+                    last_start INTEGER DEFAULT NULL,
+                    PRIMARY KEY(user_id, guild_id, game_name)
+                )''')
+            
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS pending_role_changes (
                     user_id TEXT,
                     guild_id TEXT,
@@ -329,6 +392,45 @@ class Database:
             raise
         finally:
             self.close()
+            
+    # Bot Admin Methods
+    def create_bot_admin(self, username: str, password_hash: str):
+        self.execute_query(
+            '''INSERT INTO bot_admins (username, password_hash)
+            VALUES (?, ?)''',
+            (username, password_hash)
+        )
+
+    def get_bot_admin(self, username: str) -> Optional[dict]:
+        return self.execute_query(
+            'SELECT * FROM bot_admins WHERE username = ?',
+            (username,),
+            fetch='one'
+        )
+
+    def delete_bot_admin(self, username: str):
+        self.execute_query(
+            'DELETE FROM bot_admins WHERE username = ?',
+            (username,)
+        )
+        
+    def update_admin_privileges(self, username: str, privileges: dict):
+        self.execute_query(
+            '''INSERT OR REPLACE INTO admin_privileges 
+            (username, can_manage_servers, can_edit_config, can_remove_bot)
+            VALUES (?, ?, ?, ?)''',
+            (username, 
+             privileges.get('manage_servers', False),
+             privileges.get('edit_config', False),
+             privileges.get('remove_bot', False))
+        )
+
+    def get_admin_privileges(self, username: str) -> dict:
+        return self.execute_query(
+            'SELECT * FROM admin_privileges WHERE username = ?',
+            (username,),
+            fetch='one'
+        )
 
     # User Methods
     def get_or_create_user(self, user_id: str, username: str = None, avatar_url: str = None):
@@ -629,6 +731,24 @@ class Database:
             f'UPDATE user_levels SET {columns} WHERE guild_id = ? AND user_id = ?',
             tuple(values)
         )
+        
+    # Auto Roles Methods
+    def get_autoroles(self, guild_id: str) -> List[str]:
+        result = self.execute_query(
+            'SELECT role_id FROM autoroles WHERE guild_id = ?',
+            (guild_id,),
+            fetch='all'
+        )
+        return [row['role_id'] for row in result] if result else []
+
+    def update_autoroles(self, guild_id: str, role_ids: List[str]):
+        with self.conn:
+            self.conn.execute('DELETE FROM autoroles WHERE guild_id = ?', (guild_id,))
+            if role_ids:
+                self.conn.executemany(
+                    'INSERT INTO autoroles (guild_id, role_id) VALUES (?, ?)',
+                    [(guild_id, rid) for rid in role_ids]
+                )
 
     # Warning Methods
     def get_warnings(self, guild_id: str, user_id: str) -> list:
@@ -823,6 +943,65 @@ class Database:
             WHERE appeal_id = ?''',
             tuple(values)
         )
+        
+    # Auto Roles on Game Play Time
+    def setup_game_roles_table(self):
+        self.execute_query('''
+            CREATE TABLE IF NOT EXISTS game_roles (
+                guild_id TEXT,
+                game_name TEXT,
+                role_id TEXT,
+                required_time INTEGER,
+                PRIMARY KEY(guild_id, game_name)
+            )''')
+            
+        self.execute_query('''
+            CREATE TABLE IF NOT EXISTS user_game_time (
+                user_id TEXT,
+                guild_id TEXT,
+                game_name TEXT,
+                total_time INTEGER DEFAULT 0,
+                last_start INTEGER DEFAULT 0,
+                PRIMARY KEY(user_id, guild_id, game_name)
+            )''')
+
+    def get_game_roles(self, guild_id: str) -> list:
+        """Query with string guild_id"""
+        return self.execute_query(
+            'SELECT * FROM game_roles WHERE guild_id = ?',
+            (str(guild_id),),
+            fetch='all'
+        )
+        return [dict(row) for row in result] if result else []
+
+    def update_game_role(self, guild_id, game_name, role_id, required_time):
+        self.execute_query(
+            '''INSERT OR REPLACE INTO game_roles 
+            (guild_id, game_name, role_id, required_minutes)
+            VALUES (?, ?, ?, ?)''',
+            (str(guild_id), game_name.lower(), str(role_id), required_time),
+            fetch='all'
+        )
+
+    def delete_game_role(self, guild_id, game_name):
+        self.execute_query(
+            'DELETE FROM game_roles WHERE guild_id = ? AND game_name = ?',
+            (guild_id, game_name)
+        )
+
+    def update_game_time(self, user_id, guild_id, game_name, start_time):
+        self.execute_query('''
+            INSERT OR REPLACE INTO user_game_time 
+            (user_id, guild_id, game_name, last_start)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, guild_id, game_name, start_time))
+
+    def add_game_session(self, user_id, guild_id, game_name, session_duration):
+        self.execute_query('''
+            UPDATE user_game_time 
+            SET total_time = total_time + ?
+            WHERE user_id = ? AND guild_id = ? AND game_name = ?
+        ''', (session_duration, user_id, guild_id, game_name))
 
     # Pending Role Changes
     def get_pending_role_changes(self, user_id: str, guild_id: str) -> dict:

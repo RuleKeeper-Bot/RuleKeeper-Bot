@@ -90,12 +90,14 @@
                     </div>
                     <div class="card-footer bg-transparent">
                         <div class="d-flex justify-content-between">
-                            <form method="POST" action="/admin/remove-guild/{{ guild['id'] }}"
-                                  onsubmit="return confirm('This will permanently remove all data for this server! Continue?')">
-                                <button type="submit" class="btn btn-danger btn-sm">
-                                    <i class="bi bi-trash"></i> Remove
-                                </button>
-                            </form>
+                            <form method="POST" action="{{ url_for('remove_guild', guild_id=guild.id) }}">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+								<button type="submit" 
+										class="btn btn-danger btn-sm"
+										onclick="return confirm('WARNING: This will remove the bot from this server! Continue?')">
+									<i class="bi bi-plug"></i> Remove Bot
+								</button>
+							</form>
                             <a href="/dashboard/{{ guild['id'] }}" 
                                class="btn btn-primary btn-sm">
                                 <i class="bi bi-gear"></i> Settings

@@ -18,6 +18,10 @@
 <body>
     <div class="container py-4">
         <h2 class="mb-4">Ban Appeals - {{ guild.name }}</h2>
+		
+		<div>
+            <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
         
         {% if not appeals %}
         <div class="alert alert-info">No ban appeals found</div>

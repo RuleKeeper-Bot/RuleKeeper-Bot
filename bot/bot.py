@@ -296,6 +296,7 @@ intents.members = True
 intents.message_content = True
 intents.guilds = True
 intents.moderation = True
+intents.presences = True
 
 Config.verify_paths()
 class CustomBot(commands.Bot):
@@ -602,7 +603,7 @@ async def webserver():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 5003)
     await site.start()
-    print("Sync endpoint running on port 5003")
+    print("Endpoints running on port 5003")
 
 async def validate_appeal_token(request):
     data = await request.json()
@@ -1228,7 +1229,7 @@ async def handle_level_up(user, guild, channel):
             rewards = db.get_level_rewards(str(guild_id))
             roles_to_add = []
             for level in range(old_level + 1, new_level + 1):
-                role_id = rewards.get(str(level))
+                role_id = rewards.get(level)
                 if role_id:
                     role = guild.get_role(int(role_id))
                     if role:
@@ -1476,6 +1477,23 @@ async def on_message_delete(message):
 @bot_instance.event
 async def on_member_join(member):
     try:
+        # Assign auto-roles
+        autoroles = db.get_autoroles(str(member.guild.id))
+        if autoroles:
+            roles_to_add = []
+            for role_id in autoroles:
+                role = member.guild.get_role(int(role_id))
+                if role and role < member.guild.me.top_role:
+                    roles_to_add.append(role)
+            
+            if roles_to_add:
+                try:
+                    await member.add_roles(*roles_to_add, reason="Automatic role assignment")
+                except discord.Forbidden:
+                    logger.error(f"Missing permissions to assign roles in {member.guild.name}")
+                except Exception as e:
+                    logger.error(f"Error assigning auto-roles: {str(e)}")        
+        
         config = db.get_welcome_config(str(member.guild.id))
         if not config or not config.get('enabled'):
             return
@@ -1762,6 +1780,123 @@ async def on_guild_emojis_update(guild, before, after):
             if old_emoji.name != emoji.name and config.get("emoji_name_change", True):
                 description = f"**Emoji Name Changed:** {old_emoji.name} -> {emoji.name} (ID: {emoji.id})"
                 await log_event(guild, "emoji_name_change", "Emoji Name Change", description, color=discord.Color.orange())
+
+@bot_instance.event
+async def on_presence_update(before, after):
+    try:
+        # Skip processing for bots and non-guild members
+        if after.bot or not after.guild:
+            return
+
+        guild = after.guild
+        member = after.guild.get_member(after.id)
+        current_time = int(time.time())
+        user_id = str(member.id)
+        guild_id = str(guild.id)
+
+        # Get game role configurations for this guild
+        game_roles = db.get_game_roles(guild_id)
+        if not game_roles:
+            return
+
+        # Track game activity changes
+        current_games = {
+            a.name.lower(): a 
+            for a in after.activities 
+            if a.type == discord.ActivityType.playing
+        }
+        
+        previous_games = {
+            a.name.lower(): a 
+            for a in before.activities 
+            if a.type == discord.ActivityType.playing
+        }
+
+        tracked_games = {
+            gr['game_name'].lower(): {
+                'role_id': gr['role_id'],
+                'required_seconds': gr['required_minutes'] * 60
+            } for gr in game_roles
+        }
+
+        # Handle game starts
+        for game_name in current_games:
+            if game_name in tracked_games and game_name not in previous_games:
+                db.execute_query(
+                    '''INSERT INTO user_game_time 
+                    (user_id, guild_id, game_name, last_start)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, guild_id, game_name) 
+                    DO UPDATE SET last_start = excluded.last_start''',
+                    (user_id, guild_id, game_name, current_time)
+                )
+
+        # Handle game stops
+        for game_name in previous_games:
+            if game_name in tracked_games and game_name not in current_games:
+                record = db.execute_query(
+                    '''SELECT * FROM user_game_time 
+                    WHERE user_id = ? AND guild_id = ? AND game_name = ?''',
+                    (user_id, guild_id, game_name),
+                    fetch='one'
+                )
+                
+                if record and record.get('last_start'):
+                    session_duration = current_time - record['last_start']
+                    db.execute_query(
+                        '''UPDATE user_game_time 
+                        SET total_time = total_time + ?, 
+                            last_start = NULL
+                        WHERE user_id = ? AND guild_id = ? AND game_name = ?''',
+                        (session_duration, user_id, guild_id, game_name)
+                    )
+
+        # Update roles based on playtime
+        for game_name, config in tracked_games.items():
+            record = db.execute_query(
+                '''SELECT * FROM user_game_time 
+                WHERE user_id = ? AND guild_id = ? AND game_name = ?''',
+                (user_id, guild_id, game_name),
+                fetch='one'
+            )
+            
+            if record:
+                total_time = record['total_time']
+                
+                # Add active session time if currently playing
+                if record['last_start']:
+                    total_time += current_time - record['last_start']
+                
+                required_seconds = config['required_seconds']
+                role = guild.get_role(int(config['role_id']))
+                
+                if role and role < guild.me.top_role:
+                    if total_time >= required_seconds and role not in member.roles:
+                        await member.add_roles(role)
+                    elif total_time < required_seconds and role in member.roles:
+                        await member.remove_roles(role)
+
+    except Exception as e:
+        print(f"Presence update error: {str(e)}")
+
+# Error handlers
+@bot_instance.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    """Global error handler for app commands"""
+    if isinstance(error, app_commands.CheckFailure):
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "❌ You must be an administrator to use this command.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "❌ You must be an administrator to use this command.",
+                ephemeral=True
+            )
+    else:
+        print(f"Unhandled command error: {error}")
+        raise error
 
 if __name__ == "__main__":
     bot_instance.run(BOT_TOKEN)

@@ -9,15 +9,17 @@ import requests
 import traceback
 import asyncio
 import threading
+import bcrypt
 from datetime import datetime
 from functools import wraps
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string
 from flask_discord import DiscordOAuth2Session, Unauthorized
 from flask_wtf.csrf import CSRFProtect, CSRFError
 from flask.sessions import SecureCookieSessionInterface
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.exceptions import BadRequestKeyError
 from cachetools import TTLCache
-from database import db
-from database import Database
+from database import db, Database
 from config import Config
 from shared_config import Config
 from shared import shared
@@ -33,6 +35,7 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 csrf = CSRFProtect(app)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_host=1)
 app.secret_key = os.getenv('SECRET_KEY')
 app.config['DISCORD_CLIENT_ID'] = os.getenv('DISCORD_CLIENT_ID')
 app.config['DISCORD_CLIENT_SECRET'] = os.getenv('DISCORD_CLIENT_SECRET')
@@ -181,6 +184,27 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def head_admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('head_admin'):
+            abort(403, "Head admin privileges required")
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.context_processor
+def inject_admin_status():
+    def check_head_admin():
+        return session.get('head_admin', False)
+    
+    def check_bot_admin():
+        return session.get('admin', False)
+    
+    return {
+        'is_head_admin': check_head_admin,
+        'is_bot_admin': check_bot_admin
+    }
+
 # TEMPORARY ROUTE
 # @app.route('/update-guild-icons')
 # def update_guild_icons():
@@ -219,6 +243,9 @@ def refresh_session():
         if not session.get('_anon_session'):
             session['_anon_session'] = str(uuid.uuid4())
             session.modified = True
+def log_real_ip():
+    real_ip = request.headers.get("CF-Connecting-IP", request.remote_addr)
+    print(f"Real IP: {real_ip} -> Path: {request.path}")
 
 # Routes
 @app.route('/')
@@ -246,36 +273,39 @@ def login():
         prompt="none"
     )
     
-@app.route('/login-admin', methods=['GET', 'POST'])
+@app.route('/admin/login', methods=['GET', 'POST'])
 def login_admin():
+    error = None
     if request.method == 'POST':
-        # Verify CSRF token first
         try:
             csrf.protect()
+            username = request.form.get('username')
+            password = request.form.get('password')
+            
+            # Head Admin login
+            if (username == os.getenv('HEAD_BOT_ADMIN_USERNAME') and 
+                request.form['password'] == os.getenv('HEAD_BOT_ADMIN_PASSWORD')):
+                session['head_admin'] = True
+                session['admin_username'] = username  # Store username
+                return redirect(url_for('admin_dashboard'))
+                
+            # Bot Admin login
+            admin = db.get_bot_admin(username)
+            if admin and bcrypt.checkpw(request.form['password'].encode(), admin['password_hash']):
+                session['admin'] = True
+                session['admin_username'] = username  # Store username
+                return redirect(url_for('admin_dashboard'))
+                
+            error = "Invalid credentials"
+            
+            flash('Invalid credentials')
+            return redirect(url_for('login_admin'))
+        
         except CSRFError:
-            flash('Security token expired. Please submit the form again.', 'danger')
-            return redirect(url_for('login_admin', guild_id=guild_id))
-        password = request.form.get('password')
-        if password == ADMIN_PASSWORD:
-            session['admin'] = True
-            session.permanent = True
-            return redirect(url_for('admin_guilds'))
-        else:
-            error = "Invalid password"
-    else:
-        error = None
-
-    return render_template_string('''
-        <!doctype html>
-        <title>Admin Login</title>
-        <h2>Admin Login</h2>
-        {% if error %}<p style="color: red;">{{ error }}</p>{% endif %}
-        <form method="post">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="password" name="password" placeholder="Enter admin password" required>
-            <input type="submit" value="Login">
-        </form>
-    ''', error=error)
+            flash('Security token expired')
+            return redirect(url_for('login_admin'))
+    
+    return render_template('login_admin.html', error=error)
 
 @app.route('/logout')
 def logout():
@@ -290,7 +320,9 @@ def logout_admin():
     try:
         if session.get('admin'):
             # Only remove admin privileges
+            session.pop('head_admin', None)
             session.pop('admin', None)
+            session.pop('admin_username', None)
             session.pop('_fresh', None)  # Remove freshness marker
             session.modified = True
             flash('Admin session terminated. Regular login preserved.', 'success')
@@ -372,6 +404,143 @@ def admin_guilds():
     ''', fetch='all')
     
     return render_template('admin_guilds.html', guilds=guilds)
+    
+@app.route('/admin/dashboard')
+@admin_required
+def admin_dashboard():
+    # Get guild count
+    guild_count_result = db.execute_query('SELECT COUNT(*) as count FROM guilds', fetch='one')
+    guild_count = guild_count_result['count'] if guild_count_result else 0
+    
+    # Get admin count
+    admin_count_result = db.execute_query('SELECT COUNT(*) as count FROM bot_admins', fetch='one')
+    admin_count = admin_count_result['count'] if admin_count_result else 0
+    
+    # Get appeal count
+    appeal_count_result = db.execute_query(
+        'SELECT COUNT(*) as count FROM appeals WHERE status = "pending"',
+        fetch='one'
+    )
+    appeal_count = appeal_count_result['count'] if appeal_count_result else 0
+    
+    # Get recent logs
+    recent_logs = db.execute_query('''
+        SELECT action, details, changes, user_id, timestamp 
+        FROM audit_log 
+        ORDER BY timestamp DESC 
+        LIMIT 10
+    ''', fetch='all')
+    
+    return render_template('admin_dashboard.html',
+                         guild_count=guild_count,
+                         admin_count=admin_count,
+                         appeal_count=appeal_count,
+                         recent_logs=recent_logs)
+
+@app.route('/admin/bot-admins', methods=['GET', 'POST'])
+@head_admin_required
+def manage_bot_admins():
+    if request.method == 'POST':
+        try:
+            csrf.protect()  # Verify CSRF token
+        except CSRFError:
+            flash('Security token expired. Please try again.', 'danger')
+            return redirect(url_for('manage_bot_admins'))
+            
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if not username or not password:
+            flash('Both fields are required', 'danger')
+            return redirect(url_for('manage_bot_admins'))
+            
+        if db.get_bot_admin(username):
+            flash('Username already exists', 'danger')
+            return redirect(url_for('manage_bot_admins'))
+            
+        hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+        db.create_bot_admin(username, hashed_pw)
+        
+        log_action(
+            action="BOT_ADMIN_ADDED",
+            details=f"Added new bot admin: {username}",
+            changes=f"New admin created with username: {username}"
+        )
+        
+        flash('Bot admin created successfully', 'success')
+        return redirect(url_for('manage_bot_admins'))
+    
+    admins = db.execute_query(
+        '''SELECT ba.username, ba.created_at, 
+           COALESCE(ap.can_manage_servers, 1) AS can_manage_servers,
+           COALESCE(ap.can_edit_config, 1) AS can_edit_config,
+           COALESCE(ap.can_remove_bot, 0) AS can_remove_bot
+        FROM bot_admins ba
+        LEFT JOIN admin_privileges ap ON ba.username = ap.username''',
+        fetch='all'
+    )
+    
+    return render_template('manage_bot_admins.html', admins=admins)
+
+@app.route('/admin/delete-bot-admin/<username>')
+@head_admin_required
+def delete_bot_admin(username):
+    db.delete_bot_admin(username)
+    
+    log_action(
+        action="BOT_ADMIN_DELETED",
+        details=f"Deleted bot admin: {username}",
+        changes=f"Bot Admin deleted with username: {username}"
+    )
+    
+    flash('Bot admin deleted successfully', 'success')
+    return redirect(url_for('manage_bot_admins'))
+
+@app.route('/update-privileges/<username>', methods=['POST'])
+@head_admin_required
+def update_privileges(username):
+    try:
+        csrf.protect()
+        privileges = {
+            'manage_servers': 'manage_servers' in request.form,
+            'edit_config': 'edit_config' in request.form,
+            'remove_bot': 'remove_bot' in request.form
+        }
+        
+        old_priv = db.get_admin_privileges(username) or {}
+        db.update_admin_privileges(username, privileges)
+        
+        # Create human-readable changes
+        changes = []
+        for key in ['manage_servers', 'edit_config', 'remove_bot']:
+            status = "ENABLED" if privileges[key] else "DISABLED"
+            changes.append(f"{key.replace('_', ' ').title()}: {status}")
+        
+        log_action(
+            action="PRIVILEGES_UPDATED",
+            details=f"Updated privileges for {username}",
+            changes=" | ".join(changes) if changes else "No changes detected"
+        )
+        
+        flash('Privileges updated successfully', 'success')
+    except CSRFError:
+        flash('Security token expired', 'danger')
+    return redirect(url_for('manage_bot_admins'))
+
+def log_action(action: str, details: str, changes: str = ""):
+    # Get current admin identity
+    admin_identity = "system"
+    if session.get('head_admin'):
+        admin_identity = f"HEAD-ADMIN:{os.getenv('HEAD_BOT_ADMIN_USERNAME')}"
+    elif session.get('admin'):
+        admin_identity = f"BOT-ADMIN:{session.get('admin_username', 'unknown')}"
+    
+    db.execute_query(
+        '''INSERT INTO audit_log 
+        (action, details, changes, user_id)
+        VALUES (?, ?, ?, ?)''',
+        (action, details, changes, admin_identity)
+    )
 
 @app.route('/dashboard/<guild_id>')
 @login_required
@@ -954,6 +1123,116 @@ def level_config(guild_id):
                          guild=guild,
                          channels=text_channels,
                          roles=roles)
+
+# Auto Roles Management
+@app.route('/dashboard/<guild_id>/auto-roles-config', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def auto_roles_config(guild_id):
+    guild = get_guild_or_404(guild_id)
+    roles = get_roles(guild_id)
+    current_autoroles = db.get_autoroles(guild_id)
+
+    if request.method == 'POST':
+        try:
+            csrf.protect()
+            selected_roles = request.form.getlist('autoroles')
+            db.update_autoroles(guild_id, selected_roles)
+            flash('Auto-role settings updated successfully', 'success')
+            return redirect(url_for('auto_roles_config', guild_id=guild_id))
+        except CSRFError:
+            flash('Security token expired. Please try again.', 'danger')
+    
+    return render_template('auto_roles_config.html',
+                         guild_id=guild_id,
+                         guild=guild,
+                         roles=roles,
+                         current_autoroles=current_autoroles)
+
+# Auto Roles on Game Play Time
+@app.route('/dashboard/<guild_id>/game-roles', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def game_roles_config(guild_id):
+    try:
+        # Get guild and roles
+        guild = get_guild_or_404(guild_id)
+        roles = get_roles(guild_id)
+        
+        # Get absolute path to rpc_games.json
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        rpc_path = os.path.join(current_dir, 'static/other/rpc_games.json')
+        
+        # Load game list with error handling
+        try:
+            with open(rpc_path, 'r') as f:
+                top_games = json.load(f)
+        except FileNotFoundError:
+            logger.error("Game list file not found at: %s", rpc_path)
+            top_games = []
+            flash('Game list configuration missing - using empty list', 'danger')
+        except json.JSONDecodeError as e:
+            logger.error("Invalid game list format: %s", str(e))
+            top_games = []
+            flash('Invalid game list format - using empty list', 'danger')
+
+        # Handle form submission
+        if request.method == 'POST':
+            csrf.protect()
+            
+            if 'delete' in request.form:
+                # Handle deletion
+                game_name = request.form.get('game_name')
+                if game_name:
+                    db.execute_query(
+                        'DELETE FROM game_roles WHERE guild_id = ? AND game_name = ?',
+                        (guild_id, game_name)
+                    )
+                    flash(f'Removed configuration for {game_name}', 'success')
+                    
+            else:
+                # Handle new configuration
+                game_name = request.form.get('game_name', '').strip()
+                role_id = request.form.get('role_id')
+                required_minutes = request.form.get('required_minutes', 0)
+                
+                # Validate inputs
+                if not all([game_name, role_id, required_minutes]):
+                    flash('All fields are required', 'danger')
+                elif not required_minutes.isdigit() or int(required_minutes) < 1:
+                    flash('Playtime must be a positive number', 'danger')
+                else:
+                    # Save to database
+                    db.execute_query('''
+                        INSERT OR REPLACE INTO game_roles 
+                        (guild_id, game_name, role_id, required_minutes)
+                        VALUES (?, ?, ?, ?)
+                    ''', (guild_id, game_name, role_id, int(required_minutes)))
+                    flash(f'Added configuration for {game_name}', 'success')
+
+            return redirect(url_for('game_roles_config', guild_id=guild_id))
+
+        # Get current configurations
+        current_config = db.execute_query(
+            'SELECT * FROM game_roles WHERE guild_id = ?',
+            (guild_id,),
+            fetch='all'
+        ) or []
+
+        return render_template('game_roles.html',
+                            guild_id=guild_id,
+                            guild=guild,
+                            roles=roles,
+                            current_config=current_config,
+                            top_games=top_games,
+                            get_role_name=lambda rid: next(
+                                (r['name'] for r in roles if r['id'] == rid), 'Unknown Role'
+                            ))
+
+    except Exception as e:
+        logger.error("Error in game_roles_config: %s", str(e))
+        flash('An error occurred while loading game role configurations', 'danger')
+        return redirect(url_for('select_guild'))
 
 # Warnings Management
 @app.route('/dashboard/<guild_id>/warnings')
@@ -1711,7 +1990,65 @@ def delete_ban_appeal(guild_id, appeal_id):
 @login_required
 @guild_required
 def kick_appeals(guild_id):
-    return handle_appeals_page(guild_id, 'kick', 'kick_appeals.html')
+    try:
+        # Get appeal form configuration
+        form_config = db.execute_query(
+            'SELECT kick_form_fields FROM appeal_forms WHERE guild_id = ?',
+            (guild_id,),
+            fetch='one'
+        )
+        
+        form_fields = []
+        if form_config and form_config.get('kick_form_fields'):
+            form_fields = [field.split('(')[0].strip() 
+                         for field in json.loads(form_config['kick_form_fields'])]
+
+        # Fetch appeals with review information
+        appeals = db.execute_query('''
+            SELECT 
+                appeal_id as id,
+                user_id,
+                submitted_at,
+                status,
+                appeal_data,
+                preview_text,
+                reviewed_by,
+                reviewed_at,
+                moderator_notes
+            FROM appeals 
+            WHERE guild_id = ? AND type = 'kick'
+            ORDER BY submitted_at DESC
+        ''', (guild_id,), fetch='all')
+
+        processed_appeals = []
+        for appeal in appeals:
+            try:
+                appeal_data = json.loads(appeal['appeal_data']) if appeal['appeal_data'] else {}
+            except json.JSONDecodeError:
+                appeal_data = {}
+
+            processed_appeals.append({
+                'id': appeal['id'],
+                'user_id': appeal['user_id'],
+                'date': datetime.fromtimestamp(appeal['submitted_at']).strftime('%Y-%m-%d %H:%M'),
+                'preview': appeal.get('preview_text', 'No preview'),
+                'full_data': appeal_data,
+                'status': appeal.get('status', 'under_review').lower(),
+                'reviewed_by': appeal.get('reviewed_by'),
+                'reviewed_at': datetime.fromtimestamp(appeal['reviewed_at']).strftime('%Y-%m-%d %H:%M') if appeal.get('reviewed_at') else None,
+                'moderator_notes': appeal.get('moderator_notes'),
+                'questions': form_fields
+            })
+
+        guild = get_guild_or_404(guild_id)
+        return render_template('kick_appeals.html',
+                            appeals=processed_appeals,
+                            guild_id=guild_id,
+                            guild=guild)
+
+    except Exception as e:
+        logger.error(f"Error in kick_appeals: {traceback.format_exc()}")
+        abort(500, description="Failed to load kick appeals")
 
 @app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/approve', methods=['POST'])
 @login_required
@@ -1736,7 +2073,65 @@ def delete_kick_appeal(guild_id, appeal_id):
 @login_required
 @guild_required
 def timeout_appeals(guild_id):
-    return handle_appeals_page(guild_id, 'timeout', 'timeout_appeals.html')
+    try:
+        # Get appeal form configuration
+        form_config = db.execute_query(
+            'SELECT timeout_form_fields FROM appeal_forms WHERE guild_id = ?',
+            (guild_id,),
+            fetch='one'
+        )
+        
+        form_fields = []
+        if form_config and form_config.get('timeout_form_fields'):
+            form_fields = [field.split('(')[0].strip() 
+                         for field in json.loads(form_config['timeout_form_fields'])]
+
+        # Fetch appeals with review information
+        appeals = db.execute_query('''
+            SELECT 
+                appeal_id as id,
+                user_id,
+                submitted_at,
+                status,
+                appeal_data,
+                preview_text,
+                reviewed_by,
+                reviewed_at,
+                moderator_notes
+            FROM appeals 
+            WHERE guild_id = ? AND type = 'timeout'
+            ORDER BY submitted_at DESC
+        ''', (guild_id,), fetch='all')
+
+        processed_appeals = []
+        for appeal in appeals:
+            try:
+                appeal_data = json.loads(appeal['appeal_data']) if appeal['appeal_data'] else {}
+            except json.JSONDecodeError:
+                appeal_data = {}
+
+            processed_appeals.append({
+                'id': appeal['id'],
+                'user_id': appeal['user_id'],
+                'date': datetime.fromtimestamp(appeal['submitted_at']).strftime('%Y-%m-%d %H:%M'),
+                'preview': appeal.get('preview_text', 'No preview'),
+                'full_data': appeal_data,
+                'status': appeal.get('status', 'under_review').lower(),
+                'reviewed_by': appeal.get('reviewed_by'),
+                'reviewed_at': datetime.fromtimestamp(appeal['reviewed_at']).strftime('%Y-%m-%d %H:%M') if appeal.get('reviewed_at') else None,
+                'moderator_notes': appeal.get('moderator_notes'),
+                'questions': form_fields
+            })
+
+        guild = get_guild_or_404(guild_id)
+        return render_template('timeout_appeals.html',
+                            appeals=processed_appeals,
+                            guild_id=guild_id,
+                            guild=guild)
+
+    except Exception as e:
+        logger.error(f"Error in timeout_appeals: {traceback.format_exc()}")
+        abort(500, description="Failed to load timeout appeals")
 
 @app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/approve', methods=['POST'])
 @login_required
@@ -1947,6 +2342,15 @@ def get_username_filter(user_id):
     )
     return user['username'] if user else None
     
+
+@app.template_filter('datetimeformat')
+def datetimeformat(value, format='%Y-%m-%d %H:%M'):
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    return value.strftime(format)
 
 # Error Handlers
 @app.errorhandler(CSRFError)

@@ -93,6 +93,10 @@
 <body>
     <div class="container">
         <h2 class="mb-4">Welcome Message Configuration</h2>
+		
+		<div>
+            <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
         
         <form method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -221,7 +225,6 @@
 
             <div class="d-grid gap-2">
                 <button type="submit" class="btn btn-primary">Save Settings</button>
-                <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
             </div>
         </form>
     </div>

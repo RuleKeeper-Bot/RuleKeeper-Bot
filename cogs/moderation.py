@@ -22,7 +22,7 @@ class ModerationCog(commands.Cog):
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         guild_id = str(interaction.guild.id)
         user_id = str(member.id)
-        user_warnings = get_warnings(guild_id, user_id)
+        user_warnings = self.db.get_warnings(guild_id, user_id)
         # Check bot permissions
         if not interaction.guild.me.guild_permissions.moderate_members:
             await interaction.response.send_message(
