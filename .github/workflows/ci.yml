@@ -68,7 +68,14 @@ jobs:
         with:
           path: ./artifacts
 
-      - name: Create Release
+      - name: Delete old continuous release (if exists)
+        uses: dev-drprasad/delete-tag-and-release@v1.1
+        with:
+          tag_name: continuous
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Create new continuous release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: continuous
