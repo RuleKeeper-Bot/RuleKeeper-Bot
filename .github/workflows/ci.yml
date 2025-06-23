@@ -53,11 +53,35 @@ jobs:
         run: |
           pyinstaller --onefile --name rulekeeper-bot main.py
 
+      # macOS: Build .dmg
+      - name: Build .dmg on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install create-dmg
+          mkdir -p dist/dmg-root
+          cp dist/rulekeeper-bot dist/dmg-root/
+          create-dmg dist/dmg-root
+
+      # Linux: Build AppImage and deb
+      - name: Build AppImage and deb
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y appimagetool fpm
+          mkdir -p AppDir/usr/bin
+          cp dist/rulekeeper-bot AppDir/usr/bin/
+          (cd AppDir && appimagetool . ../rulekeeper-bot.AppImage)
+          fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: rulekeeper-bot-${{ matrix.os }}
-          path: dist/rulekeeper-bot*
+          path: |
+            dist/rulekeeper-bot*
+            dist/*.dmg
+            rulekeeper-bot.AppImage
+            *.deb
 
   release:
     needs: binaries
