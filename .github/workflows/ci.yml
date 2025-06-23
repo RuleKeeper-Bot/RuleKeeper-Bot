@@ -60,7 +60,7 @@ jobs:
           brew install create-dmg
           mkdir -p dist/dmg-root
           cp dist/rulekeeper-bot dist/dmg-root/
-          create-dmg dist/dmg-root
+          create-dmg dist/dmg-root --overwrite --dmg-title="rulekeeper-bot" dist/rulekeeper-bot.dmg
 
       # Linux: Build AppImage and deb
       - name: Build AppImage and deb
