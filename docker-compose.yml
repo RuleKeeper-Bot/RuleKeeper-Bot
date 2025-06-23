@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  rulekeeper-bot:
+    image: wesleyhellewell/rulekeeper-bot:latest
+    container_name: rulekeeper-bot
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      SECRET_KEY: ${SECRET_KEY}
+      HEAD_BOT_ADMIN_USERNAME: ${HEAD_BOT_ADMIN_USERNAME}
+      HEAD_BOT_ADMIN_PASSWORD: ${HEAD_BOT_ADMIN_PASSWORD}
+      FRONTEND_URL: ${FRONTEND_URL}
+      API_URL: ${API_URL}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET}
+      DATABASE_PATH: ${DATABASE_PATH}
+      ENABLE_LEVELING: ${ENABLE_LEVELING}
+      ENABLE_MODERATION: ${ENABLE_MODERATION}
+      ENABLE_APPEALS: ${ENABLE_APPEALS}
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
+    volumes:
+      - ./bot/bot.db:/app/bot/bot.db
+      - ./data:/app/data
+    ports:
+      - "5000:5000"
+      - "5003:5003"
