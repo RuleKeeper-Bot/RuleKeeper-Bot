@@ -91,8 +91,30 @@ jobs:
 
           # Build AppImage and .deb package
           mkdir -p AppDir/usr/bin
+
+          # Copy binary
           cp dist/rulekeeper-bot AppDir/usr/bin/
+
+          # Create .desktop file
+          cat <<EOF > AppDir/rulekeeper-bot.desktop
+          [Desktop Entry]
+          Name=RuleKeeper Bot
+          Exec=rulekeeper-bot
+          Icon=rulekeeper-bot
+          Type=Application
+          Categories=Utility;
+          EOF
+
+          chmod +x AppDir/rulekeeper-bot.desktop
+
+          # Optionally add an icon
+          mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
+          cp path/to/rulekeeper-bot.png AppDir/usr/share/icons/hicolor/128x128/apps/rulekeeper-bot.png
+
+          # Run appimagetool
           (cd AppDir && /usr/local/bin/appimagetool . ../rulekeeper-bot.AppImage)
+
+          # Build .deb package
           fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
 
       - name: Upload binary artifact
