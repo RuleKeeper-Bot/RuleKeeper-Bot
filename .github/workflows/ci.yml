@@ -100,7 +100,7 @@ jobs:
           [Desktop Entry]
           Name=RuleKeeper Bot
           Exec=rulekeeper-bot
-          Icon=rulekeeper-bot
+          #Icon=rulekeeper-bot
           Type=Application
           Categories=Utility;
           EOF
@@ -108,8 +108,8 @@ jobs:
           chmod +x AppDir/rulekeeper-bot.desktop
 
           # Optionally add an icon
-          mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
-          cp path/to/rulekeeper-bot.png AppDir/usr/share/icons/hicolor/128x128/apps/rulekeeper-bot.png
+          #mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
+          #cp path/to/rulekeeper-bot.png AppDir/usr/share/icons/hicolor/128x128/apps/rulekeeper-bot.png
 
           # Run appimagetool
           (cd AppDir && /usr/local/bin/appimagetool . ../rulekeeper-bot.AppImage)
