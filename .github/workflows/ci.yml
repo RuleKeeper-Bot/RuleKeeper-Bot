@@ -73,6 +73,9 @@ jobs:
           # Install fpm
           sudo gem install --no-document fpm
 
+          # Install squashfs
+          sudo apt-get install -y squashfs-tools
+
           # Install non-AppImage version of appimagetool
           wget https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
