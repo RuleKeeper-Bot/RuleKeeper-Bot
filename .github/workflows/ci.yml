@@ -33,10 +33,11 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/rulekeeper-bot:latest
 
   binaries:
-    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
+        arch: [x86_64, arm64]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,46 +51,49 @@ jobs:
         run: |
           pip install -r requirements.txt pyinstaller python-dotenv
 
+      - name: Set up cross-compilation (Linux ARM)
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          echo '[aarch64]' >> ~/.pyinstaller/.spec
+          echo 'target_arch = "aarch64"' >> ~/.pyinstaller/.spec
+
       - name: Build binary
         run: |
-          pyinstaller --onefile --name rulekeeper-bot main.py
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" && "${{ matrix.arch }}" == "arm64" ]]; then
+            pyinstaller --onefile --name rulekeeper-bot-linux-arm64 main.py
+          elif [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            pyinstaller --onefile --name rulekeeper-bot-linux-x86_64 main.py
+          elif [[ "${{ matrix.os }}" == "macos-latest" && "${{ matrix.arch }}" == "arm64" ]]; then
+            pyinstaller --onefile --name rulekeeper-bot-macos-arm64 main.py
+          else
+            pyinstaller --onefile --name rulekeeper-bot-macos-x86_64 main.py
+          fi
 
-      # Linux: Build AppImage and deb BEFORE renaming binary
-      - name: Build AppImage and deb
+      - name: Build AppImage and .deb
         if: matrix.os == 'ubuntu-latest'
         run: |
-          # Update package list and install dependencies
+          ARCH="${{ matrix.arch }}"
+          BIN_NAME=rulekeeper-bot-linux-${ARCH}
+
           sudo apt-get update
           sudo apt-get install -y ruby ruby-dev build-essential libffi-dev wget squashfs-tools desktop-file-utils imagemagick
-
-          # Install fpm
           sudo gem install --no-document fpm
 
-          # Download and extract non-AppImage version of appimagetool
           wget https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract
-
-          # Move appimagetool binary to system path
           sudo mv squashfs-root/usr/bin/appimagetool /usr/local/bin/appimagetool
           sudo chmod +x /usr/local/bin/appimagetool
+          sudo mkdir -p /usr/local/lib/appimagekit
+          sudo ln -s "$(which mksquashfs)" /usr/local/lib/appimagekit/mksquashfs || true
 
-          # Fix missing mksquashfs by symlinking system-wide version to expected path
-          if [ ! -f /usr/local/lib/appimagekit/mksquashfs ]; then
-            sudo mkdir -p /usr/local/lib/appimagekit
-            sudo ln -s "$(which mksquashfs)" /usr/local/lib/appimagekit/mksquashfs
-          fi
-
-          # Build AppImage and .deb package
           mkdir -p AppDir/usr/bin
+          cp dist/$BIN_NAME AppDir/usr/bin/
 
-          # Copy binary (using original name)
-          cp dist/rulekeeper-bot AppDir/usr/bin/
-          
-          # Copy icon
           convert web/static/images/icon.png -resize 256x256 AppDir/rulekeeper-bot.png
 
-          # Create .desktop file
           cat <<EOF > AppDir/rulekeeper-bot.desktop
           [Desktop Entry]
           Name=RuleKeeper Bot
@@ -101,44 +105,25 @@ jobs:
 
           chmod +x AppDir/rulekeeper-bot.desktop
 
-          # Run appimagetool and output to dist/
-          (cd AppDir && /usr/local/bin/appimagetool . ../dist/rulekeeper-bot.AppImage)
+          (cd AppDir && /usr/local/bin/appimagetool . ../dist/${BIN_NAME}.AppImage)
+          fpm -s dir -t deb -n $BIN_NAME -v 1.0.0 -p dist/${BIN_NAME}.deb dist/$BIN_NAME=/usr/bin/rulekeeper-bot
 
-          # Build .deb package and output to dist/
-          fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 -p dist/rulekeeper-bot.deb dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
-
-      # macOS: Build .dmg
-      - name: Build .dmg on macOS
+      - name: Build .dmg
         if: matrix.os == 'macos-latest'
         run: |
+          ARCH="${{ matrix.arch }}"
           brew install create-dmg
           mkdir -p dist/dmg-root
-          cp dist/rulekeeper-bot dist/dmg-root/
-          rm -f dist/rulekeeper-bot.dmg
-          create-dmg dist/rulekeeper-bot.dmg dist/dmg-root
-          # Remove original binary to avoid duplicate upload
-          rm -f dist/rulekeeper-bot
-
-      # Rename binaries for artifact upload
-      - name: Rename binaries
-        run: |
-          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
-            mv dist/rulekeeper-bot dist/rulekeeper-bot-linux-x86_64
-          elif [ "${{ matrix.os }}" == "windows-latest" ]; then
-            mv dist/rulekeeper-bot.exe dist/rulekeeper-bot-windows-x86_64.exe
-          fi
-        shell: bash
+          cp dist/rulekeeper-bot-macos-${ARCH} dist/dmg-root/
+          rm -f dist/rulekeeper-bot-macos-${ARCH}.dmg
+          create-dmg dist/rulekeeper-bot-macos-${ARCH}.dmg dist/dmg-root
+          rm -f dist/rulekeeper-bot-macos-${ARCH}
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rulekeeper-bot-${{ matrix.os }}
-          path: |
-            dist/rulekeeper-bot-linux-x86_64
-            dist/rulekeeper-bot-windows-x86_64.exe
-            dist/rulekeeper-bot.AppImage
-            dist/rulekeeper-bot.deb
-            dist/rulekeeper-bot.dmg
+          name: rulekeeper-bot-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
 
   release:
     needs: binaries
