@@ -51,5 +51,11 @@ class Config:
     def PERMITTED_GUILDS(self):
         return os.getenv('PERMITTED_GUILDS', '').split(',')
 
+    @staticmethod
+    def verify_paths():
+        db_path = Config.DATABASE_PATH
+        if not os.path.exists(db_path):
+            raise FileNotFoundError(f"Database not found at {db_path}")
+
 # Instantiate the configuration
 config = Config()
