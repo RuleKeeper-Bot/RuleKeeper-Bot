@@ -159,9 +159,10 @@ jobs:
           name: Continuous Release
           body: "Latest build of rulekeeper-bot for all platforms."
           files: |
-            artifacts/rulekeeper-bot-ubuntu-latest/*
-            artifacts/rulekeeper-bot-windows-latest/*
-            artifacts/rulekeeper-bot-macos-latest/*
-          prerelease: true
+            artifacts/rulekeeper-bot-ubuntu-latest-x86_64/*
+            artifacts/rulekeeper-bot-ubuntu-latest-arm64/*
+            artifacts/rulekeeper-bot-macos-latest-x86_64/*
+            artifacts/rulekeeper-bot-macos-latest-arm64/*
+            artifacts/rulekeeper-bot-windows-latest-x86_64/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
