@@ -35,8 +35,17 @@ jobs:
   binaries:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        arch: [x86_64, arm64]
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-latest
+            arch: arm64
+          - os: macos-latest
+            arch: x86_64
+          - os: macos-latest
+            arch: arm64
+          - os: windows-latest
+            arch: x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -51,32 +60,19 @@ jobs:
         run: |
           pip install -r requirements.txt pyinstaller python-dotenv
 
-      - name: Set up cross-compilation (Linux ARM)
-        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo '[aarch64]' >> ~/.pyinstaller/.spec
-          echo 'target_arch = "aarch64"' >> ~/.pyinstaller/.spec
-
       - name: Build binary
         run: |
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" && "${{ matrix.arch }}" == "arm64" ]]; then
-            pyinstaller --onefile --name rulekeeper-bot-linux-arm64 main.py
-          elif [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-            pyinstaller --onefile --name rulekeeper-bot-linux-x86_64 main.py
-          elif [[ "${{ matrix.os }}" == "macos-latest" && "${{ matrix.arch }}" == "arm64" ]]; then
-            pyinstaller --onefile --name rulekeeper-bot-macos-arm64 main.py
+          OUTPUT_NAME="rulekeeper-bot-${{ matrix.os == 'windows-latest' && 'windows' || (matrix.os == 'macos-latest' && 'macos' || 'linux') }}-${{ matrix.arch }}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            pyinstaller --onefile --name $OUTPUT_NAME main.py
           else
-            pyinstaller --onefile --name rulekeeper-bot-macos-x86_64 main.py
+            pyinstaller --onefile --name $OUTPUT_NAME main.py
           fi
 
-      - name: Build AppImage and .deb
+      # Linux: Build AppImage and deb
+      - name: Build AppImage and deb
         if: matrix.os == 'ubuntu-latest'
         run: |
-          ARCH="${{ matrix.arch }}"
-          BIN_NAME=rulekeeper-bot-linux-${ARCH}
-
           sudo apt-get update
           sudo apt-get install -y ruby ruby-dev build-essential libffi-dev wget squashfs-tools desktop-file-utils imagemagick
           sudo gem install --no-document fpm
@@ -89,9 +85,10 @@ jobs:
           sudo mkdir -p /usr/local/lib/appimagekit
           sudo ln -s "$(which mksquashfs)" /usr/local/lib/appimagekit/mksquashfs || true
 
+          ARCH=${{ matrix.arch }}
+          NAME=rulekeeper-bot-linux-${ARCH}
           mkdir -p AppDir/usr/bin
-          cp dist/$BIN_NAME AppDir/usr/bin/
-
+          cp dist/$NAME AppDir/usr/bin/
           convert web/static/images/icon.png -resize 256x256 AppDir/rulekeeper-bot.png
 
           cat <<EOF > AppDir/rulekeeper-bot.desktop
@@ -105,25 +102,38 @@ jobs:
 
           chmod +x AppDir/rulekeeper-bot.desktop
 
-          (cd AppDir && /usr/local/bin/appimagetool . ../dist/${BIN_NAME}.AppImage)
-          fpm -s dir -t deb -n $BIN_NAME -v 1.0.0 -p dist/${BIN_NAME}.deb dist/$BIN_NAME=/usr/bin/rulekeeper-bot
+          (cd AppDir && /usr/local/bin/appimagetool . ../dist/${NAME}.AppImage)
+          fpm -s dir -t deb -n $NAME -v 1.0.0 -p dist/${NAME}.deb dist/$NAME=/usr/bin/rulekeeper-bot
 
+      # macOS: Build .dmg
       - name: Build .dmg
         if: matrix.os == 'macos-latest'
         run: |
-          ARCH="${{ matrix.arch }}"
           brew install create-dmg
+          ARCH=${{ matrix.arch }}
+          NAME=rulekeeper-bot-macos-${ARCH}
           mkdir -p dist/dmg-root
-          cp dist/rulekeeper-bot-macos-${ARCH} dist/dmg-root/
-          rm -f dist/rulekeeper-bot-macos-${ARCH}.dmg
-          create-dmg dist/rulekeeper-bot-macos-${ARCH}.dmg dist/dmg-root
-          rm -f dist/rulekeeper-bot-macos-${ARCH}
+          cp dist/$NAME dist/dmg-root/
+          rm -f dist/${NAME}.dmg
+          create-dmg dist/${NAME}.dmg dist/dmg-root
+          rm -f dist/$NAME
+
+      # Windows binary already named correctly, just move if needed
+      - name: Rename Windows binary
+        if: matrix.os == 'windows-latest'
+        run: |
+          mv dist/rulekeeper-bot-windows-x86_64.exe dist/rulekeeper-bot-windows-x86_64.exe
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: rulekeeper-bot-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/*
+          path: |
+            dist/rulekeeper-bot-linux-*.AppImage
+            dist/rulekeeper-bot-linux-*.deb
+            dist/rulekeeper-bot-linux-*
+            dist/rulekeeper-bot-windows-*.exe
+            dist/rulekeeper-bot-macos-*.dmg
 
   release:
     needs: binaries
