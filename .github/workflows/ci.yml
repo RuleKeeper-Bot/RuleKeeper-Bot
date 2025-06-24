@@ -121,7 +121,7 @@ jobs:
           # Build .deb package
           fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
 
-        - name: Upload binary artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: rulekeeper-bot-${{ matrix.os }}
