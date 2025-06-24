@@ -94,12 +94,16 @@ jobs:
 
           # Copy binary
           cp dist/rulekeeper-bot AppDir/usr/bin/
+          
+          # Copy icon
+          cp web/static/image/icon.png AppDir/rulekeeper-bot.png
 
-          # Create .desktop file (NO icon for now)
+          # Create .desktop file (No icon for now, add it later)
           cat <<EOF > AppDir/rulekeeper-bot.desktop
           [Desktop Entry]
           Name=RuleKeeper Bot
           Exec=rulekeeper-bot
+          Icon=rulekeeper-bot
           Type=Application
           Categories=Utility;
           EOF
