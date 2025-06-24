@@ -47,28 +47,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pyinstaller python-dotenv
+        run: |
+          pip install -r requirements.txt pyinstaller python-dotenv
 
       - name: Build binary
         run: |
           pyinstaller --onefile --name rulekeeper-bot main.py
 
-      - name: Rename Linux binary
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          mv dist/rulekeeper-bot dist/rulekeeper-bot-linux-x86_64
-
-      # macOS: Build .dmg
-      - name: Build .dmg on macOS
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install create-dmg
-          mkdir -p dist/dmg-root
-          cp dist/rulekeeper-bot dist/dmg-root/
-          rm -f dist/rulekeeper-bot.dmg
-          create-dmg dist/rulekeeper-bot.dmg dist/dmg-root
-
-      # Linux: Build AppImage and deb
+      # Linux: Build AppImage and deb BEFORE renaming binary
       - name: Build AppImage and deb
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -97,13 +83,13 @@ jobs:
           # Build AppImage and .deb package
           mkdir -p AppDir/usr/bin
 
-          # Copy binary
+          # Copy binary (using original name)
           cp dist/rulekeeper-bot AppDir/usr/bin/
           
           # Copy icon
           convert web/static/images/icon.png -resize 256x256 AppDir/rulekeeper-bot.png
 
-          # Create .desktop file (No icon for now, add it later)
+          # Create .desktop file
           cat <<EOF > AppDir/rulekeeper-bot.desktop
           [Desktop Entry]
           Name=RuleKeeper Bot
@@ -115,11 +101,32 @@ jobs:
 
           chmod +x AppDir/rulekeeper-bot.desktop
 
-          # Run appimagetool
-          (cd AppDir && /usr/local/bin/appimagetool . ../rulekeeper-bot.AppImage)
+          # Run appimagetool and output to dist/
+          (cd AppDir && /usr/local/bin/appimagetool . ../dist/rulekeeper-bot.AppImage)
 
-          # Build .deb package
-          fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
+          # Build .deb package and output to dist/
+          fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot -p dist/rulekeeper-bot.deb
+
+      # macOS: Build .dmg
+      - name: Build .dmg on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install create-dmg
+          mkdir -p dist/dmg-root
+          cp dist/rulekeeper-bot dist/dmg-root/
+          rm -f dist/rulekeeper-bot.dmg
+          create-dmg dist/rulekeeper-bot.dmg dist/dmg-root
+          # Remove original binary to avoid duplicate upload
+          rm -f dist/rulekeeper-bot
+
+      # Rename binaries for artifact upload (AFTER packaging)
+      - name: Rename binaries
+        run: |
+          if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
+            mv dist/rulekeeper-bot dist/rulekeeper-bot-linux-x86_64
+          elif [ "${{ matrix.os }}" == "windows-latest" ]; then
+            mv dist/rulekeeper-bot.exe dist/rulekeeper-bot-windows-x86_64.exe
+          fi
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -127,9 +134,10 @@ jobs:
           name: rulekeeper-bot-${{ matrix.os }}
           path: |
             dist/rulekeeper-bot-linux-x86_64
-            dist/*.dmg
-            rulekeeper-bot.AppImage
-            *.deb
+            dist/rulekeeper-bot-windows-x86_64.exe
+            dist/rulekeeper-bot.AppImage
+            dist/rulekeeper-bot.deb
+            dist/rulekeeper-bot.dmg
 
   release:
     needs: binaries
@@ -153,7 +161,10 @@ jobs:
           tag_name: continuous
           name: Continuous Release
           body: "Latest build of rulekeeper-bot for all platforms."
-          files: ./artifacts/**/*
+          files: |
+            artifacts/rulekeeper-bot-ubuntu-latest/*
+            artifacts/rulekeeper-bot-windows-latest/*
+            artifacts/rulekeeper-bot-macos-latest/*
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
