@@ -61,7 +61,7 @@ jobs:
           mkdir -p dist/dmg-root
           cp dist/rulekeeper-bot dist/dmg-root/
           rm -f dist/rulekeeper-bot.dmg
-          create-dmg dist/dmg-root dist/rulekeeper-bot.dmg
+          create-dmg dist/rulekeeper-bot.dmg dist/dmg-root
 
       # Linux: Build AppImage and deb
       - name: Build AppImage and deb
