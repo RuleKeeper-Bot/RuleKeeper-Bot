@@ -67,23 +67,29 @@ jobs:
       - name: Build AppImage and deb
         if: matrix.os == 'ubuntu-latest'
         run: |
+          # Update package list and install dependencies
           sudo apt-get update
-          sudo apt-get install -y ruby ruby-dev build-essential libffi-dev wget
+          sudo apt-get install -y ruby ruby-dev build-essential libffi-dev wget squashfs-tools
 
           # Install fpm
           sudo gem install --no-document fpm
 
-          # Install squashfs
-          sudo apt-get install -y squashfs-tools
-
-          # Install non-AppImage version of appimagetool
+          # Download and extract non-AppImage version of appimagetool
           wget https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract
+
+          # Move appimagetool binary to system path
           sudo mv squashfs-root/usr/bin/appimagetool /usr/local/bin/appimagetool
           sudo chmod +x /usr/local/bin/appimagetool
 
-          # Build AppImage and .deb
+          # Fix missing mksquashfs by symlinking system-wide version to expected path
+          if [ ! -f /usr/local/lib/appimagekit/mksquashfs ]; then
+            sudo mkdir -p /usr/local/lib/appimagekit
+            sudo ln -s "$(which mksquashfs)" /usr/local/lib/appimagekit/mksquashfs
+          fi
+
+          # Build AppImage and .deb package
           mkdir -p AppDir/usr/bin
           cp dist/rulekeeper-bot AppDir/usr/bin/
           (cd AppDir && /usr/local/bin/appimagetool . ../rulekeeper-bot.AppImage)
