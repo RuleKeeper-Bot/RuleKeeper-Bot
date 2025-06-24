@@ -67,8 +67,19 @@ jobs:
       - name: Build AppImage and deb
         if: matrix.os == 'ubuntu-latest'
         run: |
+          # Install dependencies for fpm
           sudo apt-get update
-          sudo apt-get install -y appimagetool fpm
+          sudo apt-get install -y ruby ruby-dev build-essential libffi-dev wget
+
+          # Install fpm using RubyGems
+          sudo gem install --no-document fpm
+
+          # Install appimagetool manually
+          wget https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x appimagetool
+          sudo mv appimagetool /usr/local/bin/appimagetool
+
+          # Create AppImage and .deb
           mkdir -p AppDir/usr/bin
           cp dist/rulekeeper-bot AppDir/usr/bin/
           (cd AppDir && appimagetool . ../rulekeeper-bot.AppImage)
