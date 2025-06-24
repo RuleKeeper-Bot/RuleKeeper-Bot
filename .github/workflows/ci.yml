@@ -77,7 +77,8 @@ jobs:
           wget https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract
-          sudo mv squashfs-root/AppRun /usr/local/bin/appimagetool
+          sudo mv squashfs-root/usr/bin/appimagetool /usr/local/bin/appimagetool
+          sudo chmod +x /usr/local/bin/appimagetool
 
           # Build AppImage and .deb
           mkdir -p AppDir/usr/bin
