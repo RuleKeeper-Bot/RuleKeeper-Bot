@@ -61,6 +61,7 @@ jobs:
           pip install -r requirements.txt pyinstaller python-dotenv
 
       - name: Build binary
+        shell: bash
         run: |
           OUTPUT_NAME="rulekeeper-bot-${{ matrix.os == 'windows-latest' && 'windows' || (matrix.os == 'macos-latest' && 'macos' || 'linux') }}-${{ matrix.arch }}"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
