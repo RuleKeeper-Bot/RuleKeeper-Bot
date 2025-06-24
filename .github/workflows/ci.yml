@@ -49,9 +49,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller python-dotenv
 
-      # - name: Build binary
-      #   run: |
-      #     pyinstaller --onefile --name rulekeeper-bot main.py
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --name rulekeeper-bot main.py
+
+      - name: Rename Linux binary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mv dist/rulekeeper-bot dist/rulekeeper-bot-linux-x86_64
 
       # macOS: Build .dmg
       - name: Build .dmg on macOS
@@ -116,11 +121,12 @@ jobs:
           # Build .deb package
           fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
 
-      - name: Upload binary artifact
+        - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: rulekeeper-bot-${{ matrix.os }}
           path: |
+            dist/rulekeeper-bot-linux-x86_64
             dist/*.dmg
             rulekeeper-bot.AppImage
             *.deb
