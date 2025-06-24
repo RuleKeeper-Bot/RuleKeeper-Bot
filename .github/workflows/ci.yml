@@ -95,7 +95,7 @@ jobs:
           # Copy binary
           cp dist/rulekeeper-bot AppDir/usr/bin/
 
-          # Create .desktop file (NO icon for now, add it later)
+          # Create .desktop file (NO icon for now)
           cat <<EOF > AppDir/rulekeeper-bot.desktop
           [Desktop Entry]
           Name=RuleKeeper Bot
@@ -103,6 +103,9 @@ jobs:
           Type=Application
           Categories=Utility;
           EOF
+
+          # Remove any Icon entry if present (just in case)
+          sed -i '/^Icon=.*$/d' AppDir/rulekeeper-bot.desktop
 
           chmod +x AppDir/rulekeeper-bot.desktop
 
