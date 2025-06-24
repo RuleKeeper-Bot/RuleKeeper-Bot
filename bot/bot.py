@@ -1,32 +1,40 @@
+# -------------------- Standard Libraries -----------------
+import asyncio
+import json
+import logging
+import math
+import os
+import random
+import sys
+import threading
+import time
+import traceback
 import uuid
+from collections import defaultdict
+from datetime import datetime, timedelta
+from functools import partial
+
+# -------------------- Third-Party Libraries -----------------
 import discord
-from discord.ext import commands, tasks
 from discord import app_commands
 from discord.errors import Forbidden, HTTPException
-from collections import defaultdict
-import json
-from datetime import datetime, timedelta
-import time
-import sys
-import os
-import threading
-import random
-import math
-import logging
+from discord.ext import commands, tasks
+from discord.utils import sleep_until
+import aiohttp
 from aiohttp import web, hdrs
+from cachetools import TTLCache
+from dotenv import load_dotenv
+from expiringdict import ExpiringDict
+import sqlite3
+
+# -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
 from shared_config import Config
-from discord.utils import sleep_until
-from dotenv import load_dotenv
-load_dotenv()
 from database import db
-from expiringdict import ExpiringDict
-import asyncio
-import sqlite3
-from functools import partial
-import traceback
-from cachetools import TTLCache
+
+# -------------------- Runtime Config -----------------
+load_dotenv()
 
 _bot_loop = None
 _loop_lock = threading.Lock()
@@ -52,6 +60,8 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 level_config_cache = TTLCache(maxsize=100, ttl=300)  # 10 minutes
 logger = logging.getLogger(__name__)
 
+
+YOUTUBE_QUOTA_EXCEEDED = False
 # -------------------- Log Config --------------------
 
 def load_log_config(guild_id):
@@ -264,9 +274,8 @@ def get_blocked_embed(guild_id: int) -> dict:
 
 
 # -------------------- Spam and Warning Tracking --------------------
-message_count = defaultdict(int)
-user_mentions = defaultdict(list)
-last_message_timestamps = defaultdict(float)
+message_timestamps = defaultdict(list)  # Tracks timestamps of messages per user
+user_mentions = defaultdict(list)        # Tracks timestamps of mentions
 
 def get_warnings(guild_id: str, user_id: str) -> list:
     """Get warnings for a specific user in a guild"""
@@ -289,6 +298,282 @@ WARNING_ACTIONS = {
     3: "ban"
 }
 
+# -------------------- Stream and Video Stuff --------------------
+class StreamAnnouncer:
+    def __init__(self, bot):
+        self.bot = bot
+        self.twitch_token = None
+        self.twitch_expiry = 0
+        self.youtube_cache = {}
+        self.check_loop.start()
+        
+    @tasks.loop(minutes=3)
+    async def check_loop(self):
+        await self.bot.wait_until_ready()
+        
+        # Process live streams
+        await self.check_twitch_streams()
+        await self.check_youtube_streams()
+        
+        # Process videos
+        await self.check_youtube_videos()
+    
+    async def get_twitch_token(self):
+        if time.time() < self.twitch_expiry - 60:
+            return self.twitch_token
+            
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                'https://id.twitch.tv/oauth2/token',
+                params={
+                    'client_id': os.getenv('TWITCH_CLIENT_ID'),
+                    'client_secret': os.getenv('TWITCH_CLIENT_SECRET'),
+                    'grant_type': 'client_credentials'
+                }
+            ) as resp:
+                data = await resp.json()
+                self.twitch_token = data['access_token']
+                self.twitch_expiry = time.time() + data['expires_in']
+                return self.twitch_token
+    
+    async def check_twitch_streams(self):
+        try:
+            # Get all Twitch stream announcements
+            announcements = self.bot.db.execute_query(
+                'SELECT * FROM stream_announcements WHERE platform = "twitch" AND enabled = 1',
+                fetch='all'
+            )
+            
+            if not announcements:
+                return
+                
+            token = await self.get_twitch_token()
+            headers = {
+                'Client-ID': os.getenv('TWITCH_CLIENT_ID'),
+                'Authorization': f'Bearer {token}'
+            }
+            
+            # Group by streamer to minimize API calls
+            streamer_map = defaultdict(list)
+            for ann in announcements:
+                streamer_map[ann['streamer_id']].append(ann)
+            
+            # Check all unique streamers
+            async with aiohttp.ClientSession() as session:
+                for streamer_id, ann_list in streamer_map.items():
+                    # Get user ID from username
+                    async with session.get(
+                        f'https://api.twitch.tv/helix/users?login={streamer_id}',
+                        headers=headers
+                    ) as resp:
+                        user_data = await resp.json()
+                        if not user_data.get('data'):
+                            continue
+                        user_id = user_data['data'][0]['id']
+                    
+                    # Check stream status
+                    async with session.get(
+                        f'https://api.twitch.tv/helix/streams?user_id={user_id}',
+                        headers=headers
+                    ) as resp:
+                        stream_data = await resp.json()
+                        is_live = bool(stream_data.get('data'))
+                        stream = stream_data['data'][0] if is_live else None
+                    
+                    # Process announcements
+                    for ann in ann_list:
+                        if is_live:
+                            # Check if we already announced this stream
+                            last_announced = datetime.fromisoformat(ann['last_announced']) if ann['last_announced'] else None
+                            if last_announced and (datetime.utcnow() - last_announced).total_seconds() < 3600:
+                                continue
+                                
+                            # Send announcement
+                            await self.send_stream_announcement(ann, stream)
+                        else:
+                            # Mark as offline in DB
+                            self.bot.db.execute_query(
+                                'UPDATE stream_announcements SET last_announced = NULL WHERE id = ?',
+                                (ann['id'],)
+                            )
+                            
+        except Exception as e:
+            logger.error(f"Twitch check error: {str(e)}")
+    
+    async def check_youtube_streams(self):
+        try:
+            announcements = self.bot.db.execute_query(
+                'SELECT * FROM stream_announcements WHERE platform = "youtube" AND enabled = 1',
+                fetch='all'
+            )
+            
+            if not announcements:
+                return
+                
+            API_KEY = os.getenv('YOUTUBE_API_KEY')
+            if not API_KEY:
+                return
+                
+            # Group by channel ID
+            channel_map = defaultdict(list)
+            for ann in announcements:
+                channel_map[ann['streamer_id']].append(ann)
+            
+            async with aiohttp.ClientSession() as session:
+                for channel_id, ann_list in channel_map.items():
+                    # Check for live streams
+                    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={channel_id}&eventType=live&type=video&key={API_KEY}"
+                    async with session.get(url) as resp:
+                        data = await resp.json()
+                        is_live = bool(data.get('items'))
+                        stream = data['items'][0] if is_live else None
+                    
+                    # Process announcements
+                    for ann in ann_list:
+                        if is_live:
+                            # Check if we already announced
+                            last_announced = datetime.fromisoformat(ann['last_announced']) if ann['last_announced'] else None
+                            if last_announced and (datetime.utcnow() - last_announced).total_seconds() < 3600:
+                                continue
+                                
+                            # Send announcement
+                            await self.send_stream_announcement(ann, {
+                                'title': stream['snippet']['title'],
+                                'url': f"https://youtu.be/{stream['id']['videoId']}"
+                            })
+                        else:
+                            # Mark as offline
+                            self.bot.db.execute_query(
+                                'UPDATE stream_announcements SET last_announced = NULL WHERE id = ?',
+                                (ann['id'],)
+                            )
+                            
+        except Exception as e:
+            logger.error(f"YouTube live check error: {str(e)}")
+    
+    async def check_youtube_videos(self):
+        """Check for new YouTube videos using the uploads playlist"""
+        if not self.bot.youtube_api_key:
+            return
+
+        async with aiohttp.ClientSession() as session:
+            # Get all video announcements
+            announcements = self.bot.db.execute_query(
+                'SELECT * FROM video_announcements WHERE platform = ? AND enabled = 1',
+                ('youtube',),
+                fetch='all'
+            )
+
+            for ann in announcements:
+                try:
+                    # Get channel uploads playlist ID
+                    channel_id = ann['channel_id']
+                    async with session.get(
+                        f'https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id={channel_id}&key={self.bot.youtube_api_key}'
+                    ) as resp:
+                        channel_data = await resp.json()
+                        if not channel_data.get('items'):
+                            continue
+                        uploads_playlist = channel_data['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+
+                    # Get last processed video info
+                    last_video_id = ann.get('last_video_id')
+                    last_video_time = ann.get('last_video_time')
+
+                    # Fetch up to 50 recent videos from the uploads playlist
+                    async with session.get(
+                        f'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId={uploads_playlist}&maxResults=50&key={self.bot.youtube_api_key}'
+                    ) as resp:
+                        playlist_data = await resp.json()
+                        items = playlist_data.get('items', [])
+
+                    # Process videos in upload order (oldest first)
+                    videos_to_announce = []
+                    for item in reversed(items):
+                        snippet = item['snippet']
+                        video_id = snippet['resourceId']['videoId']
+                        published_at = snippet['publishedAt']
+
+                        # Stop if we reach the last processed video
+                        if last_video_id and video_id == last_video_id:
+                            break
+
+                        # Only process videos published after the last processed time
+                        if last_video_time and published_at <= last_video_time:
+                            continue
+
+                        # Skip if live stream
+                        async with session.get(
+                            f'https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id={video_id}&key={self.bot.youtube_api_key}'
+                        ) as vresp:
+                            video_data = await vresp.json()
+                            if 'liveStreamingDetails' in video_data.get('items', [{}])[0]:
+                                continue
+
+                        videos_to_announce.append({
+                            'video_id': video_id,
+                            'title': snippet['title'],
+                            'url': f'https://youtu.be/{video_id}',
+                            'published_at': published_at
+                        })
+
+                    # Announce videos in order
+                    for video in videos_to_announce:
+                        await self.send_video_announcement(ann, {
+                            'title': video['title'],
+                            'url': video['url']
+                        })
+                        # Update last_video_id and last_video_time after each announcement
+                        self.bot.db.update_last_video_info(
+                            ann['guild_id'],
+                            ann['channel_id'],
+                            video['video_id'],
+                            video['published_at']
+                        )
+
+                except Exception as e:
+                    print(f"Error checking YouTube videos for channel {ann['channel_id']}: {e}")
+                    continue
+    
+    async def send_stream_announcement(self, announcement, stream_data):
+        try:
+            channel = self.bot.get_channel(int(announcement['channel_id']))
+            if not channel:
+                return
+                
+            message = announcement['message'].format(
+                streamer=announcement['streamer_id'],
+                title=stream_data['title'],
+                url=stream_data['url']
+            )
+            
+            await channel.send(message)
+            
+            # Update last announced time
+            self.bot.db.execute_query(
+                'UPDATE stream_announcements SET last_announced = CURRENT_TIMESTAMP WHERE id = ?',
+                (announcement['id'],)
+            )
+            
+        except Exception as e:
+            logger.error(f"Stream announcement error: {str(e)}")
+    
+    async def send_video_announcement(self, announcement, video_data):
+        try:
+            channel = self.bot.get_channel(int(announcement['channel_id']))
+            if not channel:
+                return
+                
+            message = announcement['message'].format(
+                streamer=announcement['channel_id'],  # For videos, channel_id is the identifier
+                title=video_data['title'],
+                url=video_data['url']
+            )
+            
+            await channel.send(message)
+            
+        except Exception as e:
+            logger.error(f"Video announcement error: {str(e)}")
 
 # -------------------- Bot Setup --------------------
 intents = discord.Intents.default()
@@ -321,6 +606,7 @@ class CustomBot(commands.Bot):
         await self.load_extension("cogs.leveling")
         await self.load_extension("cogs.utilities")
         await self.load_extension("cogs.debug")
+        await self.load_extension("cogs.music")
         
         if self._command_initialized:
             return
@@ -405,7 +691,7 @@ class CustomBot(commands.Bot):
             print(f"❌ Critical initialization error: {str(e)}")
             traceback.print_exc()
             sys.exit(1)
-
+            
     async def safe_sync(self, guild=None):
         """Sync commands with rate limit handling"""
         target = "global" if guild is None else f"guild {guild.id}"
@@ -471,10 +757,10 @@ bot_instance = CustomBot(
 )        
         
 # -------------------- Logging Helper --------------------
-async def log_event(guild, event_key, title, description, color=discord.Color.blue(), extra_fields=None):
+async def log_event(guild, event_key, title=None, description=None, color=discord.Color.blue(), extra_fields=None, embed=None):
     # Get guild-specific log configuration from database
     log_config = db.get_log_config(str(guild.id))
-    
+
     # Create default config if not exists
     if not log_config:
         db.conn.execute(
@@ -498,25 +784,24 @@ async def log_event(guild, event_key, title, description, color=discord.Color.bl
         print(f"Log channel not found in guild: {guild.name} (ID: {channel_id})")
         return
 
-    # Create embed
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=color,
-        timestamp=discord.utils.utcnow()
-    )
-    
-    # Add extra fields if provided
-    if extra_fields:
-        for name, value in extra_fields.items():
-            embed.add_field(name=name, value=value, inline=False)
+    # Create embed only if not passed
+    if embed is None:
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=discord.utils.utcnow()
+        )
+        # Add extra fields if provided
+        if extra_fields:
+            for name, value in extra_fields.items():
+                embed.add_field(name=name, value=value, inline=False)
 
     # Send to log channel
     try:
         await channel.send(embed=embed)
     except Exception as e:
         print(f"Failed to send log message in {guild.name}: {str(e)}")
-
 
 # -------------------- Custom Commands Storage --------------------
 def load_commands(guild_id):
@@ -679,7 +964,7 @@ async def handle_appeal_submission(request):
         if not all([appeal_type, user_id, channel_id]):
             return web.Response(status=400, text="Missing required fields")
 
-        channel = bot.get_channel(int(channel_id))
+        channel = bot_instance.get_channel(int(channel_id))
         if not channel:
             return web.Response(status=404, text=f"Channel {channel_id} not found")
 
@@ -732,7 +1017,6 @@ async def handle_appeal_submission(request):
     except Exception as e:
         print(f"Unexpected error processing appeal: {str(e)}")
         return web.Response(status=500, text="Internal server error")
-        return web.Response(status=500, text="Internal server error")
 
 def validate_uuid(uuid_str):
     """Validate UUIDv4 format"""
@@ -745,7 +1029,7 @@ def validate_uuid(uuid_str):
 def get_guild_id_from_channel(channel_id):
     """Resolve guild ID from channel ID with fallbacks"""
     try:
-        channel = bot.get_channel(int(channel_id))
+        channel = bot_instance.get_channel(int(channel_id))
         return str(channel.guild.id) if channel else None
     except Exception as e:
         print(f"⚠️ Channel resolution error: {str(e)}")
@@ -764,7 +1048,7 @@ async def handle_unban(request):
         if not guild:
             return web.json_response({"error": "Guild not found"}, status=404)
 
-        user = await bot.fetch_user(int(user_id))
+        user = await bot_instance.fetch_user(int(user_id))
         
         try:
             await guild.unban(user, reason="Ban appeal approved")
@@ -1052,9 +1336,6 @@ async def on_interaction(interaction: discord.Interaction):
                 logger.error(f"Appeal handling error: {traceback.format_exc()}")
                 await interaction.response.send_message("Error processing appeal", ephemeral=True)
                 return
-
-        else:
-            await bot.process_commands(interaction)
 
 # -------------------- Level System --------------------
 def get_level_data(guild_id, user_id):
@@ -1380,11 +1661,23 @@ async def on_message(message):
         if not is_excluded:
             # Spam detection
             spam_key = f"{guild_id}:{user_id}"
-            message_count[spam_key] = message_count.get(spam_key, 0) + 1
-            last_message_timestamps[spam_key] = current_time
-
-            # Check spam threshold
-            if message_count[spam_key] >= spam_config["spam_threshold"]:
+            
+            # Initialize timestamp list if needed
+            if spam_key not in message_timestamps:
+                message_timestamps[spam_key] = []
+            
+            # Add current message timestamp
+            message_timestamps[spam_key].append(current_time)
+            
+            # Filter out expired timestamps (older than time window)
+            window_start = current_time - spam_config["spam_time_window"]
+            message_timestamps[spam_key] = [
+                t for t in message_timestamps[spam_key] 
+                if t >= window_start
+            ]
+            
+            # Check if current count exceeds threshold
+            if len(message_timestamps[spam_key]) >= spam_config["spam_threshold"]:
                 try:
                     await message.channel.send(
                         embed=discord.Embed(
@@ -1399,10 +1692,11 @@ async def on_message(message):
                         message.guild,
                         "message_delete",
                         "Spam Detected",
-                        f"**User:** {message.author.mention}\n**Count:** {message_count[spam_key]} messages\n**Threshold:** {spam_config['spam_threshold']}/{spam_config['spam_time_window']}s",
+                        f"**User:** {message.author.mention}\n**Count:** {len(message_timestamps[spam_key])} messages\n**Threshold:** {spam_config['spam_threshold']}/{spam_config['spam_time_window']}s",
                         color=discord.Color.orange()
                     )
-                    message_count[spam_key] = 0
+                    # Reset after handling spam
+                    message_timestamps[spam_key] = []
                 except Exception as e:
                     print(f"Spam handling error: {str(e)}")
 
@@ -1577,6 +1871,49 @@ async def on_member_remove(member):
         print(f"Goodbye message error: {str(e)}")
 
 @bot_instance.event
+async def on_member_update(before, after):
+    if before.guild is None:
+        return
+    config = load_log_config(before.guild.id)
+    log_channel_id = config.get("log_channel_id")
+    if not (config.get("member_role_add", True) or config.get("member_role_remove", True)):
+        return
+
+    # Find added and removed roles
+    before_roles = set(before.roles)
+    after_roles = set(after.roles)
+    added_roles = after_roles - before_roles
+    removed_roles = before_roles - after_roles
+
+    # Only log if there are changes
+    if not added_roles and not removed_roles:
+        return
+
+    # Log added roles
+    if added_roles and config.get("member_role_add", True):
+        description = f"**User:** {after.mention} ({after.id})\n"
+        description += f"**Added Roles:** {', '.join(role.mention for role in added_roles)}\n"
+        await log_event(
+            after.guild,
+            "member_role_add",
+            "Member Role Added",
+            description.strip(),
+            color=discord.Color.green()
+        )
+
+    # Log removed roles
+    if removed_roles and config.get("member_role_remove", True):
+        description = f"**User:** {after.mention} ({after.id})\n"
+        description += f"**Removed Roles:** {', '.join(role.mention for role in removed_roles)}\n"
+        await log_event(
+            after.guild,
+            "member_role_remove",
+            "Member Role Removed",
+            description.strip(),
+            color=discord.Color.red()
+        )
+
+@bot_instance.event
 async def on_guild_available(guild):
     if not db.get_guild(str(guild.id)):
         print(f"⚠️ Guild {guild.name} not in database, attempting recovery...")
@@ -1694,13 +2031,6 @@ async def on_member_ban(guild, user):
         await log_event(guild, "member_ban", "Member Banned", description, color=discord.Color.dark_red())
 
 @bot_instance.event
-async def on_member_unban(guild, user):
-    config = load_log_config(guild.id)
-    if config.get("member_unban", True):
-        description = f"**Member:** {user.mention} has been unbanned."
-        await log_event(guild, "member_unban", "Member Unbanned", description, color=discord.Color.green())
-
-@bot_instance.event
 async def on_guild_role_create(role):
     guild = role.guild
     config = load_log_config(guild.id)
@@ -1765,21 +2095,78 @@ async def on_guild_emojis_update(guild, before, after):
     new_emojis = [e for e in after if e.id not in before_dict]
     for emoji in new_emojis:
         if config.get("emoji_create", True):
-            description = f"**Emoji Created:** {emoji.name} (ID: {emoji.id})"
-            await log_event(guild, "emoji_create", "Emoji Created", description, color=discord.Color.green())
-    
+            embed = discord.Embed(
+                title="Emoji Created",
+                description=f"`:{emoji.name}:`",
+                color=discord.Color.green(),
+                timestamp=datetime.utcnow()
+            )
+            embed.set_thumbnail(url=emoji.url)
+            embed.set_footer(text=f"ID: {emoji.id}")
+            await log_event(guild, "emoji_create", embed=embed)
+
     deleted_emojis = [e for e in before if e.id not in after_dict]
     for emoji in deleted_emojis:
         if config.get("emoji_delete", True):
-            description = f"**Emoji Deleted:** {emoji.name} (ID: {emoji.id})"
-            await log_event(guild, "emoji_delete", "Emoji Deleted", description, color=discord.Color.red())
-    
+            embed = discord.Embed(
+                title="Emoji Deleted",
+                description=f"`:{emoji.name}:`",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow()
+            )
+            embed.set_thumbnail(url=emoji.url)
+            embed.set_footer(text=f"ID: {emoji.id}")
+            await log_event(guild, "emoji_delete", embed=embed)
+
     for emoji in after:
         if emoji.id in before_dict:
             old_emoji = before_dict[emoji.id]
             if old_emoji.name != emoji.name and config.get("emoji_name_change", True):
-                description = f"**Emoji Name Changed:** {old_emoji.name} -> {emoji.name} (ID: {emoji.id})"
-                await log_event(guild, "emoji_name_change", "Emoji Name Change", description, color=discord.Color.orange())
+                embed = discord.Embed(
+                    title="Emoji Updated",
+                    description=f"`:{old_emoji.name}:` was changed to `:{emoji.name}:`",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.utcnow()
+                )
+                embed.set_thumbnail(url=emoji.url)
+                embed.set_footer(text=f"ID: {emoji.id}")
+                await log_event(guild, "emoji_name_change", embed=embed)
+
+@bot_instance.event
+async def on_member_update(before, after):
+    if before.guild is None:
+        return
+    config = load_log_config(before.guild.id)
+    log_channel_id = config.get("log_channel_id")
+    if not (config.get("member_role_add", True) or config.get("member_role_remove", True)):
+        return
+
+    # Find added and removed roles
+    before_roles = set(before.roles)
+    after_roles = set(after.roles)
+    added_roles = after_roles - before_roles
+    removed_roles = before_roles - after_roles
+
+    # Only log if there are changes
+    if not added_roles and not removed_roles:
+        return
+
+    description = f"**User:** {after.mention} ({after.id})\n"
+    if added_roles and config.get("member_role_add", True):
+        description += f"**Added Roles:** {', '.join(role.mention for role in added_roles)}\n"
+    if removed_roles and config.get("member_role_remove", True):
+        description += f"**Removed Roles:** {', '.join(role.mention for role in removed_roles)}\n"
+
+    # Pick color
+    color = discord.Color.green() if added_roles and not removed_roles else discord.Color.red() if removed_roles and not added_roles else discord.Color.orange()
+
+    await log_event(
+        after.guild,
+        "member_role_change",
+        "Member Role Updated",
+        description.strip(),
+        color=color
+    )
 
 @bot_instance.event
 async def on_presence_update(before, after):

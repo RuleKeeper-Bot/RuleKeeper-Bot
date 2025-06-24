@@ -257,7 +257,7 @@ class Database:
                     user_id TEXT NOT NULL,
                     type TEXT NOT NULL,
                     appeal_data TEXT NOT NULL,
-                    status TEXT
+                    status TEXT DEFAULT 'pending',
                     appeal_token TEXT UNIQUE NOT NULL,
                     expires_at INTEGER NOT NULL,
                     moderator_id TEXT NOT NULL,
@@ -349,6 +349,37 @@ class Database:
                     last_start INTEGER DEFAULT NULL,
                     PRIMARY KEY(user_id, guild_id, game_name)
                 )''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stream_announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    enabled BOOLEAN DEFAULT 1,
+                    platform TEXT NOT NULL,
+                    streamer_id TEXT NOT NULL,
+                    message TEXT DEFAULT '@everyone {streamer} is live! {title} - {url}',
+                    last_announced TIMESTAMP DEFAULT NULL,
+                    role_id TEXT DEFAULT NULL,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS video_announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    announce_channel_id TEXT DEFAULT NULL,
+                    enabled BOOLEAN DEFAULT 1,
+                    platform TEXT NOT NULL,
+                    message TEXT DEFAULT '@everyone {streamer} uploaded: {title} - {url}',
+                    last_video_id TEXT DEFAULT NULL,
+                    last_video_time TEXT DEFAULT NULL,
+                    role_id TEXT DEFAULT NULL,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )
+            ''')
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS pending_role_changes (
@@ -750,6 +781,118 @@ class Database:
                     [(guild_id, rid) for rid in role_ids]
                 )
 
+    # User Connections Methods
+    def get_user_connections(self, user_id: str, guild_id: str) -> dict:
+        return self.execute_query(
+            'SELECT * FROM user_connections WHERE user_id = ? AND guild_id = ?',
+            (user_id, guild_id),
+            fetch='one'
+        )
+
+    def update_user_connection(self, user_id: str, guild_id: str, **kwargs):
+        """UPSERT operation for user connections"""
+        if not kwargs:
+            return
+
+        # Filter valid columns
+        valid_columns = {'twitch_username', 'youtube_channel_id'}
+        update_data = {k: v for k, v in kwargs.items() if k in valid_columns}
+        
+        if not update_data:
+            return
+
+        # Prepare query
+        columns = ', '.join(update_data.keys())
+        placeholders = ', '.join(['?'] * len(update_data))
+        updates = ', '.join([f"{k} = ?" for k in update_data.keys()])
+        
+        query = f'''
+            INSERT INTO user_connections (user_id, guild_id, {columns})
+            VALUES (?, ?, {placeholders})
+            ON CONFLICT(user_id, guild_id) DO UPDATE SET {updates}
+        '''
+        
+        values = [user_id, guild_id] + list(update_data.values())
+        values += list(update_data.values())  # For the UPDATE part
+        
+        self.execute_query(query, tuple(values))
+
+    # Stream Alerts Methods
+    def get_stream_alerts(self, guild_id: str) -> list:
+        """Get all stream alerts for a guild"""
+        return self.execute_query(
+            'SELECT * FROM stream_alerts WHERE guild_id = ?',
+            (guild_id,),
+            fetch='all'
+        )
+
+    def update_stream_alert(self, guild_id: str, platform: str, notification_type: str,
+                           enabled: bool, role_id: str, channel_id: str, message_template: str):
+        """Generic method for updating any stream alert"""
+        self.execute_query(
+            '''INSERT INTO stream_alerts 
+            (guild_id, platform, notification_type, enabled, role_id, channel_id, message_template)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, platform, notification_type) DO UPDATE SET
+                enabled = excluded.enabled,
+                role_id = excluded.role_id,
+                channel_id = excluded.channel_id,
+                message_template = excluded.message_template''',
+            (guild_id, platform, notification_type, enabled, role_id, channel_id, message_template)
+        )
+
+    def get_video_alerts(self, guild_id: str) -> dict:
+        """Get YouTube video alerts specifically"""
+        alert = self.execute_query(
+            '''SELECT * FROM stream_alerts 
+            WHERE guild_id = ? 
+            AND platform = 'youtube' 
+            AND notification_type = 'video' ''',
+            (guild_id,),
+            fetch='one'
+        )
+        if alert:
+            return {
+                'enabled': bool(alert['enabled']),
+                'role_id': alert['role_id'],
+                'channel_id': alert['channel_id'],
+                'message_template': alert['message_template']
+            }
+        return None
+
+    def update_video_alert(self, guild_id: str, platform: str, notification_type: str,
+                          enabled: bool, role_id: str, channel_id: str, message_template: str):
+        """Wrapper for video-specific alerts"""
+        self.update_stream_alert(
+            guild_id=guild_id,
+            platform=platform,
+            notification_type=notification_type,
+            enabled=enabled,
+            role_id=role_id,
+            channel_id=channel_id,
+            message_template=message_template
+        )
+
+    # Stream Status Methods
+    def get_stream_status(self, user_id: str, guild_id: str, platform: str) -> dict:
+        return self.execute_query(
+            'SELECT * FROM stream_status WHERE user_id = ? AND guild_id = ? AND platform = ?',
+            (user_id, guild_id, platform),
+            fetch='one'
+        )
+
+    def update_stream_status(self, user_id: str, guild_id: str, platform: str, is_live: bool, title: str, url: str):
+        self.execute_query(
+            '''INSERT INTO stream_status (user_id, guild_id, platform, is_live, stream_title, stream_url, last_live_time)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, guild_id, platform) DO UPDATE SET
+                    is_live = excluded.is_live,
+                    stream_title = excluded.stream_title,
+                    stream_url = excluded.stream_url,
+                    last_live_time = excluded.last_live_time''',
+            (user_id, guild_id, platform, is_live, title, url)
+        )
+
     # Warning Methods
     def get_warnings(self, guild_id: str, user_id: str) -> list:
         return self.execute_query(
@@ -1032,6 +1175,38 @@ class Database:
             
             if missing:
                 raise RuntimeError(f"Missing columns in {table}: {', '.join(missing)}")
+
+    def get_video_announcement(self, guild_id: str, channel_id: str) -> Optional[dict]:
+        """Get a video announcement configuration including last video info"""
+        return self.execute_query(
+            'SELECT * FROM video_announcements WHERE guild_id = ? AND channel_id = ?',
+            (str(guild_id), str(channel_id)),
+            fetch='one'
+        )
+
+    def update_video_announcement(self, guild_id: str, channel_id: str, **kwargs):
+        """Update video announcement settings including last video info"""
+        if 'last_video_time' in kwargs:
+            kwargs['last_video_time'] = str(kwargs['last_video_time'])
+            
+        set_clause = ', '.join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [str(guild_id), str(channel_id)]
+        
+        self.execute_query(
+            f'''UPDATE video_announcements 
+            SET {set_clause} 
+            WHERE guild_id = ? AND channel_id = ?''',
+            tuple(values)
+        )
+
+    def update_last_video_info(self, guild_id: str, channel_id: str, video_id: str, video_time: str):
+        """Update both last video ID and time for a channel"""
+        self.execute_query(
+            '''UPDATE video_announcements 
+            SET last_video_id = ?, last_video_time = ? 
+            WHERE guild_id = ? AND channel_id = ?''',
+            (video_id, str(video_time), str(guild_id), str(channel_id))
+        )
 
 # Initialize database with validation
 db = Database()

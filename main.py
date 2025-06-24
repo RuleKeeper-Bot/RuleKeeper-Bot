@@ -1,7 +1,21 @@
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 from shared import shared
 from web.app import app
 import multiprocessing
+import sys
+
+
+# For binaries, load .env from the executable's directory
+if getattr(sys, 'frozen', False):
+    base_dir = Path(sys.executable).parent
+else:
+    base_dir = Path(__file__).parent
+
+dotenv_path = base_dir / '.env'
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
 
 
 def run_bot():

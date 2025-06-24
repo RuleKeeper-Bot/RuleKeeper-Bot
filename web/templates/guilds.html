@@ -131,18 +131,6 @@
                         </div>
                     </a>
                 </div>
-				
-				<!-- Game Roles Card -->
-				<div class="col">
-					<a href="{{ url_for('game_roles_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-						<div class="card-body">
-							<h5 class="card-title">
-								<i class="bi bi-controller me-2"></i>Game Roles
-							</h5>
-							<p class="card-text text-muted">Automate roles based on game activity</p>
-						</div>
-					</a>
-				</div>
             </div>
         </div>
 
@@ -287,6 +275,36 @@
                         </div>
                     </a>
                 </div>
+            </div>
+        </div>
+		
+		<!-- Miscellaneous Configuration Section -->
+        <div class="management-section">
+            <h3 class="section-title">Miscellaneous Configuration</h3>
+            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+                <!-- Stream and Video Announcements Card -->
+                <div class="col">
+                    <a href="{{ url_for('stream_announcements', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+                        <div class="card-body">
+                            <h5 class="card-title">
+                                <i class="bi bi-youtube me-2"></i>Stream and Video Announcements
+                            </h5>
+                            <p class="card-text text-muted">Manage your live stream and video upload announcements</p>
+                        </div>
+                    </a>
+                </div>
+				
+				<!-- Game Roles Card -->
+				<div class="col">
+					<a href="{{ url_for('game_roles_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
+						<div class="card-body">
+							<h5 class="card-title">
+								<i class="bi bi-controller me-2"></i>Game Roles
+							</h5>
+							<p class="card-text text-muted">Automate roles based on game activity</p>
+						</div>
+					</a>
+				</div>
             </div>
         </div>
     </div>

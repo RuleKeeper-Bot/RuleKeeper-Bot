@@ -1,35 +1,41 @@
-import sys
-import os
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import uuid
-import logging
-import json
-import requests
-import traceback
+# Standard Library
 import asyncio
-import threading
-import bcrypt
-from datetime import datetime
-from functools import wraps
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string
-from flask_discord import DiscordOAuth2Session, Unauthorized
-from flask_wtf.csrf import CSRFProtect, CSRFError
-from flask.sessions import SecureCookieSessionInterface
-from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.exceptions import BadRequestKeyError
-from cachetools import TTLCache
-from database import db, Database
-from config import Config
-from shared_config import Config
-from shared import shared
-from bot.bot import bot_instance
+import json
+import logging
+import os
 import re
 import sqlite3
+import sys
+import threading
 import time
-from flask_discord.exceptions import RateLimited
-from dotenv import load_dotenv
+import traceback
+import uuid
+from datetime import datetime
+from functools import wraps
 
+# Third-Party Libraries
+import bcrypt
+import requests
+from authlib.integrations.flask_client import OAuth
+from cachetools import TTLCache
+from dotenv import load_dotenv
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string
+from flask.sessions import SecureCookieSessionInterface
+from flask_discord import DiscordOAuth2Session, Unauthorized
+from flask_discord.exceptions import RateLimited
+from flask_wtf.csrf import CSRFProtect, CSRFError
+from werkzeug.exceptions import BadRequestKeyError
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+# Local Imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import Config
+from shared_config import Config
+from database import db, Database
+from shared import shared
+from bot.bot import bot_instance
+
+# Runtime Config
 load_dotenv()
 
 # Initialize Flask app
@@ -205,6 +211,41 @@ def inject_admin_status():
         'is_bot_admin': check_bot_admin
     }
 
+def resolve_youtube_handle(identifier: str) -> tuple:
+    """Convert YouTube handle to channel ID with quota check"""
+    API_KEY = os.getenv('YOUTUBE_API_KEY')
+    if not API_KEY:
+        return identifier, "API key not configured"
+    
+    try:
+        # Handle @channel format
+        if identifier.startswith('@'):
+            handle = identifier[1:]
+        else:
+            handle = identifier
+            
+        # Resolve handle to channel ID
+        url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={handle}&key={API_KEY}"
+        response = requests.get(url)
+        data = response.json()
+        
+        # Check for quota errors
+        if 'error' in data:
+            if any(e.get('reason') == 'quotaExceeded' for e in data['error'].get('errors', [])):
+                logger.error("YouTube API QUOTA EXCEEDED during handle resolution")
+                return identifier, "YouTube API quota exceeded - try again later"
+            
+            error_msg = data['error'].get('message', 'Unknown YouTube API error')
+            return identifier, f"YouTube API error: {error_msg}"
+        
+        if 'items' in data and len(data['items']) > 0:
+            return data['items'][0]['snippet']['channelId'], None
+            
+        return identifier, "Channel not found"
+    except Exception as e:
+        logger.error(f"Error resolving YouTube handle: {str(e)}")
+        return identifier, "Connection error"
+
 # TEMPORARY ROUTE
 # @app.route('/update-guild-icons')
 # def update_guild_icons():
@@ -267,7 +308,8 @@ def end_user_license_agreement():
 @app.route('/login')
 def login():
     session.clear()
-    session.modmanent = True  # Set before creating session
+    session.permanent = True
+    session.modified = True  # Force session save
     return discord.create_session(
         scope=["identify", "guilds"],
         prompt="none"
@@ -286,6 +328,7 @@ def login_admin():
             if (username == os.getenv('HEAD_BOT_ADMIN_USERNAME') and 
                 request.form['password'] == os.getenv('HEAD_BOT_ADMIN_PASSWORD')):
                 session['head_admin'] = True
+                session['admin'] = True
                 session['admin_username'] = username  # Store username
                 return redirect(url_for('admin_dashboard'))
                 
@@ -339,6 +382,7 @@ def logout_admin():
 def callback():
     try:
         # Let flask_discord handle state validation
+        state = session.get('DISCORD_OAUTH2_STATE')
         discord.callback()
         user = discord.fetch_user()
         
@@ -541,6 +585,26 @@ def log_action(action: str, details: str, changes: str = ""):
         VALUES (?, ?, ?, ?)''',
         (action, details, changes, admin_identity)
     )
+
+@app.route('/admin/guilds/<guild_id>/remove', methods=['POST'])
+@admin_required
+def remove_guild(guild_id):
+    try:
+        csrf.protect()  # Verify CSRF token
+        
+        # Remove guild from database
+        db.execute_query('DELETE FROM guilds WHERE guild_id = ?', (guild_id,))
+        
+        flash(f'Successfully removed guild {guild_id}', 'success')
+        return redirect(url_for('admin_guilds'))
+        
+    except CSRFError:
+        flash('Security token expired', 'danger')
+        return redirect(url_for('admin_guilds'))
+    except Exception as e:
+        logger.error(f"Error removing guild: {str(e)}")
+        flash('Failed to remove guild', 'danger')
+        return redirect(url_for('admin_guilds'))
 
 @app.route('/dashboard/<guild_id>')
 @login_required
@@ -1233,6 +1297,166 @@ def game_roles_config(guild_id):
         logger.error("Error in game_roles_config: %s", str(e))
         flash('An error occurred while loading game role configurations', 'danger')
         return redirect(url_for('select_guild'))
+
+# Stream and Video Announcements page
+@app.route('/dashboard/<guild_id>/stream-and-video', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def stream_announcements(guild_id):
+    guild = get_guild_or_404(guild_id)
+    channels = get_text_channels(guild_id)
+    roles = get_roles(guild_id)
+
+    # Default messages for stream and video announcements
+    DEFAULT_STREAM_MESSAGE = "🔴 {streamer} is now live! Watch here: {url} {role}"
+    DEFAULT_VIDEO_MESSAGE = "📺 New video from {channel}: {url} {role}"
+
+    # Get existing announcements
+    stream_announcements = db.execute_query(
+        'SELECT * FROM stream_announcements WHERE guild_id = ?',
+        (guild_id,),
+        fetch='all'
+    )
+    
+    video_announcements = db.execute_query(
+        'SELECT * FROM video_announcements WHERE guild_id = ?',
+        (guild_id,),
+        fetch='all'
+    )
+    # Ensure both channel_id (YouTube) and announce_channel_id (Discord) are present in each dict
+    for ann in video_announcements:
+        if 'announce_channel_id' not in ann or ann['announce_channel_id'] is None:
+            # fallback for legacy rows: try to use channel_id if it looks like a Discord channel
+            ann['announce_channel_id'] = ann.get('announce_channel_id') or ann.get('channel_id')
+        # channel_id is always YouTube channel
+        ann['channel_id'] = ann.get('channel_id')
+
+    # Helper: get role mention by id
+    def get_role_mention(role_id):
+        if not role_id:
+            return ''
+        for r in roles:
+            if str(r['id']) == str(role_id):
+                return f"<@&{r['id']}>"
+        return ''
+    
+    # Helper: get channel name by id
+    def get_channel_name(channel_id):
+        for channel in channels:
+            if str(channel['id']) == str(channel_id):
+                return channel['name']
+        return f"Unknown ({channel_id})"
+
+    # Attach role mention to each announcement for preview
+    for ann in stream_announcements:
+        ann['role_mention'] = get_role_mention(ann.get('role_id'))
+    for ann in video_announcements:
+        ann['role_mention'] = get_role_mention(ann.get('role_id'))
+
+    if request.method == 'POST':
+        try:
+            csrf.protect()
+            action = request.form.get('action')
+            
+            if action == 'add_stream':
+                platform = request.form['platform']
+                streamer_id = request.form['streamer_id'].strip()
+                channel_id = request.form['channel_id']
+                message = request.form.get('message', '').strip() or DEFAULT_STREAM_MESSAGE
+                role_id = request.form.get('role_id')
+                db.execute_query(
+                    '''INSERT INTO stream_announcements 
+                    (guild_id, channel_id, platform, streamer_id, message, role_id)
+                    VALUES (?, ?, ?, ?, ?, ?)''',
+                    (guild_id, channel_id, platform, streamer_id, message, role_id)
+                )
+                
+            elif action == 'edit_stream':
+                stream_id = request.form.get('stream_id')
+                platform = request.form.get('platform')
+                channel_id = request.form.get('channel_id')
+                role_id = request.form.get('role_id') or None
+                streamer_id = request.form.get('streamer_id')
+                message = request.form.get('message')
+                db.execute_query(
+                    'UPDATE stream_announcements SET platform=?, channel_id=?, role_id=?, streamer_id=?, message=? WHERE id=? AND guild_id=?',
+                    (platform, channel_id, role_id, streamer_id, message, stream_id, guild_id)
+                )
+                flash('Stream announcement updated!', 'success')
+                return redirect(request.url)
+            elif action == 'add_video':
+                platform = request.form['platform']
+                announce_channel_id = request.form['channel_id']  # Discord channel
+                target_channel_id = request.form['target_channel_id']  # YouTube channel
+                message = request.form.get('message', '').strip() or DEFAULT_VIDEO_MESSAGE
+                role_id = request.form.get('role_id')
+                db.execute_query(
+                    '''INSERT INTO video_announcements 
+                    (guild_id, channel_id, announce_channel_id, platform, message, role_id)
+                    VALUES (?, ?, ?, ?, ?, ?)''',
+                    (guild_id, target_channel_id, announce_channel_id, platform, message, role_id)
+                )
+                
+            elif action == 'edit_video':
+                video_id = request.form.get('announcement_id') or request.form.get('video_id')
+                platform = request.form.get('platform')
+                announce_channel_id = request.form.get('channel_id')
+                target_channel_id = request.form.get('target_channel_id')
+                message = request.form.get('message')
+                role_id = request.form.get('role_id') or None
+                db.execute_query(
+                    'UPDATE video_announcements SET platform=?, channel_id=?, announce_channel_id=?, role_id=?, message=? WHERE id=? AND guild_id=?',
+                    (platform, target_channel_id, announce_channel_id, role_id, message, video_id, guild_id)
+                )
+                flash('Video announcement updated!', 'success')
+                return redirect(request.url)
+            elif action == 'delete_stream':
+                announcement_id = request.form['announcement_id']
+                db.execute_query(
+                    'DELETE FROM stream_announcements WHERE id = ? AND guild_id = ?',
+                    (announcement_id, guild_id)
+                )
+                
+            elif action == 'delete_video':
+                announcement_id = request.form['announcement_id']
+                db.execute_query(
+                    'DELETE FROM video_announcements WHERE id = ? AND guild_id = ?',
+                    (announcement_id, guild_id)
+                )
+                
+            elif action == 'toggle_stream':
+                announcement_id = request.form['announcement_id']
+                enabled = request.form['enabled'] == 'true'
+                db.execute_query(
+                    'UPDATE stream_announcements SET enabled = ? WHERE id = ? AND guild_id = ?',
+                    (int(enabled), announcement_id, guild_id)
+                )
+                
+            elif action == 'toggle_video':
+                announcement_id = request.form['announcement_id']
+                enabled = request.form['enabled'] == 'true'
+                db.execute_query(
+                    'UPDATE video_announcements SET enabled = ? WHERE id = ? AND guild_id = ?',
+                    (int(enabled), announcement_id, guild_id)
+                )
+                
+            flash('Settings updated successfully', 'success')
+            return redirect(url_for('stream_announcements', guild_id=guild_id))
+            
+        except Exception as e:
+            logger.error(f"Stream config error: {str(e)}")
+            flash('Error saving configuration', 'danger')
+    
+    return render_template('stream_and_video_announcements.html',
+                         guild_id=guild_id,
+                         guild=guild,
+                         channels=channels,
+                         roles=roles,
+                         stream_announcements=stream_announcements,
+                         video_announcements=video_announcements,
+                         get_channel_name=get_channel_name,
+                         DEFAULT_STREAM_MESSAGE=DEFAULT_STREAM_MESSAGE,
+                         DEFAULT_VIDEO_MESSAGE=DEFAULT_VIDEO_MESSAGE)
 
 # Warnings Management
 @app.route('/dashboard/<guild_id>/warnings')
@@ -2370,11 +2594,15 @@ def forbidden(e):
 
 @app.errorhandler(404)
 def not_found(e):
-    if "RuleKeeper bot is not" in str(e):
-        return render_template('error.html', 
-                            error_message=str(e),
-                            help_message="Please add the bot to your server first"), 404
-    return render_template('404.html'), 404
+    return render_template('error.html', 
+                        error_message="404 - Page Not Found",
+                        help_message="The page you requested does not exist."), 404
+    
+@app.errorhandler(500)
+def internal_error(e):
+    return render_template('error.html',
+                        error_message="Internal Server Error",
+                        help_message="Please try again later"), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
