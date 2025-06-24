@@ -105,7 +105,7 @@ jobs:
           (cd AppDir && /usr/local/bin/appimagetool . ../dist/rulekeeper-bot.AppImage)
 
           # Build .deb package and output to dist/
-          fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 dist/rulekeeper-bot=/usr/bin/rulekeeper-bot -p dist/rulekeeper-bot.deb
+          fpm -s dir -t deb -n rulekeeper-bot -v 1.0.0 -p dist/rulekeeper-bot.deb dist/rulekeeper-bot=/usr/bin/rulekeeper-bot
 
       # macOS: Build .dmg
       - name: Build .dmg on macOS
@@ -119,7 +119,7 @@ jobs:
           # Remove original binary to avoid duplicate upload
           rm -f dist/rulekeeper-bot
 
-      # Rename binaries for artifact upload (AFTER packaging)
+      # Rename binaries for artifact upload
       - name: Rename binaries
         run: |
           if [ "${{ matrix.os }}" == "ubuntu-latest" ]; then
