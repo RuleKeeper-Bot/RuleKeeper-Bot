@@ -21,10 +21,7 @@ class Config:
     if getattr(sys, 'frozen', False):
         # Running as compiled binary: use the binary's directory
         base_dir = Path(sys.executable).parent
-        db_name = os.getenv('DATABASE_PATH', 'bot.db')
-        # If the path is not absolute, use only the filename
-        db_name = os.path.basename(db_name)
-        DATABASE_PATH = str(base_dir / db_name)
+        DATABASE_PATH = str(base_dir / os.getenv('DATABASE_PATH', 'bot.db'))
     else:
         # Running as script: use the path as set in the environment or default
         DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot.db')
