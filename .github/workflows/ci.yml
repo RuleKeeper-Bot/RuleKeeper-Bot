@@ -96,7 +96,7 @@ jobs:
           cp dist/rulekeeper-bot AppDir/usr/bin/
           
           # Copy icon
-          cp web/static/image/icon.png AppDir/rulekeeper-bot.png
+          cp web/static/images/icon.png AppDir/rulekeeper-bot.png
 
           # Create .desktop file (No icon for now, add it later)
           cat <<EOF > AppDir/rulekeeper-bot.desktop
