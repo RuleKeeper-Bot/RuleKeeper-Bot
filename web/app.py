@@ -30,7 +30,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 # Local Imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
-from shared_config import Config
+from shared_config import verify_paths
 from database import db, Database
 from shared import shared
 from bot.bot import bot_instance
@@ -77,7 +77,7 @@ channel_cache = TTLCache(maxsize=100, ttl=600) # 10 minutes
 role_cache = TTLCache(maxsize=100, ttl=600) # 10 minutes
 
 # Initialize database connection
-Config.verify_paths()
+verify_paths()
 db = Database(str(Config.DATABASE_PATH))
 print(f"🌐 Web using database: {db.db_path}")
 
