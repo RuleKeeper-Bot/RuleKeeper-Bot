@@ -49,9 +49,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller python-dotenv
 
-      - name: Build binary
-        run: |
-          pyinstaller --onefile --name rulekeeper-bot main.py
+      # - name: Build binary
+      #   run: |
+      #     pyinstaller --onefile --name rulekeeper-bot main.py
 
       # macOS: Build .dmg
       - name: Build .dmg on macOS
@@ -121,7 +121,6 @@ jobs:
         with:
           name: rulekeeper-bot-${{ matrix.os }}
           path: |
-            dist/rulekeeper-bot*
             dist/*.dmg
             rulekeeper-bot.AppImage
             *.deb
