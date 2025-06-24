@@ -30,7 +30,7 @@ import sqlite3
 # -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
-from shared_config import Config
+from shared_config import verify_paths
 from database import db
 
 # -------------------- Runtime Config -----------------
@@ -583,7 +583,7 @@ intents.guilds = True
 intents.moderation = True
 intents.presences = True
 
-Config.verify_paths()
+verify_paths()
 class CustomBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
