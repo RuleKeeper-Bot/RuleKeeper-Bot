@@ -1,4 +1,6 @@
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -6,7 +8,8 @@ load_dotenv()
 class Config:
     # Core Application Configuration
     SECRET_KEY = os.getenv('SECRET_KEY')
-    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+    HEAD_ADMIN_USERNAME = os.getenv('HEAD_ADMIN_USERNAME')
+    HEAD_ADMIN_PASSWORD = os.getenv('HEAD_ADMIN_PASSWORD')
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5000')
     API_URL = os.getenv('API_URL', 'http://localhost:5003')
     
@@ -15,7 +18,16 @@ class Config:
     DISCORD_CLIENT_SECRET = os.getenv('DISCORD_CLIENT_SECRET')
     
     # Database Configuration
-    DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot.db')
+    if getattr(sys, 'frozen', False):
+        # Running as compiled binary: use the binary's directory
+        base_dir = Path(sys.executable).parent
+        db_name = os.getenv('DATABASE_PATH', 'bot.db')
+        # If the path is not absolute, use only the filename
+        db_name = os.path.basename(db_name)
+        DATABASE_PATH = str(base_dir / db_name)
+    else:
+        # Running as script: use the path as set in the environment or default
+        DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot.db')
     
     # Default Embed Colors
     DEFAULT_EMBED_COLORS = {
