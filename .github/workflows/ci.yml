@@ -2,7 +2,9 @@ name: Build, Release, and Publish
 
 on:
   push:
-    branches: [ main ]
+    branches: 
+      - main
+      - fix/Binaries
   workflow_dispatch:
 
 jobs:
