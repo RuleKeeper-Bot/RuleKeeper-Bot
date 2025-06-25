@@ -9,12 +9,12 @@ def run_bot():
     from bot.bot import bot_instance, BOT_TOKEN
     bot_instance.run(BOT_TOKEN)
 
-
 def run_flask():
     from web.app import app
     app.run(host="0.0.0.0", port=5000)
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     print("Starting the bot and web server...")
     # Set the start method and start processes
     multiprocessing.set_start_method("spawn", force=True)
