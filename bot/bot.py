@@ -13,6 +13,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import partial
+from pathlib import Path
 
 # -------------------- Third-Party Libraries -----------------
 import discord
@@ -47,6 +48,15 @@ def set_event_loop(loop):
     global _bot_loop
     with _loop_lock:
         _bot_loop = loop
+
+# -------------------- Base Directory Stuff -----------------
+if getattr(sys, 'frozen', False):
+    # PyInstaller bundle: cogs are in sys._MEIPASS
+    base_dir = Path(sys._MEIPASS)
+else:
+    base_dir = Path(__file__).parent
+
+cogs_path = base_dir / "cogs"
 
 # -------------------- Initialize database -----------------
 Config.verify_paths()
