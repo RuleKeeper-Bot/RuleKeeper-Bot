@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from shared import shared
 from web.app import app
 import multiprocessing
 import sys
@@ -19,14 +18,16 @@ if dotenv_path.exists():
 
 
 def run_bot():
+    from shared import shared
     shared.bot.run(os.getenv("BOT_TOKEN"))
 
 
 def run_flask():
+    from web.app import app
     app.run(host="0.0.0.0", port=5000)
 
-
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
     bot_process = multiprocessing.Process(target=run_bot)
     flask_process = multiprocessing.Process(target=run_flask)
 
