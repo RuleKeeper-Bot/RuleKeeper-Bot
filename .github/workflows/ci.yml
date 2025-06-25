@@ -69,9 +69,9 @@ jobs:
         run: |
           OUTPUT_NAME="rulekeeper-bot-${{ matrix.os == 'windows-latest' && 'windows' || (matrix.os == 'macos-latest' && 'macos' || 'linux') }}-${{ matrix.arch }}"
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            pyinstaller --onefile --name $OUTPUT_NAME main.py
+            pyinstaller --onefile --name $OUTPUT_NAME main.py --add-data "cogs;cogs"
           else
-            pyinstaller --onefile --name $OUTPUT_NAME main.py
+            pyinstaller --onefile --name $OUTPUT_NAME main.py --add-data "cogs:cogs"
           fi
 
       # Linux: Build AppImage and deb
