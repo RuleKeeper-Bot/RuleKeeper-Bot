@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from web.app import app
 import multiprocessing
 import sys
 
