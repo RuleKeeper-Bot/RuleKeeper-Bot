@@ -1,24 +1,13 @@
 import os
+import sys
+import multiprocessing
 from pathlib import Path
 from dotenv import load_dotenv
-import multiprocessing
-import sys
-
-
-# For binaries, load .env from the executable's directory
-if getattr(sys, 'frozen', False):
-    base_dir = Path(sys.executable).parent
-else:
-    base_dir = Path(__file__).parent
-
-dotenv_path = base_dir / '.env'
-if dotenv_path.exists():
-    load_dotenv(dotenv_path)
 
 
 def run_bot():
-    from shared import shared
-    shared.bot.run(os.getenv("BOT_TOKEN"))
+    from bot.bot import bot_instance, BOT_TOKEN
+    bot_instance.run(BOT_TOKEN)
 
 
 def run_flask():
@@ -26,7 +15,20 @@ def run_flask():
     app.run(host="0.0.0.0", port=5000)
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn")
+    print("Starting the bot and web server...")
+    # Set the start method and start processes
+    multiprocessing.set_start_method("spawn", force=True)
+
+    # For binaries, load .env from the executable's directory
+    if getattr(sys, 'frozen', False):
+        base_dir = Path(sys.executable).parent
+    else:
+        base_dir = Path(__file__).parent
+
+    dotenv_path = base_dir / '.env'
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path)
+
     bot_process = multiprocessing.Process(target=run_bot)
     flask_process = multiprocessing.Process(target=run_flask)
 
