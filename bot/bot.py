@@ -30,7 +30,7 @@ import sqlite3
 # -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
-from database import db
+from database import Database
 
 # -------------------- Runtime Config -----------------
 load_dotenv()
@@ -47,6 +47,17 @@ def set_event_loop(loop):
     global _bot_loop
     with _loop_lock:
         _bot_loop = loop
+
+# -------------------- Initialize database -----------------
+Config.verify_paths()
+db = Database(str(Config.DATABASE_PATH))
+db.initialize_db()
+try:
+    db.validate_schema()
+    print("✅ Database schema validation passed")
+except RuntimeError as e:
+    print(f"❌ Database schema validation failed: {str(e)}")
+    raise
 
 # -------------------- API and Frontend URLs -----------------
 API_URL = os.getenv('API_URL', 'http://localhost:5003')  # Default for local dev

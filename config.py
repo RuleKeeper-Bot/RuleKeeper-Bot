@@ -55,7 +55,8 @@ class Config:
     def verify_paths():
         db_path = Config.DATABASE_PATH
         if not os.path.exists(db_path):
-            raise FileNotFoundError(f"Database not found at {db_path}")
+            # If the file doesn't exist, create an empty file so SQLite can use it
+            open(db_path, 'a').close()
 
 # Instantiate the configuration
 config = Config()

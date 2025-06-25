@@ -1207,13 +1207,3 @@ class Database:
             WHERE guild_id = ? AND channel_id = ?''',
             (video_id, str(video_time), str(guild_id), str(channel_id))
         )
-
-# Initialize database with validation
-db = Database()
-db.initialize_db()
-try:
-    db.validate_schema()
-    print("✅ Database schema validation passed")
-except RuntimeError as e:
-    print(f"❌ Database schema validation failed: {str(e)}")
-    raise

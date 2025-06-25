@@ -30,12 +30,23 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 # Local Imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
-from database import db, Database
+from database import Database
 from shared import shared
 from bot.bot import bot_instance
 
 # Runtime Config
 load_dotenv()
+
+# Initialize database
+Config.verify_paths()
+db = Database(str(Config.DATABASE_PATH))
+db.initialize_db()
+try:
+    db.validate_schema()
+    print(f"🌐 Web using database: {db.db_path}")
+except RuntimeError as e:
+    print(f"❌ Database schema validation failed: {str(e)}")
+    raise
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -74,11 +85,6 @@ logger = logging.getLogger(__name__)
 # Caching
 channel_cache = TTLCache(maxsize=100, ttl=600) # 10 minutes
 role_cache = TTLCache(maxsize=100, ttl=600) # 10 minutes
-
-# Initialize database connection
-Config.verify_paths()
-db = Database(str(Config.DATABASE_PATH))
-print(f"🌐 Web using database: {db.db_path}")
 
 class Guild:
     """Mock Guild class for cached guilds"""
