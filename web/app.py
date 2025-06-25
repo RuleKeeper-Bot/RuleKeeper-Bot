@@ -30,7 +30,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 # Local Imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
-from shared_config import Config
 from database import db, Database
 from shared import shared
 from bot.bot import bot_instance

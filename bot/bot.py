@@ -30,7 +30,6 @@ import sqlite3
 # -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
-from shared_config import Config
 from database import db
 
 # -------------------- Runtime Config -----------------
