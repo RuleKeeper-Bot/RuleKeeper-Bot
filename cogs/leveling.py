@@ -125,7 +125,7 @@ class LevelingCog(commands.Cog):
 
     # ---------- Add XP Command ----------
 
-    @app_commands.command(name="addxp", description="Add XP to a user (Admin only)")
+    @app_commands.command(name="addxp", description="Add XP to a user")
     @app_commands.describe(
         user="The user to add XP to",
         xp="The amount of XP to add"
@@ -142,7 +142,7 @@ class LevelingCog(commands.Cog):
             guild_id = str(interaction.guild.id)
             user_id = str(user.id)
             levels_gained = 0
-            
+
             with self.bot.db.conn:
                 # Get current data
                 data = self.bot.db.conn.execute(
@@ -150,14 +150,14 @@ class LevelingCog(commands.Cog):
                     WHERE guild_id = ? AND user_id = ?''',
                     (guild_id, user_id)
                 ).fetchone()
-                
+
                 current_xp = data[0] if data else 0
                 current_level = data[1] if data else 0
-                
+
                 # Update XP
                 new_xp = current_xp + xp
                 new_level = current_level
-                
+
                 # Calculate level progression
                 while True:
                     next_level_xp = 100 * ((new_level + 1) ** 1.7)
@@ -173,23 +173,20 @@ class LevelingCog(commands.Cog):
                     (guild_id, user_id, xp, level, username)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (guild_id, user_id, new_xp, new_level, user.name))
-                
+
             response = [
                 f"✅ Added {xp} XP to {user.mention}",
                 f"**New Total:** {new_xp:.0f} XP",
                 f"**Level:** {new_level} (+{levels_gained})" if levels_gained else ""
             ]
-            
+
             await interaction.response.send_message("\n".join(filter(None, response)), ephemeral=True)
-            
-            # Announce level up in chat if gained
+
+            # Use main leveling logic for level up announcement and embed
             if levels_gained > 0:
-                channel = interaction.channel
-                await channel.send(
-                    f"🎉 {user.mention} has reached level {new_level}!",
-                    delete_after=10
-                )
-                
+                # Call the main handler from bot.py
+                await handle_level_up(user, interaction.guild, interaction.channel)
+
         except Exception as e:
             await interaction.response.send_message("❌ Failed to add XP. Check logs.", ephemeral=True)
             logging.error(f"AddXP error: {str(e)}")

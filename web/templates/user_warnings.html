@@ -63,7 +63,7 @@
                     {% for warning in warnings %}
                     <div class="warning-item">
                         <!-- Delete Button -->
-                        <a href="/dashboard/{{ guild_id }}/warnings/{{ user_id }}/delete/{{ warning.warning_id }}" 
+                        <a href="/api/{{ guild_id }}/warnings/{{ user_id }}/delete/{{ warning.warning_id }}" 
                            class="btn btn-danger btn-sm delete-warning-btn"
                            onclick="return confirm('Are you sure you want to delete this warning?');">
                             <i class="bi bi-trash"></i>

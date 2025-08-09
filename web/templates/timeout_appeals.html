@@ -194,7 +194,7 @@
             : 'Reject this appeal? This cannot be undone.';
         
         if (confirm(confirmation)) {
-            const endpoint = `/dashboard/{{ guild_id }}/timeout-appeals/${appealId}/${action}`;
+            const endpoint = `/api/{{ guild_id }}/timeout-appeals/${appealId}/${action}`;
             const options = {
                 method: 'POST',
                 headers: {
@@ -219,7 +219,7 @@
 
     function confirmDelete(appealId) {
         if (confirm('Permanently delete this appeal record? This action cannot be undone.')) {
-            fetch(`/dashboard/{{ guild_id }}/timeout-appeals/${appealId}/delete`, {
+            fetch(`/api/{{ guild_id }}/timeout-appeals/${appealId}/delete`, {
                 method: 'POST',
                 headers: {
                     'X-CSRFToken': '{{ csrf_token() }}',

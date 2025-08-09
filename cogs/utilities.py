@@ -5,6 +5,14 @@ from functools import partial
 from bot.bot import log_event
 from typing import Optional
 import re
+import random
+import string
+import os
+
+def random_id(length=6):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5000')
 
 class UtilitiesCog(commands.Cog):
     def __init__(self, bot):
@@ -152,10 +160,10 @@ class UtilitiesCog(commands.Cog):
         # Remove from command tree
         try:
             if cmd['guild_id'] == '0':
-                self.tree.remove_command(command_name)
+                self.bot.tree.remove_command(command_name)
                 await self.bot.tree.sync()
             else:
-                self.tree.remove_command(command_name, guild=interaction.guild)
+                self.bot.tree.remove_command(command_name, guild=interaction.guild)
                 await self.bot.tree.sync(guild=interaction.guild)
         except Exception as e:
             await interaction.response.send_message(
@@ -303,35 +311,41 @@ class UtilitiesCog(commands.Cog):
         else:
             await interaction.response.send_message("⚠️ An error occurred while processing this command.", ephemeral=True)
             print(f"Purge After Error: {str(error)}")
-            
-    @app_commands.command(name="messages", description="Check a user's message count")
-    @app_commands.describe(user="The user to check (optional)")
-    async def message_count(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
-        # Set user to interaction.user if not provided
-        if user is None:
-            user = interaction.user
-        
+
+    async def _create_role_menu(self, interaction, menu_type):
         guild_id = str(interaction.guild.id)
-        user_id = str(user.id)
-        
-        # Get message count from database
-        user_data = self.db.execute_query(
-            '''SELECT message_count FROM user_levels 
-            WHERE guild_id = ? AND user_id = ?''',
-            (guild_id, user_id),
-            fetch='one'
+        channel_id = str(interaction.channel.id)
+        creator_id = str(interaction.user.id)
+        menu_id = random_id()
+        setup_url = f"{FRONTEND_URL}/dashboard/{guild_id}/{menu_type}/{menu_id}"
+
+        # Store placeholder config in DB
+        self.db.execute_query(
+            '''INSERT INTO role_menus (id, guild_id, type, channel_id, config, created_by)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (menu_id, guild_id, menu_type, channel_id, '{}', creator_id)
         )
-        
-        count = user_data['message_count'] if user_data else 0
-        
+
         await interaction.response.send_message(
-            embed=discord.Embed(
-                title="Message Count",
-                description=f"{user.mention} has sent **{count}** messages in this server",
-                color=discord.Color.blue()
-            )
+            f"Setup your {menu_type} here: {setup_url}\n\nID: `{menu_id}`",
+            ephemeral=True
         )
-                
+
+    @app_commands.command(name="create_dropdown", description="Create a dropdown role menu")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def create_dropdown(self, interaction: discord.Interaction):
+        await self._create_role_menu(interaction, "dropdown")
+
+    @app_commands.command(name="create_reactionrole", description="Create a reaction role menu")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def create_reactionrole(self, interaction: discord.Interaction):
+        await self._create_role_menu(interaction, "reactionrole")
+
+    @app_commands.command(name="create_button", description="Create a button role menu")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def create_button(self, interaction: discord.Interaction):
+        await self._create_role_menu(interaction, "button")
+
     @app_commands.command(name="setlogchannel", description="Set the channel for logging events")
     @app_commands.describe(channel="The channel to use for logging")
     @app_commands.checks.has_permissions(administrator=True)
@@ -356,6 +370,56 @@ class UtilitiesCog(commands.Cog):
             color=discord.Color.green()
         )
     
+    @app_commands.command(name="help", description="Show information about available commands")
+    async def help(self, interaction: discord.Interaction):
+        """Display a help message with available commands."""
+        embed = discord.Embed(
+            title="**SentinelBot Help**",
+            description=(
+                "**Here are some commands you can use to start:**\n"
+                "**Or check the [documentation](https://docs.rulekeeper.cc/) for more details and commands.**"
+            ),
+            color=discord.Color.blurple()
+        )
+        embed.add_field(
+            name="/help",
+            value="Show this help message.",
+            inline=False
+        )
+        embed.add_field(
+            name="/level",
+            value="Show a user's level and XP.",
+            inline=False
+        )
+        embed.add_field(
+            name="/leaderboard",
+            value="Show the server's leaderboard.",
+            inline=False
+        )
+        embed.add_field(
+            name="/create_command",
+            value="Create a custom command for your server.",
+            inline=False
+        )
+        embed.add_field(
+            name="/create_dropdown",
+            value="Create a dropdown role menu.",
+            inline=False
+        )
+        embed.add_field(
+            name="/create_reactionrole",
+            value="Create a reaction role menu.",
+            inline=False
+        )
+        embed.add_field(
+            name="/create_button",
+            value="Create a button role menu.",
+            inline=False
+        )
+        embed.set_footer(text="Ask a server admin for more details.")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     async def custom_command_handler(self, interaction: discord.Interaction, cmd_data: dict):
         """Handler for database-stored commands"""
         try:

@@ -16,10 +16,12 @@ from functools import wraps
 # Third-Party Libraries
 import bcrypt
 import requests
+import jwt
 from authlib.integrations.flask_client import OAuth
 from cachetools import TTLCache
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string
+from markupsafe import Markup
 from flask.sessions import SecureCookieSessionInterface
 from flask_discord import DiscordOAuth2Session, Unauthorized
 from flask_discord.exceptions import RateLimited
@@ -77,6 +79,30 @@ discord = DiscordOAuth2Session(app)
 API_URL = os.getenv('API_URL', 'http://localhost:5003')
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5000')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+JWT_SECRET = os.getenv('JWT_SECRET')
+JWT_ALGORITHM = 'HS256'
+
+# JWT Helper
+def generate_jwt():
+    import time
+    payload = {
+        "iss": "dashboard",
+        "exp": int(time.time()) + 60,  # 1 minute expiry
+        "role": "admin"
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+# Requests wrapper to inject JWT
+class JWTSession(requests.Session):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    def request(self, method, url, **kwargs):
+        headers = kwargs.pop('headers', {}) or {}
+        headers['Authorization'] = f'Bearer {generate_jwt()}'
+        kwargs['headers'] = headers
+        return super().request(method, url, **kwargs)
+
+jwt_requests = JWTSession()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -280,6 +306,7 @@ def resolve_youtube_handle(identifier: str) -> tuple:
         # logger.error(f"Error updating guild icons: {str(e)}")
         # return f"Error: {str(e)}", 500
 
+
 # Before Requests
 @app.before_request
 def refresh_session():
@@ -361,7 +388,7 @@ def logout():
     flash('Successfully logged out', 'success')
     return redirect(url_for('login'))
     
-@app.route('/logout-admin')
+@app.route('/admin/logout')
 @login_required
 def logout_admin():
     """Log out from admin access while preserving Discord session"""
@@ -397,6 +424,14 @@ def callback():
             "name": user.name,
             "avatar": user.avatar_url or ""
         }
+        # Get the access token from the session
+        token_data = session.get('DISCORD_OAUTH2_TOKEN')
+        if token_data and "access_token" in token_data:
+            session["discord_token"] = token_data["access_token"]
+        else:
+            logger.error("No access token found in session after Discord OAuth callback.")
+            flash("Login failed. Please try again.", "danger")
+            return redirect(url_for("login"))
         session.permanent = True
         
         return redirect(url_for("select_guild"))
@@ -405,14 +440,48 @@ def callback():
         logger.error(f"Authorization failed: {str(e)}")
         session.clear()
         flash("Login failed. Please try again.", "danger")
-        return redirect(url_for("login"))
+        return redirect(url_for('login'))
     except Exception as e:
         logger.error(f"Callback error: {str(e)}")
         session.clear()
         flash("Login failed. Please try again.", "danger")
-        return redirect(url_for("login"))
+        return redirect(url_for('login'))
 
-@app.route('/select-guild')
+@app.route('/delete-data', methods=['GET', 'POST'])
+@login_required
+def delete_my_data():
+    user_id = session['user']['id']
+    guilds = get_mutual_guilds(user_id)
+
+    if request.method == 'POST':
+        selected_guilds = request.form.getlist('guild_ids')
+        if 'all' in selected_guilds:
+            selected_guilds = [g['id'] for g in guilds]
+        for guild_id in selected_guilds:
+            try:
+                # Remove from all relevant tables
+                tables = [
+                    ('users', True),
+                    ('user_levels', True),
+                    ('pending_role_changes', True),
+                    ('user_game_time', True)
+                ]
+                for table, has_guild in tables:
+                    if has_guild:
+                        db.execute_query(f'DELETE FROM {table} WHERE guild_id = ? AND user_id = ?', (guild_id, user_id))
+                    else:
+                        db.execute_query(f'DELETE FROM {table} WHERE user_id = ?', (user_id,))
+            except Exception as e:
+                logger.error(f"Error deleting user data for {user_id} in guild {guild_id}: {str(e)}")
+                flash(f"Failed to delete data for server {guild_id}.", "danger")
+        # Remove from users table (global)
+        db.execute_query('DELETE FROM users WHERE user_id = ?', (user_id,))
+        flash('Your data has been deleted from the selected server(s).', 'success')
+        return redirect(url_for('delete_my_data'))
+
+    return render_template('delete_my_data.html', guilds=guilds)
+
+@app.route('/guilds')
 @login_required
 def select_guild():
     user_guilds = get_user_guilds()
@@ -432,7 +501,7 @@ def select_guild():
             fetch='all'
         )
         
-    return render_template('select_guild.html', guilds=common_guilds)
+    return render_template('guilds.html', guilds=common_guilds)
     
 @app.route('/admin/guilds')
 @login_required
@@ -453,7 +522,48 @@ def admin_guilds():
     ''', fetch='all')
     
     return render_template('admin_guilds.html', guilds=guilds)
-    
+
+@app.route('/admin/guilds/<guild_id>/invite', methods=['POST'])
+@admin_required
+def get_guild_invite(guild_id):
+    """Get or create an invite link for a guild via the bot's webserver API."""
+    try:
+        csrf.protect()
+        api_url = f"{API_URL}/get_guild_invite"
+        resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and "invite" in data:
+            flash(Markup(f'Invite link: <a href="{data["invite"]}" target="_blank">{data["invite"]}</a>'), "success")
+        else:
+            flash(data.get("error", "Failed to get invite."), "danger")
+    except CSRFError:
+        flash('Security token expired', 'danger')
+    except Exception as e:
+        logger.error(f"Error getting invite for guild {guild_id}: {e}")
+        flash('Failed to get or create invite.', 'danger')
+    return redirect(url_for('admin_guilds'))
+
+@app.route('/admin/guilds/<guild_id>/audit-log', methods=['POST'])
+@admin_required
+def get_guild_audit_log(guild_id):
+    """Fetch and display the audit log for a guild via the bot's webserver API."""
+    try:
+        csrf.protect()
+        api_url = f"{API_URL}/get_guild_audit_log"
+        resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and "log" in data:
+            audit_log = data["log"]
+            return render_template('audit_log.html', guild_id=guild_id, audit_log=audit_log)
+        else:
+            flash(data.get("error", "Failed to fetch audit log."), "danger")
+    except CSRFError:
+        flash('Security token expired', 'danger')
+    except Exception as e:
+        logger.error(f"Error getting audit log for guild {guild_id}: {e}")
+        flash('Failed to fetch audit log.', 'danger')
+    return redirect(url_for('admin_guilds'))
+
 @app.route('/admin/dashboard')
 @admin_required
 def admin_dashboard():
@@ -591,18 +701,49 @@ def log_action(action: str, details: str, changes: str = ""):
         (action, details, changes, admin_identity)
     )
 
-@app.route('/admin/guilds/<guild_id>/remove', methods=['POST'])
+@app.route('/api/admin/<guild_id>/remove-all-data-and-bot', methods=['POST'])
 @admin_required
 def remove_guild(guild_id):
     try:
-        csrf.protect()  # Verify CSRF token
-        
-        # Remove guild from database
-        db.execute_query('DELETE FROM guilds WHERE guild_id = ?', (guild_id,))
-        
-        flash(f'Successfully removed guild {guild_id}', 'success')
+        csrf.protect()
+
+        # Delete all data as before
+        tables = [
+            'guilds',
+            'log_config',
+            'blocked_words',
+            'blocked_word_embeds',
+            'commands',
+            'level_config',
+            'level_rewards',
+            'user_levels',
+            'warnings',
+            'appeal_forms',
+            'appeals',
+            'welcome_config',
+            'goodbye_config',
+            'spam_detection_config',
+            'autoroles',
+            'game_roles',
+            'user_game_time',
+            'stream_announcements',
+            'video_announcements',
+            'role_menus',
+            'pending_role_changes'
+        ]
+        for table in tables:
+            db.execute_query(f'DELETE FROM {table} WHERE guild_id = ?', (guild_id,))
+
+        api_url = f"{API_URL}/leave_guild"
+        resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
+        data = resp.json()
+        if resp.status_code == 200 and data.get("success"):
+            flash(f'Successfully removed guild {guild_id} and left the server.', 'success')
+        else:
+            flash(f"Data deleted, but failed to leave server: {data.get('error', 'Unknown error')}", 'warning')
+
         return redirect(url_for('admin_guilds'))
-        
+
     except CSRFError:
         flash('Security token expired', 'danger')
         return redirect(url_for('admin_guilds'))
@@ -616,7 +757,86 @@ def remove_guild(guild_id):
 @guild_required
 def guild_dashboard(guild_id):
     guild = get_guild_or_404(guild_id)
-    return render_template('guilds.html', guild=guild)
+    return render_template('dashboard.html', guild=guild)
+
+@app.route('/api/<guild_id>/remove-all-data', methods=['POST'])
+@login_required
+@guild_required
+def remove_all_guild_data(guild_id):
+    try:
+        csrf.protect()
+
+        tables = [
+            'guilds',
+            'log_config',
+            'blocked_words',
+            'blocked_word_embeds',
+            'commands',
+            'level_config',
+            'level_rewards',
+            'user_levels',
+            'warnings',
+            'appeal_forms',
+            'appeals',
+            'welcome_config',
+            'goodbye_config',
+            'spam_detection_config',
+            'autoroles',
+            'game_roles',
+            'user_game_time',
+            'stream_announcements',
+            'video_announcements',
+            'role_menus',
+            'pending_role_changes'
+        ]
+        for table in tables:
+            db.execute_query(f'DELETE FROM {table} WHERE guild_id = ?', (guild_id,))
+
+        flash('All server data deleted successfully.', 'success')
+        return jsonify({'success': True})
+    except CSRFError:
+        return jsonify({'success': False, 'error': 'Invalid CSRF token'}), 403
+    except Exception as e:
+        logger.error(f"Error deleting all data for guild {guild_id}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/<guild_id>/remove-all-user-data', methods=['POST'])
+@login_required
+@guild_required
+def remove_all_user_data(guild_id):
+    try:
+        csrf.protect()
+        user_id = request.form.get('user_id', '').strip()
+        if not user_id:
+            flash('User ID is required.', 'danger')
+            return redirect(url_for('guild_dashboard', guild_id=guild_id))
+
+        # List of tables with user_id and guild_id
+        tables = [
+            ('user_levels', True),
+            ('warnings', True),
+            ('appeals', True),
+            ('pending_role_changes', True),
+            ('user_game_time', True),
+            ('user_connections', True)
+        ]
+        # Remove from each table where both guild_id and user_id match
+        for table, has_guild in tables:
+            if has_guild:
+                db.execute_query(f'DELETE FROM {table} WHERE guild_id = ? AND user_id = ?', (guild_id, user_id))
+            else:
+                db.execute_query(f'DELETE FROM {table} WHERE user_id = ?', (user_id,))
+        # Remove from users table (global)
+        db.execute_query('DELETE FROM users WHERE user_id = ?', (user_id,))
+        flash(f'All data for user {user_id} in this server has been deleted.', 'success')
+        return redirect(url_for('guild_dashboard', guild_id=guild_id))
+    except CSRFError:
+        flash('Security token expired', 'danger')
+        return redirect(url_for('guild_dashboard', guild_id=guild_id))
+    except Exception as e:
+        logger.error(f"Error deleting all user data for {user_id} in guild {guild_id}: {str(e)}")
+        flash('Failed to delete user data.', 'danger')
+        return redirect(url_for('guild_dashboard', guild_id=guild_id))
 
 # Commands Management
 @app.route('/dashboard/<guild_id>/commands', methods=['GET', 'POST'])
@@ -624,75 +844,121 @@ def guild_dashboard(guild_id):
 @guild_required
 def guild_commands(guild_id):
     guild = get_guild_or_404(guild_id)
-    
     if request.method == 'POST':
-        try:
-            # Verify CSRF first
-            csrf.protect()
-            data = request.get_json()
-            
-            if not data:
-                return jsonify({'success': False, 'error': 'No data provided'}), 400
-
-            # Validate required fields
-            required = ['command_name', 'description', 'content']
-            if not all(key in data for key in required):
-                return jsonify({
-                    'success': False,
-                    'error': 'Missing required fields'
-                }), 400
-
-            command_name = data['command_name'].lower().strip()
-            description = data['description'].strip()
-            content = data['content'].strip()
-            ephemeral = data.get('ephemeral', True)
-
-            # Validate command name
-            if not re.fullmatch(r'^[a-z0-9\-]{1,32}$', command_name):
-                return jsonify({
-                    'success': False,
-                    'error': 'Invalid command name (1-32 chars, lowercase, hyphens)'
-                }), 400
-
-            # Database operation
-            try:
-                db.add_command(
-                    guild_id=guild_id,
-                    command_name=command_name,
-                    description=description,
-                    content=content,
-                    ephemeral=ephemeral
-                )
-                return jsonify({
-                    'success': True,
-                    'message': f'Command /{command_name} created!',
-                    'redirect': url_for('guild_commands', guild_id=guild_id)
-                })
-
-            except sqlite3.IntegrityError:
-                return jsonify({
-                    'success': False,
-                    'error': f'Command /{command_name} already exists'
-                }), 409
-
-        except Exception as e:
-            logger.error(f"Command error: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': 'Server error'
-            }), 500
-
-    # GET request
+        data = request.get_json(force=True)
+        command_name = data.get('command_name', '').strip()
+        description = data.get('description', '').strip()
+        content = data.get('content', '').strip()
+        ephemeral = bool(data.get('ephemeral', False))
+        if not command_name or not content:
+            return jsonify({'error': 'Command name and content required'}), 400
+        db.add_command(guild_id, command_name, content, description, ephemeral)
+        return jsonify({'success': True})
     try:
-        # Convert SQLite Row objects to proper dictionaries
-        commands = db.get_commands(guild_id)
+        commands = db.get_guild_commands_list(guild_id)
+        for cmd in commands:
+            if 'modified_at' not in cmd:
+                cmd['modified_at'] = None
+        sync_info = db.execute_query('SELECT last_synced FROM guilds WHERE guild_id = ?', (guild_id,), fetch='one')
+        last_synced = sync_info['last_synced'] if sync_info and 'last_synced' in sync_info else datetime.utcnow().timestamp()
+        # Convert float timestamp to datetime object
+        if isinstance(last_synced, float) or isinstance(last_synced, int):
+            last_synced_dt = datetime.fromtimestamp(last_synced)
+        else:
+            last_synced_dt = last_synced  # Already a datetime
         return render_template('commands.html',
-                             commands=commands,
-                             guild_id=guild_id,
-                             guild=guild)
+            guild_id=guild_id,
+            guild=guild,
+            commands=commands,
+            last_synced=last_synced_dt
+        )
     except Exception as e:
-        logger.error(f"Commands fetch error: {str(e)}")
-        abort(500)
+        logger.error(f"Commands fetch error: {e}")
+        return render_template('error.html', error=str(e)), 500
+
+# Command Management API Endpoints
+@app.route('/api/<guild_id>/commands/<command_name>/delete', methods=['POST'])
+@login_required
+@guild_required
+def delete_command_api(guild_id, command_name):
+    try:
+        db.remove_command(guild_id, command_name)
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Delete command error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/<guild_id>/commands/sync', methods=['POST'])
+@login_required
+@guild_required
+def sync_commands(guild_id):
+    try:
+        api_url = f"{API_URL}/sync"
+        resp = jwt_requests.post(api_url, timeout=60)
+        if resp.status_code != 200:
+            logger.error(f"Sync API error: {resp.status_code} {resp.text}")
+            error_msg = resp.text
+            try:
+                data = resp.json()
+                error_msg = str(data.get("error", resp.text))
+            except Exception:
+                pass
+            return jsonify({'error': error_msg}), 500
+        db.execute_query('UPDATE guilds SET last_synced = ? WHERE guild_id = ?', (datetime.utcnow().timestamp(), guild_id))
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Sync commands error: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/<guild_id>/commands/export', methods=['GET'])
+@login_required
+@guild_required
+def export_commands(guild_id):
+    try:
+        commands = db.get_guild_commands_list(guild_id)
+        for cmd in commands:
+            cmd.pop('id', None)
+        from flask import Response
+        import json
+        return Response(json.dumps(commands, indent=2), mimetype='application/json', headers={
+            'Content-Disposition': f'attachment;filename=commands_{guild_id}.json'
+        })
+    except Exception as e:
+        logger.error(f"Export commands error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/<guild_id>/commands/import', methods=['POST'])
+@login_required
+@guild_required
+def import_commands(guild_id):
+    try:
+        import json
+        commands = request.get_json(force=True)
+        if not isinstance(commands, list):
+            return jsonify({'error': 'Invalid format'}), 400
+        for cmd in commands:
+            db.add_command(
+                guild_id,
+                cmd.get('command_name', ''),
+                cmd.get('content', ''),
+                cmd.get('description', 'Custom command'),
+                bool(cmd.get('ephemeral', False))
+            )
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Import commands error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/<guild_id>/commands/delete-all', methods=['POST'])
+@login_required
+@guild_required
+def delete_all_commands(guild_id):
+    try:
+        db.execute_query('DELETE FROM commands WHERE guild_id = ?', (guild_id,))
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Delete all commands error: {e}")
+        return jsonify({'error': str(e)}), 500
     
 @app.route('/dashboard/<guild_id>/commands/<command_name>/edit', methods=['GET', 'POST'])
 @login_required
@@ -710,14 +976,14 @@ def edit_command(guild_id, command_name):
             csrf.protect()
         except CSRFError:
             flash('Security token expired. Please submit the form again.', 'danger')
-            return redirect(url_for('edit_command', guild_id=guild_id))
+            return redirect(url_for('edit_command', guild_id=guild_id, command_name=command_name))
         try:
-            # Update command in database
+            # Update command in database using add_command (upsert)
             new_content = request.form['content']
             new_description = request.form['description']
             new_ephemeral = 'ephemeral' in request.form
             
-            db.update_command(
+            db.add_command(
                 guild_id=guild_id,
                 command_name=command_name,
                 content=new_content,
@@ -725,12 +991,13 @@ def edit_command(guild_id, command_name):
                 ephemeral=new_ephemeral
             )
             
-            flash('Command updated successfully', 'success')
-            return redirect(url_for('guild_commands', guild_id=guild_id))
+            # Redirect with updated=1 query param
+            return redirect(url_for('guild_commands', guild_id=guild_id, updated=1))
             
         except Exception as e:
             logger.error(f"Error updating command: {str(e)}")
             flash('Error updating command', 'danger')
+            return redirect(url_for('edit_command', guild_id=guild_id, command_name=command_name))
     
     # GET request - show edit form
     return render_template('edit.html',
@@ -739,21 +1006,6 @@ def edit_command(guild_id, command_name):
         command_name=command_name,
         command=command
     )
-
-@app.route('/dashboard/<guild_id>/commands/<command_name>/delete')
-@login_required
-@guild_required
-def delete_command(guild_id, command_name):
-    # Verify CSRF token first
-    try:
-        csrf.protect()
-    except CSRFError:
-        flash('Security token expired. Please submit the form again.', 'danger')
-        return redirect(url_for('level_config', guild_id=guild_id))
-    guild = get_guild_or_404(guild_id)
-    db.remove_command(guild_id, command_name)
-    flash('Command deleted successfully', 'success')
-    return redirect(url_for('guild_commands', guild_id=guild_id))
 
 # Log Configuration
 @app.route('/dashboard/<guild_id>/log-config', methods=['GET', 'POST'])
@@ -1038,7 +1290,7 @@ def leaderboard(guild_id):
         WHERE guild_id = ?
         ORDER BY level DESC, xp DESC
         LIMIT 100
-    ''', (guild_id,), fetch='all')  # Add fetch='all' parameter
+    ''', (guild_id,), fetch='all')
     
     return render_template('leaderboard.html',
                          users=users,
@@ -1141,10 +1393,13 @@ def level_config(guild_id):
 
             # Validate JSON fields
             try:
-                boosts = json.loads(new_config['xp_boost_roles'])
-                if not isinstance(boosts, dict):
+                # This is already a JSON string from the form
+                boosts = new_config['xp_boost_roles']
+                # Just parse to validate format
+                parsed_boosts = json.loads(boosts)
+                if not isinstance(parsed_boosts, dict):
                     raise ValueError()
-                for k, v in boosts.items():
+                for k, v in parsed_boosts.items():
                     if not isinstance(v, int) or v < 0 or v > 300:
                         raise ValueError()
             except (json.JSONDecodeError, ValueError):
@@ -1158,7 +1413,23 @@ def level_config(guild_id):
                 if c in valid_channels
             ]
 
-            db.update_level_config(guild_id, **new_config)
+            # Prepare update data
+            update_data = {
+                "cooldown": new_config["cooldown"],
+                "xp_min": new_config["xp_min"],
+                "xp_max": new_config["xp_max"],
+                "level_channel": new_config["level_channel"],
+                "announce_level_up": new_config["announce_level_up"],
+                # Convert to JSON strings for storage
+                "excluded_channels": json.dumps(new_config["excluded_channels"]),
+                # Already a JSON string from form
+                "xp_boost_roles": new_config["xp_boost_roles"],
+                "embed_title": new_config["embed_title"],
+                "embed_description": new_config["embed_description"],
+                "embed_color": new_config["embed_color"]
+            }
+
+            db.update_level_config(guild_id, **update_data)
             flash('Settings saved successfully', 'success')
             
         except ValueError as e:
@@ -1463,6 +1734,102 @@ def stream_announcements(guild_id):
                          DEFAULT_STREAM_MESSAGE=DEFAULT_STREAM_MESSAGE,
                          DEFAULT_VIDEO_MESSAGE=DEFAULT_VIDEO_MESSAGE)
 
+# Role Menu Editing
+@app.route('/dashboard/<guild_id>/<menu_type>/<menu_id>', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def edit_role_menu(guild_id, menu_type, menu_id):
+    # Validate menu_type
+    if menu_type not in ('dropdown', 'reactionrole', 'button'):
+        abort(404)
+    # Fetch menu config from DB
+    menu = db.execute_query(
+        'SELECT * FROM role_menus WHERE id = ? AND guild_id = ? AND type = ?',
+        (menu_id, guild_id, menu_type),
+        fetch='one'
+    )
+    if not menu:
+        abort(404)
+    config = json.loads(menu['config'] or '{}')
+    roles = get_roles(guild_id, force_refresh=True)
+    channels = get_text_channels(guild_id)
+
+    if request.method == 'POST':
+        try:
+            csrf.protect()
+        except CSRFError:
+            flash('Security token expired. Please refresh and try again.', 'danger')
+            return redirect(request.url)
+        # Save config changes from form
+        new_config = request.form.get('config_json')
+        db.execute_query(
+            'UPDATE role_menus SET config = ? WHERE id = ?',
+            (new_config, menu_id)
+        )
+        flash('Saved!', 'success')
+        return redirect(request.url)
+
+    return render_template(
+        f'edit_{menu_type}.html',
+        guild_id=guild_id,
+        menu_id=menu_id,
+        config=config,
+        roles=roles,
+        channels=channels,
+        API_URL=API_URL
+    )
+
+# Role Menus Management
+@app.route('/dashboard/<guild_id>/role-menus')
+@login_required
+@guild_required
+def role_menus(guild_id):
+    menus = db.execute_query(
+        'SELECT * FROM role_menus WHERE guild_id = ?',
+        (guild_id,),
+        fetch='all'
+    )
+    channels = get_text_channels(guild_id)
+    return render_template('role_menus.html', guild_id=guild_id, menus=menus, channels=channels)
+
+@app.route('/api/<guild_id>/create_role_menu', methods=['POST'])
+@login_required
+@guild_required
+def api_create_role_menu(guild_id=None):
+    try:
+        csrf.protect()
+        data = request.get_json(force=True)
+        guild_id = data.get('guild_id') or guild_id
+        menu_type = data.get('menu_type')
+        channel_id = data.get('channel_id')
+        creator_id = session.get('user', {}).get('id') or session.get('admin_username', 'admin')
+        if not guild_id or not menu_type or not channel_id:
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+        if menu_type not in ('dropdown', 'button', 'reactionrole'):
+            return jsonify({'success': False, 'error': 'Invalid menu type'}), 400
+
+        import random, string
+        def random_id(length=8):
+            return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+        menu_id = random_id()
+
+        # Insert placeholder config
+        db.execute_query(
+            '''INSERT INTO role_menus (id, guild_id, type, channel_id, config, created_by)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (menu_id, guild_id, menu_type, channel_id, '{}', creator_id)
+        )
+
+        setup_url = url_for('edit_role_menu', guild_id=guild_id, menu_type=menu_type, menu_id=menu_id)
+        return jsonify({'success': True, 'setup_url': setup_url})
+
+    except CSRFError:
+        return jsonify({'success': False, 'error': 'Security token expired. Please refresh and try again.'}), 403
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # Warnings Management
 @app.route('/dashboard/<guild_id>/warnings')
 @login_required
@@ -1553,7 +1920,7 @@ def user_warnings(guild_id, user_id):
                          guild_id=guild_id,
                          user_id=user_id)
 
-@app.route('/dashboard/<guild_id>/warnings/<user_id>/delete/<warning_id>')
+@app.route('/api/<guild_id>/warnings/<user_id>/delete/<warning_id>')
 @login_required
 @guild_required
 def delete_warning(guild_id, user_id, warning_id):
@@ -2018,7 +2385,7 @@ def submit_appeal():
             "error": "Internal server error"
         }), 500
 
-@app.route('/dashboard/<guild_id>/ban-appeals/<appeal_id>/approve', methods=['POST'])
+@app.route('/api/<guild_id>/ban-appeals/<appeal_id>/approve', methods=['POST'])
 @login_required
 @guild_required
 def approve_ban_appeal(guild_id, appeal_id):
@@ -2120,7 +2487,7 @@ def approve_ban_appeal(guild_id, appeal_id):
         logger.error(f"Unexpected error: {traceback.format_exc()}")
         return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
-@app.route('/dashboard/<guild_id>/ban-appeals/<appeal_id>/reject', methods=['POST'])
+@app.route('/api/<guild_id>/ban-appeals/<appeal_id>/reject', methods=['POST'])
 @login_required
 @guild_required
 def reject_ban_appeal(guild_id, appeal_id):
@@ -2180,7 +2547,7 @@ def reject_ban_appeal(guild_id, appeal_id):
         logger.error(f"Rejection error: {traceback.format_exc()}")
         return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
-@app.route('/dashboard/<guild_id>/ban-appeals/<appeal_id>/delete', methods=['POST'])
+@app.route('/api/<guild_id>/ban-appeals/<appeal_id>/delete', methods=['POST'])
 @login_required
 @guild_required
 def delete_ban_appeal(guild_id, appeal_id):
@@ -2279,19 +2646,19 @@ def kick_appeals(guild_id):
         logger.error(f"Error in kick_appeals: {traceback.format_exc()}")
         abort(500, description="Failed to load kick appeals")
 
-@app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/approve', methods=['POST'])
+@app.route('/api/<guild_id>/kick-appeals/<appeal_id>/approve', methods=['POST'])
 @login_required
 @guild_required
 def approve_kick_appeal(guild_id, appeal_id):
     return handle_appeal_action(guild_id, appeal_id, 'kick', 'approved')
 
-@app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/reject', methods=['POST'])
+@app.route('/api/<guild_id>/kick-appeals/<appeal_id>/reject', methods=['POST'])
 @login_required
 @guild_required
 def reject_kick_appeal(guild_id, appeal_id):
     return handle_appeal_action(guild_id, appeal_id, 'kick', 'rejected')
 
-@app.route('/dashboard/<guild_id>/kick-appeals/<appeal_id>/delete', methods=['POST'])
+@app.route('/api/<guild_id>/kick-appeals/<appeal_id>/delete', methods=['POST'])
 @login_required
 @guild_required
 def delete_kick_appeal(guild_id, appeal_id):
@@ -2362,19 +2729,19 @@ def timeout_appeals(guild_id):
         logger.error(f"Error in timeout_appeals: {traceback.format_exc()}")
         abort(500, description="Failed to load timeout appeals")
 
-@app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/approve', methods=['POST'])
+@app.route('/api/<guild_id>/timeout-appeals/<appeal_id>/approve', methods=['POST'])
 @login_required
 @guild_required
 def approve_timeout_appeal(guild_id, appeal_id):
     return handle_appeal_action(guild_id, appeal_id, 'timeout', 'approved')
 
-@app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/reject', methods=['POST'])
+@app.route('/api/<guild_id>/timeout-appeals/<appeal_id>/reject', methods=['POST'])
 @login_required
 @guild_required
 def reject_timeout_appeal(guild_id, appeal_id):
     return handle_appeal_action(guild_id, appeal_id, 'timeout', 'rejected')
 
-@app.route('/dashboard/<guild_id>/timeout-appeals/<appeal_id>/delete', methods=['POST'])
+@app.route('/api/<guild_id>/timeout-appeals/<appeal_id>/delete', methods=['POST'])
 @login_required
 @guild_required
 def delete_timeout_appeal(guild_id, appeal_id):
@@ -2529,38 +2896,67 @@ def get_text_channels(guild_id):
         return channel_cache.get(guild_id, [])  # Return cached version if available
 
 # Get roles from Discord API
-def get_roles(guild_id):
-    """Fetch roles for a guild with caching"""
+def get_roles(guild_id, force_refresh=False):
+    """Fetch roles for a guild with optional cache bypass"""
+    if not force_refresh and guild_id in role_cache:
+        return role_cache[guild_id]
     try:
-        # Check cache first
-        if guild_id in role_cache:
-            return role_cache[guild_id]
-            
         headers = {'Authorization': f'Bot {os.getenv("BOT_TOKEN")}'}
         response = requests.get(
             f'https://discord.com/api/v9/guilds/{guild_id}/roles',
             headers=headers
         )
         response.raise_for_status()
-        
         roles = response.json()
-        # Filter out @everyone role and sort by position
         filtered_roles = sorted(
             [r for r in roles if r['id'] != str(guild_id)],
             key=lambda x: x['position'],
             reverse=True
         )
-        
-        # Cache the results
         role_cache[guild_id] = filtered_roles
         return filtered_roles
-        
     except requests.exceptions.HTTPError as e:
         logging.error(f"Roles fetch HTTP error for {guild_id}: {e.response.status_code}")
         return role_cache.get(guild_id, [])
     except Exception as e:
         logging.error(f"Roles fetch error for {guild_id}: {str(e)}")
-        return role_cache.get(guild_id, [])  # Return cached version if available
+        return role_cache.get(guild_id, [])
+
+# Get mutual guilds for a user
+def get_mutual_guilds(user_id, user_access_token=None):
+    """
+    Returns a list of guilds (servers) the user shares with the bot.
+    Each guild is a dict: {'id': '...', 'name': '...', 'icon': '...'}
+    """
+    if not user_access_token:
+        user_access_token = session.get('discord_token')
+    if not user_access_token:
+        return []
+
+    # Get user's guilds from Discord API
+    headers = {
+        "Authorization": f"Bearer {user_access_token}"
+    }
+    user_guilds_resp = requests.get("https://discord.com/api/v10/users/@me/guilds", headers=headers)
+    if user_guilds_resp.status_code != 200:
+        return []
+
+    user_guilds = user_guilds_resp.json()  # List of dicts
+
+    # Get bot's guilds (from your DB)
+    bot_guilds = {g['id']: g for g in db.get_all_guilds()}  # id -> guild dict
+
+    # Filter to mutual guilds and include icon
+    mutual_guilds = []
+    for g in user_guilds:
+        gid = g["id"]
+        if gid in bot_guilds:
+            mutual_guilds.append({
+                "id": gid,
+                "name": g["name"],
+                "icon": bot_guilds[gid].get("icon", "")
+            })
+    return mutual_guilds
 
 @app.template_filter('get_username')
 def get_username_filter(user_id):
@@ -2571,9 +2967,41 @@ def get_username_filter(user_id):
     )
     return user['username'] if user else None
     
+@app.template_filter('get_channel_name')
+def get_channel_name_filter(channel_id, channels):
+    for channel in channels:
+        if str(channel['id']) == str(channel_id):
+            return channel['name']
+    return None
 
 @app.template_filter('datetimeformat')
 def datetimeformat(value, format='%Y-%m-%d %H:%M'):
+    if format == 'relative':
+        # Relative time formatting
+        if not value:
+            return 'unknown'
+        now = datetime.utcnow()
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                return value
+        elif isinstance(value, (float, int)):
+            value = datetime.fromtimestamp(value)
+        diff = now - value
+        seconds = int(diff.total_seconds())
+        if seconds < 60:
+            return "just now"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif seconds < 86400:
+            hours = seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        else:
+            days = seconds // 86400
+            return f"{days} day{'s' if days != 1 else ''} ago"
+    # Default formatting
     if isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)

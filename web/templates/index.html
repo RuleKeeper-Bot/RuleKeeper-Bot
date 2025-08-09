@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RuleKeeper Bot</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons/font/bootstrap-icons.css" rel="stylesheet">
   <link rel="icon" type="image/x-icon" href="../static/images/favicon.ico">
 </head>
 <body class="bg-gray-900 text-white font-sans leading-relaxed">
@@ -21,18 +21,18 @@
 
   <main class="container mx-auto px-4 py-10 space-y-12">
   
-    <!-- Dashboard + Invite -->
+    <!-- Important links -->
     <section class="text-center space-y-4">
       <h2 class="text-3xl font-semibold text-teal-300">🌐 Dashboard Access</h2>
       <p class="text-gray-300">Manage everything easily with our web dashboard!</p>
       <div class="space-x-4">
-        <a href="/select-guild" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded">Open Dashboard</a>
-        <a href="https://discord.com/oauth2/authorize?client_id=1343769718170976327&permissions=1374809058454&response_type=code&redirect_uri=https%3A%2F%2Frulekeeper.cc%2Fcallback&scope=bot+identify+messages.read+guilds+applications.commands
-" class="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded">Invite RuleKeeper</a>
+        <a href="/guilds" class="bi bi-door-open-fill bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded"> Open Dashboard</a>
+        <a href="https://discord.com/oauth2/authorize?client_id=1343769718170976327&permissions=1443528535191&response_type=code&redirect_uri=https%3A%2F%2Frulekeeper.cc%2Fcallback&scope=bot+identify+messages.read+guilds+applications.commands" class="bi bi-discord bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded"> Invite RuleKeeper</a>
       </div>
       <div class="space-x-4">
-        <a href="https://github.com/Wesley-Playz/RuleKeeper-Bot" target="_blank" class="bi bi-github bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded">Source Code</a>
-        <a href="https://docs.rulekeeper.cc/" target="_blank" class="bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded">Installation Instructions</a>
+        <a href="https://github.com/RuleKeeper-Bot/RuleKeeper-Bot" target="_blank" class="bi bi-github bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded"> Source Code</a>
+        <a href="https://docs.rulekeeper.cc/" target="_blank" class="bi bi-file-earmark-fill bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded"> Installation Instructions</a>
+        <a href="https://status.rulekeeper.cc/" target="_blank" class="bi bi-clipboard2-pulse-fill bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded"> Status Page</a>
       </div>
     </section>
 
@@ -201,26 +201,40 @@
       <h2 class="text-3xl font-semibold text-teal-300 mb-4">💬 Support & Permissions</h2>
       <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
         <p>Need help or want to suggest something? Join our support Discord server:</p>
-        <a href="https://discord.gg/VeccXh4ydN" class="inline-block bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 px-4 rounded">Join Support Server</a>
+        <a href="https://discord.gg/kcu7dJZKy9" class="inline-block bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 px-4 rounded">Join Support Server</a>
 
         <h3 class="text-xl font-bold mt-6">Required Permissions (a role with these permissions will automatically be created)</h3>
         <ul class="list-disc ml-5 text-gray-300">
-          <li>View Channels</li>
-          <li>Manage Channels</li>
           <li>View Audit Log</li>
-          <li>Manage Nicknames</li>
+          <li>Manage Roles</li>
+          <li>Manage Channels</li>
           <li>Kick, Approve, and Reject Members</li>
           <li>Ban Members</li>
-          <li>Timeout Members</li>
+          <li>Create Instant Invite</li>
+          <li>Manage Nicknames</li>
+          <li>View Channels</li>
+          <li>Moderate Members</li>
           <li>Send Messages</li>
-          <li>Embed Links</li>
-          <li>Attach Files</li>
+          <li>Create Private Threads</li>
+          <li>Send Messages in Threads</li>
           <li>Manage Messages</li>
+          <li>Embed Links</li>
           <li>Read Message History</li>
-          <li>Mute Members</li>
-          <li>Deafen Members</li>
           <li>Move Members</li>
         </ul>
+      </div>
+    </section>
+
+    <!-- Delete Data -->
+    <section>
+      <h2 class="text-3xl font-semibold text-teal-300 mb-4">🗑️ Delete My Data</h2>
+      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4 text-center">
+        <p>If you want to delete your data from our database, click the button below. This will remove all your data from all servers.</p>
+        <a href="{{ url_for('delete_my_data') }}" class="inline-block">
+          <button type="submit" class="w-full max-w-xs mx-auto mt-6 bg-red-600 hover:bg-red-700 text-white text-xl font-bold py-4 px-8 rounded-lg shadow-lg transition-colors duration-200">
+            Delete My Data
+          </button>
+        </a>
       </div>
     </section>
 

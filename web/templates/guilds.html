@@ -1,321 +1,294 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>{{ guild.name }} Management</title>
+    <title>Select Server</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
-    <link href="/static/style.css" rel="stylesheet">
 	<link rel="icon" type="image/x-icon" href="../static/images/favicon.ico">
+	<script>
+        // Check if the page has already been refreshed
+        if (!sessionStorage.getItem('refreshed')) {
+            // Mark the page as refreshed
+            sessionStorage.setItem('refreshed', 'true');
+            // Reload the page immediately
+            location.reload();
+        }
+    </script>
     <style>
-        .card {
-            transition: transform 0.2s, box-shadow 0.2s;
-            border-radius: 10px;
+        .guild-card {
+            background-color: white !important;
+            border: 1px solid #dee2e6 !important;
+            transition: transform 0.2s;
+            cursor: pointer;
+            min-height: 120px;
         }
-        .card:hover {
+        .guild-card:hover {
             transform: translateY(-5px);
-            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         }
-        .card-title i {
-            font-size: 1.2em;
+        .guild-icon {
+            width: 64px;
+            height: 64px;
+            border-radius: 30%;
+            margin-right: 1rem;
+            object-fit: cover;
         }
-        .management-section {
-            margin-bottom: 2rem;
+        .admin-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
         }
-        .section-title {
-            border-bottom: 2px solid #0d6efd;
-            padding-bottom: 0.5rem;
-            margin-bottom: 1.5rem;
+        .sidebar {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-right: 1px solid #dee2e6;
+            height: 100vh;
+            position: sticky;
+            margin-bottom: -48px;
+            top: 0;
+        }
+        .sidebar-section {
+            margin-bottom: 25px;
+        }
+        .sidebar-link {
+            display: block;
+            padding: 10px 15px;
+            border-radius: 5px;
+            color: #212529;
+            text-decoration: none;
+            transition: background-color 0.2s;
+        }
+        .sidebar-link:hover, .sidebar-link.active {
+            background-color: #e9ecef;
+        }
+        .content-section {
+            display: none;
+        }
+        .content-section.active {
+            display: block;
+        }
+        body.bg-dark {
+            background-color: white !important;
+        }
+        .text-light {
+            color: black !important;
+        }
+        .btn-sort.active {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+            color: white;
         }
     </style>
 </head>
-<body>
+<body class="bg-dark text-light">
     <div class="container mt-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1 class="display-4">Select a Server</h1>
             <div>
-                <h1>{{ guild.name }} Management</h1>
-                <a href="{{ url_for('select_guild') }}" class="btn btn-sm btn-outline-secondary">
-                    <i class="bi bi-arrow-left me-1"></i>Back to Servers
-                </a>
-            </div>
-            <div>
-                <a href="{{ url_for('logout') }}" class="btn btn-danger">
-                    <i class="bi bi-box-arrow-right"></i> Logout
-                </a>
+                {% if session.admin %}
+                <span class="badge bg-danger">Admin Mode</span>
+                <a href="/admin/guilds" class="btn btn-warning ms-2">Manage All Servers</a>
+                {% else %}
+                <a href="/logout" class="btn btn-outline-danger">Logout</a>
+                {% endif %}
             </div>
         </div>
 
         <!-- Server Configuration Section -->
-        <div class="management-section">
-            <h3 class="section-title">Server Configuration</h3>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Commands Card -->
-                <div class="col">
-                    <a href="{{ url_for('guild_commands', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-terminal me-2"></i>Commands
-                            </h5>
-                            <p class="card-text text-muted">Manage custom slash commands and responses</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Blocked Words Card -->
-                <div class="col">
-                    <a href="{{ url_for('blocked_words', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-shield-slash me-2"></i>Blocked Words
-                            </h5>
-                            <p class="card-text text-muted">Manage restricted words and phrases</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Logging Config Card -->
-                <div class="col">
-                    <a href="{{ url_for('log_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-journal-text me-2"></i>Logging
-                            </h5>
-                            <p class="card-text text-muted">Configure server logging settings</p>
-                        </div>
-                    </a>
-                </div>
-				
-				<!-- Welcome Messages Card -->
-                <div class="col">
-                    <a href="{{ url_for('welcome_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-file-earmark-person me-2"></i>Welcome Messages
-                            </h5>
-                            <p class="card-text text-muted">Configure join messages and embeds</p>
-                        </div>
-                    </a>
-                </div>
-				
-				<!-- Goodbye Messages Card -->
-                <div class="col">
-                    <a href="{{ url_for('goodbye_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-file-earmark-person me-2"></i>Goodbye Messages
-                            </h5>
-                            <p class="card-text text-muted">Configure goodbye messages and embeds</p>
-                        </div>
-                    </a>
-                </div>
-				
-				<!-- Auto Roles Config Card -->
-                <div class="col">
-                    <a href="{{ url_for('auto_roles_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-file-earmark-person me-2"></i>Auto Assign Roles
-                            </h5>
-                            <p class="card-text text-muted">Configure role(s) that will be given to the user when they join the server</p>
-                        </div>
-                    </a>
-                </div>
-				
-				<!-- Spam Config Card -->
-                <div class="col">
-                    <a href="{{ url_for('spam_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-x-octagon me-2"></i>Spam
-                            </h5>
-                            <p class="card-text text-muted">Configure spam settings</p>
-                        </div>
-                    </a>
+        <div id="server-configuration" class="content-section active">
+            <div class="sort-controls d-flex justify-content-end mb-3">
+                <div class="btn-group">
+                    <button type="button" class="btn btn-outline-secondary btn-sort" id="sort-by-id" data-sort="id">
+                        <i class="bi bi-sort-numeric-down"></i> Sort by ID
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sort" id="sort-by-join" data-sort="join">
+                        <i class="bi bi-calendar"></i> Sort by Join Date
+                    </button>
                 </div>
             </div>
-        </div>
-
-        <!-- Leveling System Section -->
-        <div class="management-section">
-            <h3 class="section-title">Leveling System</h3>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Leveling Config Card -->
-                <div class="col">
-                    <a href="{{ url_for('level_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-graph-up me-2"></i>Leveling
-                            </h5>
-                            <p class="card-text text-muted">Configure experience settings and multipliers</p>
+            
+            {% if guilds %}
+            <div class="row row-cols-1 row-cols-md-3 g-4" id="guilds-container">
+                {% for guild in guilds %}
+                <div class="col guild-item" data-id="{{ guild.id }}" 
+                     data-join-timestamp="{% if guild.icon %}{{ guild.icon.split('?t=')[1] if '?t=' in guild.icon else '0' }}{% else %}0{% endif %}">
+                    <a href="{{ url_for('guild_dashboard', guild_id=guild.id) }}" class="text-decoration-none text-dark">
+                        <div class="card guild-card h-100 bg-secondary">
+                            {% if session.admin %}
+                            <span class="badge bg-success admin-badge">Admin Access</span>
+                            {% endif %}
+                            <div class="card-body d-flex align-items-center">
+                                {% if guild.icon %}
+                                <img src="{{ guild.icon }}?size=128" class="guild-icon" alt="Server Icon">
+                                {% else %}
+                                <div class="guild-icon bg-dark d-flex align-items-center justify-content-center">
+                                    <span class="text-muted">{{ guild.name|first|upper }}</span>
+                                </div>
+                                {% endif %}
+                                <div>
+                                    <h5 class="card-title mb-0 text-light">{{ guild.name }}</h5>
+                                    <small class="text-muted">ID: {{ guild.id }}</small>
+                                </div>
+                            </div>
                         </div>
                     </a>
                 </div>
-
-                <!-- Leaderboard Card -->
-                <div class="col">
-                    <a href="{{ url_for('leaderboard', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-trophy me-2"></i>Leaderboard
-                            </h5>
-                            <p class="card-text text-muted">View user rankings based on XP</p>
-                        </div>
-                    </a>
-                </div>
+                {% endfor %}
             </div>
-        </div>
-
-        <!-- Moderation Section -->
-        <div class="management-section">
-            <h3 class="section-title">Moderation</h3>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Banned Users Card -->
-                <div class="col">
-                    <a href="{{ url_for('banned_users', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-exclamation-triangle me-2"></i>Banned Users
-                            </h5>
-                            <p class="card-text text-muted">View currently banned users</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Warned Users Card -->
-                <div class="col">
-                    <a href="{{ url_for('warnings', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-exclamation-triangle me-2"></i>Warned Users
-                            </h5>
-                            <p class="card-text text-muted">Manage user warnings</p>
-                        </div>
-                    </a>
-                </div>
+            {% else %}
+            <div class="text-center py-5">
+                <h4 class="text-muted">No mutual servers found</h4>
+                <p class="lead">Make sure the bot is added to your server and you have manager permissions</p>
+                {% if session.admin %}
+                <a href="/admin/guilds" class="btn btn-primary">Manage Bot Servers</a>
+                {% endif %}
             </div>
+            {% endif %}
         </div>
-		
-		<!-- Configure Appeals Section -->
-        <div class="management-section">
-            <h3 class="section-title">Configure Appeals</h3>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Ban Appeal Forms Card -->
-                <div class="col">
-                    <a href="{{ url_for('ban_appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-file-earmark-text me-2"></i>Ban Appeal Forms
-                            </h5>
-                            <p class="card-text text-muted">Configure ban appeal form</p>
-                        </div>
-                    </a>
+        
+        <!-- Delete Data Section -->
+        <div id="delete-data" class="content-section">
+            <div class="management-section">
+                <h3 class="section-title">Delete Data</h3>
+                <div class="alert alert-danger mt-4">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    This section is under development. Data deletion functionality will be available soon.
                 </div>
-				
-				<!-- Kick Appeal Forms Card -->
-                <div class="col">
-                    <a href="{{ url_for('kick_appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-file-earmark-text me-2"></i>Kick Appeal Forms
-                            </h5>
-                            <p class="card-text text-muted">Configure kick appeal form</p>
-                        </div>
-                    </a>
+                <div class="card">
+                    <div class="card-body">
+                        <p class="card-text">
+                            When fully implemented this section will allow you to:
+                        </p>
+                        <ul>
+                            <li>Delete all server configuration data from database</li>
+                            <li>Remove user information from a server using their user ID</li>
+                        </ul>
+                    </div>
                 </div>
-				
-				<!-- Timeout Appeal Forms Card -->
-                <div class="col">
-                    <a href="{{ url_for('timeout_appeal_forms', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-file-earmark-text me-2"></i>Timeout Appeal Forms
-                            </h5>
-                            <p class="card-text text-muted">Configure timeout appeal form</p>
-                        </div>
-                    </a>
-                </div>
-			</div>
-        </div>
-		
-		<!-- Manage Appeals Section -->
-        <div class="management-section">
-            <h3 class="section-title">Manage Appeals</h3>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Ban Appeals Card -->
-                <div class="col">
-                    <a href="{{ url_for('ban_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-person-x me-2"></i>Ban Appeals
-                            </h5>
-                            <p class="card-text text-muted">Review and manage ban appeals</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Kick Appeals Card -->
-                <div class="col">
-                    <a href="{{ url_for('kick_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-person-dash me-2"></i>Kick Appeals
-                            </h5>
-                            <p class="card-text text-muted">Review and manage kick appeals</p>
-                        </div>
-                    </a>
-                </div>
-
-                <!-- Timeout Appeals Card -->
-                <div class="col">
-                    <a href="{{ url_for('timeout_appeals', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-clock-history me-2"></i>Timeout Appeals
-                            </h5>
-                            <p class="card-text text-muted">Review and manage timeout appeals</p>
-                        </div>
-                    </a>
-                </div>
-            </div>
-        </div>
-		
-		<!-- Miscellaneous Configuration Section -->
-        <div class="management-section">
-            <h3 class="section-title">Miscellaneous Configuration</h3>
-            <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-                <!-- Stream and Video Announcements Card -->
-                <div class="col">
-                    <a href="{{ url_for('stream_announcements', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-youtube me-2"></i>Stream and Video Announcements
-                            </h5>
-                            <p class="card-text text-muted">Manage your live stream and video upload announcements</p>
-                        </div>
-                    </a>
-                </div>
-				
-				<!-- Game Roles Card -->
-				<div class="col">
-					<a href="{{ url_for('game_roles_config', guild_id=guild.guild_id) }}" class="card h-100 text-decoration-none">
-						<div class="card-body">
-							<h5 class="card-title">
-								<i class="bi bi-controller me-2"></i>Game Roles
-							</h5>
-							<p class="card-text text-muted">Automate roles based on game activity</p>
-						</div>
-					</a>
-				</div>
             </div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+    <script>
+        // Handle section switching based on URL hash
+        function showSection() {
+            document.querySelectorAll('.content-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            
+            document.querySelectorAll('.sidebar-link').forEach(link => {
+                link.classList.remove('active');
+            });
+            
+            const hash = window.location.hash;
+            
+            if (hash === '#delete-data') {
+                document.getElementById('delete-data').classList.add('active');
+                document.getElementById('delete-data-link').classList.add('active');
+            } else {
+                document.getElementById('server-configuration').classList.add('active');
+                document.getElementById('server-configuration-link').classList.add('active');
+            }
+        }
+        
+        showSection();
+        window.addEventListener('hashchange', showSection);
+        
+        // Guild sorting functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const sortBtns = document.querySelectorAll('.btn-sort');
+            const guildsContainer = document.getElementById('guilds-container');
+            
+            if (!guildsContainer) return;
+            
+            // Store original guild items once
+            const originalGuildItems = Array.from(guildsContainer.querySelectorAll('.guild-item'));
+            let guildItems = [...originalGuildItems]; // Working copy
+            
+            // Current sort state
+            let currentSort = '{% if session.admin %}join{% else %}id{% endif %}';
+            let sortDirection = 'asc';
+            
+            // Set initial active button
+            const initialSortBtn = document.querySelector(`.btn-sort[data-sort="${currentSort}"]`);
+            if (initialSortBtn) {
+                initialSortBtn.classList.add('active');
+            }
+            
+            // Sort functions
+            function sortById() {
+                guildItems.sort((a, b) => {
+                    const aId = parseInt(a.dataset.id);
+                    const bId = parseInt(b.dataset.id);
+                    return sortDirection === 'asc' ? aId - bId : bId - aId;
+                });
+            }
+            
+            function sortByJoin() {
+                guildItems.sort((a, b) => {
+                    const aTimestamp = parseInt(a.dataset.joinTimestamp || '0');
+                    const bTimestamp = parseInt(b.dataset.joinTimestamp || '0');
+                    return sortDirection === 'asc' ? aTimestamp - bTimestamp : bTimestamp - aTimestamp;
+                });
+            }
+            
+            // Apply sort and update UI
+            function applySort() {
+                if (currentSort === 'id') {
+                    sortById();
+                } else {
+                    sortByJoin();
+                }
+                
+                // Clear and re-add items in new order
+                guildsContainer.innerHTML = '';
+                guildItems.forEach(item => guildsContainer.appendChild(item));
+                
+                // Update button states
+                sortBtns.forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.sort === currentSort);
+                });
+            }
+            
+            // Sort button click handler
+            sortBtns.forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const sortType = this.dataset.sort;
+                    
+                    // Reset to original order when switching sort types
+                    if (sortType !== currentSort) {
+                        guildItems = [...originalGuildItems];
+                        sortDirection = 'asc';
+                    } else {
+                        // Toggle direction if same sort type
+                        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                    }
+                    
+                    currentSort = sortType;
+                    applySort();
+                    
+                    // Update button text to show direction
+                    const icon = sortDirection === 'asc' ? 'down' : 'up';
+                    const text = this.textContent.replace(/↑|↓/g, '').trim();
+                    
+                    if (currentSort === 'id') {
+                        this.innerHTML = `<i class="bi bi-sort-numeric-${icon}"></i> ${text}`;
+                    } else {
+                        this.innerHTML = `<i class="bi bi-calendar-${icon === 'down' ? 'minus' : 'plus'}"></i> ${text}`;
+                    }
+                });
+            });
+            
+            // Apply initial sort
+            applySort();
+        });
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #444; font-size: 0.9rem; color: #aaa;">
 	  <p>
 		&copy; 2025 RuleKeeper. All rights reserved. |
-		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
-		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
-		<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+		<a href="/privacy-policy" style="color: #6ea8fe; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #6ea8fe; text-decoration: none;">Terms of Service</a> |
+		<a href="/end-user-license-agreement" style="color: #6ea8fe; text-decoration: none;">End User License Agreement</a>
 	  </p>
 	</footer>
 </body>

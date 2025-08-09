@@ -2,10 +2,12 @@ version: '3.8'
 
 services:
   rulekeeper-bot:
+    working_dir: /app
     image: wesleyhellewell/rulekeeper-bot:latest
     container_name: rulekeeper-bot
     restart: unless-stopped
     environment:
+      PYTHONPATH: /app
       BOT_TOKEN: ${BOT_TOKEN}
       SECRET_KEY: ${SECRET_KEY}
       HEAD_BOT_ADMIN_USERNAME: ${HEAD_BOT_ADMIN_USERNAME}
@@ -21,9 +23,7 @@ services:
       TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID}
       TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
-    volumes:
-      - ./bot/bot.db:/app/bot/bot.db
-      - ./data:/app/data
+    command: python main.py
     ports:
       - "5000:5000"
       - "5003:5003"

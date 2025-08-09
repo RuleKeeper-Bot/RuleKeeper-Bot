@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 import uuid
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import partial
@@ -27,6 +28,7 @@ from cachetools import TTLCache
 from dotenv import load_dotenv
 from expiringdict import ExpiringDict
 import sqlite3
+import jwt
 
 # -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -35,6 +37,27 @@ from database import Database
 
 # -------------------- Runtime Config -----------------
 load_dotenv()
+
+# -------------------- JWT Auth for API --------------------
+JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_ALGORITHM = "HS256"
+
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable is not set!")
+
+async def require_jwt(request):
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return web.json_response({"error": "Missing or invalid Authorization header"}, status=401)
+    token = auth_header.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        request["jwt_payload"] = payload
+    except jwt.ExpiredSignatureError:
+        return web.json_response({"error": "Token expired"}, status=401)
+    except jwt.InvalidTokenError:
+        return web.json_response({"error": "Invalid token"}, status=403)
+    return None
 
 _bot_loop = None
 _loop_lock = threading.Lock()
@@ -110,6 +133,14 @@ def load_log_config(guild_id):
         "emoji_name_change": True,
         "emoji_delete": True
     }
+
+    # Check if guild exists before inserting log_config
+    guild_exists = db.conn.execute(
+        'SELECT 1 FROM guilds WHERE guild_id = ?', (str(guild_id),)
+    ).fetchone()
+    if not guild_exists:
+        # Guild does not exist, return default config only
+        return default_config
 
     # Get config from database
     config = db.get_log_config(str(guild_id))
@@ -612,6 +643,7 @@ class CustomBot(commands.Bot):
         self._command_registry = {}
         self.synced_guilds = set()
         self._command_initialized = False
+        self._last_resync = 0
 
     def _create_command_callback(self, cmd_data: dict):
         """Factory method to create properly typed callbacks"""
@@ -653,6 +685,7 @@ class CustomBot(commands.Bot):
                     print(f"⚠️ Invalid command format: {cmd_data}")
 
             # Group commands by guild
+            from collections import defaultdict
             guild_groups = defaultdict(list)
             for cmd in valid_commands:
                 guild_id = str(cmd['guild_id']).strip()
@@ -662,10 +695,20 @@ class CustomBot(commands.Bot):
             global_commands = guild_groups.get('0', [])
             for cmd_data in global_commands:
                 try:
+                    # Ensure all fields are strings and valid
+                    cmd_data['command_name'] = str(cmd_data.get('command_name', '')).strip().lower()
+                    cmd_data['description'] = str(cmd_data.get('description', '') or 'Custom command').strip()
+                    if not cmd_data['description']:
+                        cmd_data['description'] = 'Custom command'
+                    cmd_data['content'] = str(cmd_data.get('content', ''))
+                    # Discord command name rules
+                    if not (1 <= len(cmd_data['command_name']) <= 32) or not cmd_data['command_name'].replace('_', '').isalnum():
+                        print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                        continue
                     callback = self._create_command_callback(cmd_data)
                     cmd = app_commands.Command(
                         name=cmd_data['command_name'],
-                        description=cmd_data.get('description', 'Custom command'),
+                        description=cmd_data['description'],
                         callback=callback
                     )
                     self.tree.add_command(cmd)
@@ -682,15 +725,24 @@ class CustomBot(commands.Bot):
                 except (discord.NotFound, discord.Forbidden):
                     print(f"  🚫 Guild {guild_id_str} not accessible")
                     continue
-                    
+
                 self.tree.clear_commands(guild=guild)
 
                 for cmd_data in cmds:
                     try:
+                        # Ensure all fields are strings and valid
+                        cmd_data['command_name'] = str(cmd_data.get('command_name', '')).strip().lower()
+                        cmd_data['description'] = str(cmd_data.get('description', '') or 'Custom command').strip()
+                        if not cmd_data['description']:
+                            cmd_data['description'] = 'Custom command'
+                        cmd_data['content'] = str(cmd_data.get('content', ''))
+                        if not (1 <= len(cmd_data['command_name']) <= 32) or not cmd_data['command_name'].replace('_', '').isalnum():
+                            print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                            continue
                         callback = self._create_command_callback(cmd_data)
                         cmd = app_commands.Command(
                             name=cmd_data['command_name'],
-                            description=cmd_data.get('description', 'Custom command'),
+                            description=cmd_data['description'],
                             callback=callback
                         )
                         self.tree.add_command(cmd, guild=guild)
@@ -736,35 +788,133 @@ class CustomBot(commands.Bot):
         return False
 
     async def custom_command_handler(self, interaction: discord.Interaction, cmd_data: dict):
-        """Handler for database-stored commands"""
         try:
             content = cmd_data.get('content', 'No content configured')
             ephemeral = bool(cmd_data.get('ephemeral', True))
-            response_args = {'ephemeral': ephemeral}
+            
+            # Ensure we can respond to the interaction
+            if interaction.response.is_done():
+                send_method = interaction.followup.send
+            else:
+                send_method = interaction.response.send_message
 
-            # Handle image URLs
+            # Handle different content types
             if any(content.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif']):
                 embed = discord.Embed().set_image(url=content)
-                await interaction.response.send_message(embed=embed, **response_args)
+                await send_method(embed=embed, ephemeral=ephemeral)
             elif content.startswith('http'):
-                await interaction.response.send_message(content, **response_args)
+                await send_method(content, ephemeral=ephemeral)
             else:
-                # Handle multi-line responses
                 if '\n' in content:
                     parts = [content[i:i+2000] for i in range(0, len(content), 2000)]
-                    await interaction.response.send_message(parts[0], **response_args)
-                    for part in parts[1:]:
-                        await interaction.followup.send(part, ephemeral=ephemeral)
+                    first = True
+                    for part in parts:
+                        if first:
+                            await send_method(part, ephemeral=ephemeral)
+                            first = False
+                        else:
+                            await interaction.followup.send(part, ephemeral=ephemeral)
                 else:
-                    await interaction.response.send_message(content, **response_args)
+                    await send_method(content, ephemeral=ephemeral)
+                    
+        except Exception as e:
+            error_msg = f"❌ Command error: {str(e)}"
+            print(f"Command execution failed: {traceback.format_exc()}")
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(error_msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(error_msg, ephemeral=True)
+            except:
+                pass
+
+    async def reload_and_resync_commands(self):
+        try:
+            """Reload custom commands from DB and resync with Discord, with rate limiting."""
+            RATE_LIMIT_SECONDS = 10
+            now = time.time()
+            if now - self._last_resync < RATE_LIMIT_SECONDS:
+                raise RuntimeError(f"Rate limited: Try again in {int(RATE_LIMIT_SECONDS - (now - self._last_resync))} seconds.")
+            self._last_resync = now
+
+            # Clear all commands from the tree
+            for guild in self.guilds:
+                self.tree.clear_commands(guild=guild)
+            self.tree.clear_commands(guild=None)  # Also clear global
+
+            # Load commands from DB
+            raw_commands = self.db.execute_query(
+                'SELECT guild_id, command_name, content, description, ephemeral FROM commands',
+                fetch='all'
+            ) or []
+
+            # Group by guild
+            from collections import defaultdict
+            guild_groups = defaultdict(list)
+            for cmd in raw_commands:
+                guild_groups[str(cmd['guild_id'])].append(cmd)
+
+            # Add global commands
+            for cmd_data in guild_groups.get('0', []):
+                try:
+                    cmd_data['command_name'] = str(cmd_data.get('command_name', '') or '').strip().lower()
+                    cmd_data['description'] = str(cmd_data.get('description', '') or 'Custom command').strip()
+                    if not cmd_data['description']:
+                        cmd_data['description'] = 'Custom command'
+                    cmd_data['description'] = cmd_data['description'][:100]
+                    cmd_data['content'] = str(cmd_data.get('content', '') or '')
+                    # Discord command name rules
+                    if not re.fullmatch(r'[a-z0-9_\-]{1,32}', cmd_data['command_name']):
+                        print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                        continue
+                    print(f"Adding command: {cmd_data}")
+                    callback = self._create_command_callback(cmd_data)
+                    cmd = app_commands.Command(
+                        name=cmd_data['command_name'],
+                        description=cmd_data['description'],
+                        callback=callback
+                    )
+                    self.tree.add_command(cmd)
+                except Exception as e:
+                    print(f"Global command error: {cmd_data} | {str(e)}")
+                    traceback.print_exc()
+
+            for guild in self.guilds:
+                cmds = guild_groups.get(str(guild.id), [])
+                for cmd_data in cmds:
+                    try:
+                        cmd_data['command_name'] = str(cmd_data.get('command_name', '') or '').strip().lower()
+                        cmd_data['description'] = str(cmd_data.get('description', '') or 'Custom command').strip()
+                        if not cmd_data['description']:
+                            cmd_data['description'] = 'Custom command'
+                        cmd_data['description'] = cmd_data['description'][:100]
+                        cmd_data['content'] = str(cmd_data.get('content', '') or '')
+                        if not re.fullmatch(r'[a-z0-9_\-]{1,32}', cmd_data['command_name']):
+                            print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                            continue
+                        if not (1 <= len(cmd_data['command_name']) <= 32) or not cmd_data['command_name'].replace('_', '').isalnum():
+                            print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                            continue
+                        callback = self._create_command_callback(cmd_data)
+                        cmd = app_commands.Command(
+                            name=cmd_data['command_name'],
+                            description=cmd_data['description'],
+                            callback=callback
+                        )
+                        self.tree.add_command(cmd, guild=guild)
+                    except Exception as e:
+                        print(f"Guild command error: {cmd_data} | {str(e)}")
+                        traceback.print_exc()
 
         except Exception as e:
-            error_msg = "❌ Command execution failed"
-            print(f"Command error: {str(e)}\n{traceback.format_exc()}")
-            try:
-                await interaction.response.send_message(error_msg, ephemeral=True)
-            except discord.InteractionResponded:
-                await interaction.followup.send(error_msg, ephemeral=True)
+            print("Exception in reload_and_resync_commands")
+            traceback.print_exc()
+            raise
+
+        # Sync all
+        await self.tree.sync()
+        for guild in self.guilds:
+            await self.tree.sync(guild=guild)
 
 bot_instance = CustomBot(
     command_prefix='!',
@@ -894,13 +1044,17 @@ async def webserver():
     app = web.Application(middlewares=[cors_middleware])
     
     # Routes
+    app.router.add_post('/leave_guild', handle_leave_guild)
     app.router.add_post('/send_appeal_to_discord', handle_send_to_discord)
     app.router.add_get('/health', lambda _: web.Response(text="OK"))
-    app.router.add_post('/sync', handle_sync)
+    app.router.add_post('/sync', handle_command_sync)
     app.router.add_post('/sync_warnings', handle_sync_warnings)
     app.router.add_post('/appeal', handle_appeal_submission)
     app.router.add_get('/get_bans', handle_get_bans)
     app.router.add_post('/unban/{userid}', handle_unban)
+    app.router.add_post('/get_guild_invite', handle_get_guild_invite)
+    app.router.add_post('/get_guild_audit_log', handle_get_guild_audit_log)
+    app.router.add_post('/send_role_menu/{menu_id}', handle_send_role_menu)
     app.router.add_route(hdrs.METH_OPTIONS, '/unban/{userid}', handle_options)
     
     # Setup and start the server
@@ -937,14 +1091,49 @@ async def handle_options(request):
         }
     )
 
-async def handle_sync(request):
-    return web.Response(text="Commands synced successfully!")
+async def handle_leave_guild(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Bot is not in this server"}, status=404)
+        await guild.leave()
+        return web.json_response({"success": True, "message": f"Bot left guild {guild_id}"})
+    except Exception as e:
+        logger.error(f"Error leaving guild: {str(e)}")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_command_sync(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        await bot_instance.reload_and_resync_commands()
+        return web.json_response({"success": True, "message": "Commands reloaded and resynced."})
+    except RuntimeError as e:
+        return web.json_response({"error": str(e)}, status=429)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
     
 async def handle_sync_warnings(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
     reload_warnings()
     return web.Response(text="Warnings synced successfully!")
     
 async def handle_get_bans(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
     try:
         print("Fetching bans...")
         data = await request.json()
@@ -974,6 +1163,9 @@ async def handle_get_bans(request):
         return web.json_response({"error": str(e)}, status=500)
 
 async def handle_appeal_submission(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
     try:
         data = await request.json()
         appeal_type = data.get('type')
@@ -1056,6 +1248,9 @@ def get_guild_id_from_channel(channel_id):
         return None
 
 async def handle_unban(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
     user_id = request.match_info['userid']
     data = await request.json()
     
@@ -1085,6 +1280,335 @@ async def handle_unban(request):
     except Exception as e:
         print(f"Unban error: {str(e)}")
         return web.json_response({"error": str(e)}, status=500)
+
+async def handle_get_guild_invite(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        if not guild_id or not guild_id.isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Bot is not in this server or cannot access it."}, status=404)
+
+        # Try to find an existing invite
+        for channel in guild.text_channels:
+            try:
+                invites = await channel.invites()
+                if invites:
+                    # Return the first valid invite
+                    return web.json_response({"invite": f"https://discord.gg/{invites[0].code}"})
+            except discord.Forbidden:
+                continue  # Bot can't view invites in this channel
+
+        # If no invite found, try to create one in the first channel bot can
+        for channel in guild.text_channels:
+            try:
+                invite = await channel.create_invite(max_age=86400, max_uses=5, reason="Requested from admin panel")
+                return web.json_response({"invite": f"https://discord.gg/{invite.code}"})
+            except discord.Forbidden:
+                continue  # Bot can't create invite in this channel
+
+        return web.json_response({"error": "No accessible channel to create an invite."}, status=403)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_get_guild_audit_log(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        if not guild_id or not guild_id.isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Bot is not in this server or cannot access it."}, status=404)
+
+        entries = []
+        async for entry in guild.audit_logs(limit=100):
+            # Start with basic information
+            action_name = str(entry.action).replace("AuditLogAction.", "")
+            user_name = str(entry.user) if entry.user else "Unknown"
+            target_name = str(entry.target) if entry.target else ""
+            reason = entry.reason or ""
+            created_at = entry.created_at.isoformat() if entry.created_at else ""
+            
+            # Initialize changes list
+            changes = []
+            
+            # Handle different action types with their specific attributes
+            if action_name == "role_update" and hasattr(entry, 'before') and hasattr(entry, 'after'):
+                if hasattr(entry.before, 'name') and hasattr(entry.after, 'name'):
+                    if entry.before.name != entry.after.name:
+                        changes.append(f"Name: {entry.before.name} → {entry.after.name}")
+                
+                if hasattr(entry.before, 'permissions') and hasattr(entry.after, 'permissions'):
+                    if entry.before.permissions.value != entry.after.permissions.value:
+                        changes.append(f"Permissions: {entry.before.permissions.value} → {entry.after.permissions.value}")
+                
+                if hasattr(entry.before, 'color') and hasattr(entry.after, 'color'):
+                    if entry.before.color.value != entry.after.color.value:
+                        changes.append(f"Color: {entry.before.color.value} → {entry.after.color.value}")
+            
+            elif action_name == "channel_update" and hasattr(entry, 'before') and hasattr(entry, 'after'):
+                if hasattr(entry.before, 'name') and hasattr(entry.after, 'name'):
+                    if entry.before.name != entry.after.name:
+                        changes.append(f"Name: {entry.before.name} → {entry.after.name}")
+                
+                if hasattr(entry.before, 'position') and hasattr(entry.after, 'position'):
+                    if entry.before.position != entry.after.position:
+                        changes.append(f"Position: {entry.before.position} → {entry.after.position}")
+            
+            elif action_name == "member_update" and hasattr(entry, 'before') and hasattr(entry, 'after'):
+                if hasattr(entry.before, 'nick') and hasattr(entry.after, 'nick'):
+                    if entry.before.nick != entry.after.nick:
+                        changes.append(f"Nickname: {entry.before.nick} → {entry.after.nick}")
+            
+            elif action_name == "message_delete":
+                if hasattr(entry.extra, 'count'):
+                    changes.append(f"Messages deleted: {entry.extra.count}")
+                if hasattr(entry.extra, 'channel'):
+                    changes.append(f"Channel: {entry.extra.channel.name}")
+            
+            elif action_name in ["invite_create", "invite_delete"]:
+                if hasattr(entry.extra, 'code'):
+                    changes.append(f"Code: {entry.extra.code}")
+                if hasattr(entry.extra, 'channel'):
+                    changes.append(f"Channel: {entry.extra.channel.name}")
+                if hasattr(entry.extra, 'uses'):
+                    changes.append(f"Uses: {entry.extra.uses}")
+            
+            # Properly handle member role updates - PRIMARY FIX
+            elif action_name == "member_role_update":
+                # Try to get role changes from extra attribute
+                if hasattr(entry, 'extra') and hasattr(entry.extra, 'roles'):
+                    added = []
+                    removed = []
+                    
+                    # Process each role in the extra roles
+                    for role in entry.extra.roles:
+                        # Some roles might be represented as tuples (name, added/removed)
+                        if isinstance(role, tuple) and len(role) == 2:
+                            role_name, action_type = role
+                            if action_type == "added":
+                                added.append(role_name)
+                            elif action_type == "removed":
+                                removed.append(role_name)
+                        # Handle AuditLogRole objects
+                        elif hasattr(role, 'name'):
+                            if hasattr(role, 'added') and role.added:
+                                added.append(role.name)
+                            elif hasattr(role, 'removed') and role.removed:
+                                removed.append(role.name)
+                    
+                    # Add to changes if we found any
+                    if added:
+                        changes.append(f"Added roles: {', '.join(added)}")
+                    if removed:
+                        changes.append(f"Removed roles: {', '.join(removed)}")
+                
+                # Fallback method if extra.roles doesn't work
+                if not changes and hasattr(entry, 'changes'):
+                    # Handle $add and $remove changes
+                    for change_type in ['$add', '$remove']:
+                        if hasattr(entry.changes, change_type):
+                            change = getattr(entry.changes, change_type)
+                            role_ids = change.after if hasattr(change, 'after') else []
+                            role_names = [guild.get_role(rid).name for rid in role_ids if guild.get_role(rid)]
+                            
+                            if role_names:
+                                action = "Added" if change_type == '$add' else "Removed"
+                                changes.append(f"{action} roles: {', '.join(role_names)}")
+            
+            # Special handling for specific actions
+            elif action_name == "message_pin":
+                # Show which message was pinned
+                if hasattr(entry.extra, 'channel') and hasattr(entry.extra, 'message_id'):
+                    changes.append(f"Message pinned in #{entry.extra.channel.name}")
+            
+            elif action_name == "automod_flag_message":
+                # Show rule that triggered the flag
+                if hasattr(entry.extra, 'rule_name'):
+                    changes.append(f"Rule: {entry.extra.rule_name}")
+                if hasattr(entry.extra, 'rule_trigger_type'):
+                    changes.append(f"Trigger: {entry.extra.rule_trigger_type}")
+            
+            # Handle overwrite actions
+            elif action_name in ["overwrite_update", "overwrite_create", "overwrite_delete"]:
+                if hasattr(entry.extra, 'channel'):
+                    changes.append(f"Channel: {entry.extra.channel.name}")
+                if hasattr(entry.extra, 'target'):
+                    if hasattr(entry.extra.target, 'name'):
+                        changes.append(f"Target: {entry.extra.target.name}")
+                    else:
+                        changes.append(f"Target: {str(entry.extra.target)}")
+            
+            # Handle channel creation
+            elif action_name == "channel_create":
+                if hasattr(entry.target, 'name'):
+                    changes.append(f"Channel: {entry.target.name}")
+                if hasattr(entry.target, 'type'):
+                    changes.append(f"Type: {str(entry.target.type)}")
+            
+            # Handle guild updates
+            elif action_name == "guild_update":
+                if hasattr(entry, 'before') and hasattr(entry, 'after'):
+                    if hasattr(entry.before, 'name') and hasattr(entry.after, 'name'):
+                        if entry.before.name != entry.after.name:
+                            changes.append(f"Name: {entry.before.name} → {entry.after.name}")
+                    if hasattr(entry.before, 'verification_level') and hasattr(entry.after, 'verification_level'):
+                        if entry.before.verification_level != entry.after.verification_level:
+                            changes.append(f"Verification: {entry.before.verification_level} → {entry.after.verification_level}")
+            
+            # Format the changes for display
+            changes_str = "<br>".join(changes) if changes else "No additional details"
+
+            entries.append({
+                "action": action_name,
+                "user": user_name,
+                "target": target_name,
+                "reason": reason,
+                "created_at": created_at,
+                "changes": changes_str,
+            })
+            
+        return web.json_response({"log": entries})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_send_role_menu(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        menu_id = data.get('menu_id')
+        if not menu_id:
+            return web.json_response({'error': 'Missing menu_id'}, status=400)
+        # Fetch menu from DB
+        menu = db.execute_query(
+            'SELECT * FROM role_menus WHERE id = ?',
+            (menu_id,),
+            fetch='one'
+        )
+        if not menu:
+            return web.json_response({'error': 'Menu not found'}, status=404)
+        config = json.loads(menu['config'])
+        channel = bot_instance.get_channel(int(menu['channel_id']))
+        if not channel:
+            return web.json_response({'error': 'Channel not found'}, status=404)
+        message_id = menu.get('message_id')
+        sent_message = None
+
+        # Reaction Role: send embed, add reactions for each emoji
+        if menu['type'] == 'reactionrole':
+            # Always send a new message for reaction roles (to avoid reaction desync)
+            sent_message = await channel.send(**build_menu_message(menu, config))
+            # Add reactions for each option
+            for opt in config.get('options', []):
+                emoji_val = opt.get('emoji')
+                if emoji_val:
+                    try:
+                        await sent_message.add_reaction(emoji_val)
+                    except Exception as e:
+                        print(f"Failed to add reaction {emoji_val}: {e}")
+            db.execute_query(
+                'UPDATE role_menus SET message_id = ? WHERE id = ?',
+                (str(sent_message.id), menu_id)
+            )
+            return web.json_response({'success': True, 'message_id': str(sent_message.id)})
+
+        # If message_id exists, try to edit, else send new
+        if message_id:
+            try:
+                old_msg = await channel.fetch_message(int(message_id))
+                sent_message = await old_msg.edit(**build_menu_message(menu, config))
+            except Exception:
+                sent_message = await channel.send(**build_menu_message(menu, config))
+        else:
+            sent_message = await channel.send(**build_menu_message(menu, config))
+            db.execute_query(
+                'UPDATE role_menus SET message_id = ? WHERE id = ?',
+                (str(sent_message.id), menu_id)
+            )
+        return web.json_response({'success': True, 'message_id': str(sent_message.id)})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
+
+def color_name_to_button_style(color_name):
+    color_map = {
+        'blurple': discord.ButtonStyle.primary,
+        'green': discord.ButtonStyle.success,
+        'red': discord.ButtonStyle.danger,
+        'yellow': discord.ButtonStyle.secondary
+    }
+    return color_map.get(color_name, discord.ButtonStyle.primary)
+
+def build_menu_message(menu, config):
+    menu_type = menu['type']
+    menu_id = menu['id']
+    label = config.get('label', '')
+    description = config.get('description', '')
+    embed_color = int(config.get('embed_color', '#5865F2').lstrip('#'), 16) if config.get('embed_color') else 0x5865F2
+    embed = discord.Embed(title=label, description=description, color=embed_color)
+    embed.set_footer(text=f"ID: {menu_id}")
+
+    if menu_type == 'dropdown':
+        options = []
+        for opt in config.get('options', []):
+            kwargs = {
+                "label": opt.get('label', ''),
+                "description": opt.get('description', ''),
+                "value": opt.get('role', '')
+            }
+            emoji_val = opt.get('emoji')
+            if emoji_val:
+                kwargs["emoji"] = emoji_val
+            options.append(discord.SelectOption(**kwargs))
+        view = discord.ui.View()
+        multi_select = config.get('multi_select', False)
+        min_values = 0 if multi_select else 1
+        max_values = len(options) if multi_select else 1
+        view.add_item(
+            discord.ui.Select(
+                placeholder=config.get('placeholder', 'Choose...'),
+                options=options,
+                custom_id=f"dropdown_{menu_id}",
+                min_values=min_values,
+                max_values=max_values
+            )
+        )
+        return {'embed': embed, 'view': view}
+
+    elif menu_type == 'reactionrole':
+        # Just return the embed; reactions will be added after sending
+        return {'embed': embed}
+
+    elif menu_type == 'button':
+        view = discord.ui.View()
+        for idx, opt in enumerate(config.get('options', [])):
+            kwargs = {
+                "label": opt.get('label', ''),
+                "custom_id": f"button_{menu_id}_{idx}"
+            }
+            emoji_val = opt.get('emoji')
+            if emoji_val:
+                kwargs["emoji"] = emoji_val
+            color_val = opt.get('color', 'blurple')
+            kwargs["style"] = color_name_to_button_style(color_val)
+            view.add_item(discord.ui.Button(**kwargs))
+        return {'embed': embed, 'view': view}
+
+    return {'embed': embed}
 
 @tasks.loop(minutes=5)
 async def cleanup():
@@ -1185,6 +1709,9 @@ def reload_warnings(guild_id: str):
 # -------------------- Appeal Embed ------------------
 async def handle_send_to_discord(request):
     """Handle appeal sending with full data validation"""
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
     try:
         data = await request.json()
         appeal_id = data.get('appeal_id')
@@ -1287,27 +1814,22 @@ async def send_appeal_to_discord(channel_id: int, appeal_data: dict) -> bool:
 
 @bot_instance.event
 async def on_interaction(interaction: discord.Interaction):
+    # Handle component interactions (buttons, selects, etc.)
     if interaction.type == discord.InteractionType.component:
         custom_id = interaction.data.get('custom_id', '')
-        
-        # Handle approve/reject actions
+
+        # Appeals
         if custom_id.startswith(('approve_', 'reject_')):
             try:
-                # Split into action_type_appealid format
-                parts = custom_id.split('_', 2)  # Split into max 3 parts
+                parts = custom_id.split('_', 2)
                 if len(parts) != 3:
                     raise ValueError("Invalid custom ID format")
-
                 action, appeal_type, appeal_id = parts
                 guild_id = str(interaction.guild.id)
-
-                # Get full appeal data
                 appeal = db.get_appeal(guild_id, appeal_id)
                 if not appeal:
                     await interaction.response.send_message("Appeal not found", ephemeral=True)
                     return
-
-                # Update appeal status
                 new_status = 'approved' if action == 'approve' else 'rejected'
                 db.update_appeal(
                     appeal_id=appeal_id,
@@ -1315,8 +1837,6 @@ async def on_interaction(interaction: discord.Interaction):
                     reviewed_by=str(interaction.user.id),
                     reviewed_at=int(time.time())
                 )
-
-                # Handle actions
                 user = await bot_instance.fetch_user(int(appeal['user_id']))
                 if action == 'approve':
                     if appeal_type == 'ban':
@@ -1327,27 +1847,19 @@ async def on_interaction(interaction: discord.Interaction):
                     elif appeal_type == 'kick':
                         invite = await interaction.channel.create_invite(max_uses=1, reason="Appeal approved")
                         await user.send(f"Your kick appeal was approved: {invite.url}")
-
-                # Update message components
                 embed = interaction.message.embeds[0].copy()
                 embed.color = discord.Color.green() if action == 'approve' else discord.Color.red()
-                
-                # Add status field if missing
                 status_exists = any(field.name.lower() == "status" for field in embed.fields)
                 if not status_exists:
                     embed.add_field(name="Status", value=new_status.capitalize(), inline=False)
-                
-                # Disable all buttons
                 view = discord.ui.View()
                 for component in interaction.message.components:
                     if component.type == discord.ComponentType.button:
                         btn = discord.ui.Button.from_component(component)
                         btn.disabled = True
                         view.add_item(btn)
-
                 await interaction.message.edit(embed=embed, view=view)
                 await interaction.response.send_message(f"Appeal {new_status}", ephemeral=True)
-
             except discord.Forbidden:
                 await interaction.response.send_message("Missing permissions to perform this action", ephemeral=True)
             except discord.NotFound:
@@ -1355,7 +1867,170 @@ async def on_interaction(interaction: discord.Interaction):
             except Exception as e:
                 logger.error(f"Appeal handling error: {traceback.format_exc()}")
                 await interaction.response.send_message("Error processing appeal", ephemeral=True)
+            return
+
+        # Dropdown Role Menu
+        if custom_id.startswith('dropdown_'):
+            menu_id = custom_id.split('_', 1)[1]
+            menu = db.execute_query('SELECT * FROM role_menus WHERE id = ?', (menu_id,), fetch='one')
+            if not menu:
+                await interaction.response.send_message("Menu not found.", ephemeral=True)
                 return
+            config = json.loads(menu['config'])
+            selected_roles = interaction.data['values']
+            method = config.get('grant_remove_method', 'grant')
+            multi_select = config.get('multi_select', False)
+            messages = []
+
+            # --- Handle "no selection" for multi-select and grant_remove/remove ---
+            if multi_select and not selected_roles and method in ('remove', 'grant_remove'):
+                removed_any = False
+                for opt in config.get('options', []):
+                    role = interaction.guild.get_role(int(opt.get('role')))
+                    if role and role in interaction.user.roles:
+                        await interaction.user.remove_roles(role)
+                        messages.append(opt.get('remove_message', f"Role {role.mention} removed!"))
+                        removed_any = True
+                if removed_any:
+                    await interaction.response.send_message("\n".join(messages), ephemeral=True)
+                else:
+                    await interaction.response.send_message("No roles to remove.", ephemeral=True)
+                return
+
+            # --- Normal selection handling ---
+            for opt in config.get('options', []):
+                role = interaction.guild.get_role(int(opt.get('role')))
+                if not role:
+                    continue
+                if opt.get('role') in selected_roles:
+                    # Should have this role
+                    if method == 'grant':
+                        if role not in interaction.user.roles:
+                            await interaction.user.add_roles(role)
+                            messages.append(opt.get('grant_message', f"Role {role.mention} granted!"))
+                    elif method == 'remove':
+                        if role in interaction.user.roles:
+                            await interaction.user.remove_roles(role)
+                            messages.append(opt.get('remove_message', f"Role {role.mention} removed!"))
+                    elif method == 'grant_remove':
+                        if role not in interaction.user.roles:
+                            await interaction.user.add_roles(role)
+                            messages.append(opt.get('grant_message', f"Role {role.mention} granted!"))
+                else:
+                    # Should NOT have this role
+                    if method in ('grant_remove', 'remove'):
+                        if role in interaction.user.roles:
+                            await interaction.user.remove_roles(role)
+                            messages.append(opt.get('remove_message', f"Role {role.mention} removed!"))
+
+            # --- Always send a non-empty message ---
+            if messages:
+                await interaction.response.send_message("\n".join(messages), ephemeral=True)
+            else:
+                await interaction.response.send_message("No changes made.", ephemeral=True)
+            return
+
+        # Reaction Role Button
+        if custom_id.startswith('reactionrole_'):
+            try:
+                _, menu_id, emoji = custom_id.split('_', 2)
+            except ValueError:
+                await interaction.response.send_message("Invalid button ID.", ephemeral=True)
+                return
+            menu = db.execute_query('SELECT * FROM role_menus WHERE id = ?', (menu_id,), fetch='one')
+            if not menu:
+                await interaction.response.send_message("Menu not found.", ephemeral=True)
+                return
+            config = json.loads(menu['config'])
+            for opt in config.get('options', []):
+                if opt.get('emoji') == emoji:
+                    role = interaction.guild.get_role(int(opt.get('role')))
+                    if role:
+                        await interaction.user.add_roles(role)
+                        await interaction.response.send_message(f"Role {role.mention} granted!", ephemeral=True)
+                    else:
+                        await interaction.response.send_message("Role not found.", ephemeral=True)
+                    return
+            await interaction.response.send_message("Option not found.", ephemeral=True)
+            return
+
+        # Button Role Menu
+        if custom_id.startswith('button_'):
+            try:
+                _, menu_id, idx = custom_id.split('_', 2)
+                idx = int(idx)
+            except ValueError:
+                await interaction.response.send_message("Invalid button ID.", ephemeral=True)
+                return
+            menu = db.execute_query('SELECT * FROM role_menus WHERE id = ?', (menu_id,), fetch='one')
+            if not menu:
+                await interaction.response.send_message("Menu not found.", ephemeral=True)
+                return
+            config = json.loads(menu['config'])
+            try:
+                opt = config.get('options', [])[idx]
+            except (IndexError, ValueError):
+                await interaction.response.send_message("Option not found.", ephemeral=True)
+                return
+            role = interaction.guild.get_role(int(opt.get('role')))
+            if role in interaction.user.roles:
+                await interaction.user.remove_roles(role)
+                msg = opt.get('remove_message', f"Role {role.mention} removed.")
+            else:
+                await interaction.user.add_roles(role)
+                msg = opt.get('grant_message', f"Role {role.mention} granted.")
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
+
+    # Handle application commands
+    if interaction.type == discord.InteractionType.application_command:
+        cmd_data = None
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        if guild_id and hasattr(bot_instance, '_command_registry'):
+            cmd_data = bot_instance._command_registry.get(f"{guild_id}_{interaction.command.name}")
+        if cmd_data:
+            await bot_instance.custom_command_handler(interaction, cmd_data)
+            return
+
+@bot_instance.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id == bot_instance.user.id:
+        return
+    menu = db.execute_query(
+        'SELECT * FROM role_menus WHERE message_id = ? AND type = "reactionrole"',
+        (str(payload.message_id),),
+        fetch='one'
+    )
+    if not menu:
+        return
+    config = json.loads(menu['config'])
+    for opt in config.get('options', []):
+        if str(opt.get('emoji')) == str(payload.emoji):
+            guild = bot_instance.get_guild(payload.guild_id)
+            member = guild.get_member(payload.user_id)
+            role = guild.get_role(int(opt.get('role')))
+            if role and member and role not in member.roles:
+                await member.add_roles(role, reason="Reaction role given")
+            break
+
+@bot_instance.event
+async def on_raw_reaction_remove(payload):
+    menu = db.execute_query(
+        'SELECT * FROM role_menus WHERE message_id = ? AND type = "reactionrole"',
+        (str(payload.message_id),),
+        fetch='one'
+    )
+    if not menu:
+        return
+    config = json.loads(menu['config'])
+    for opt in config.get('options', []):
+        if str(opt.get('emoji')) == str(payload.emoji):
+            guild = bot_instance.get_guild(payload.guild_id)
+            member = guild.get_member(payload.user_id)
+            role = guild.get_role(int(opt.get('role')))
+            if role and member and role in member.roles:
+                await member.remove_roles(role, reason="Reaction role removed")
+            break
 
 # -------------------- Level System --------------------
 def get_level_data(guild_id, user_id):
@@ -1365,16 +2040,15 @@ def get_level_data(guild_id, user_id):
             # Create new user with default values
             db.conn.execute('''
                 INSERT INTO user_levels 
-                (guild_id, user_id, xp, level, username, last_message, message_count)
-                VALUES (?, ?, 0, 0, ?, 0, 0)
+                (guild_id, user_id, xp, level, username, last_message)
+                VALUES (?, ?, 0, 0, ?, 0)
             ''', (str(guild_id), str(user_id), ""))
             db.conn.commit()
             return {
                 "xp": 0,
                 "level": 0,
                 "username": "",
-                "last_message": 0,
-                "message_count": 0
+                "last_message": 0
             }
         return data
     except Exception as e:
@@ -1511,23 +2185,24 @@ def calculate_xp_with_boost(base_xp, user_roles, xp_boost_roles):
             boost += xp_boost_roles[role_id]
     return base_xp * (1 + boost / 100)
 
-async def handle_level_up(user, guild, channel):
+async def handle_level_up(user, guild, channel, old_level=None, new_level=None):
     try:
-        guild_id = guild.id
-        user_id = user.id
-        
+        guild_id = str(guild.id)
+        user_id = str(user.id)
+
         user_data = get_level_data(guild_id, user_id)
         total_xp = user_data['xp']
-        new_level = calculate_level(total_xp)
-        
-        # Handle multiple level jumps
-        old_level = user_data['level']
+
+        # Use passed levels if provided, otherwise calculate
+        if old_level is None:
+            old_level = user_data['level']
+        if new_level is None:
+            new_level = calculate_level(total_xp)
+
         if new_level > old_level:
-            # Update to new level
             save_level_data(guild_id, user_id, {'level': new_level})
-            
-            # Get rewards for all levels between old and new
-            rewards = db.get_level_rewards(str(guild_id))
+
+            rewards = db.get_level_rewards(guild_id)
             roles_to_add = []
             for level in range(old_level + 1, new_level + 1):
                 role_id = rewards.get(level)
@@ -1535,7 +2210,7 @@ async def handle_level_up(user, guild, channel):
                     role = guild.get_role(int(role_id))
                     if role:
                         roles_to_add.append(role)
-            
+
             if roles_to_add:
                 try:
                     await user.add_roles(*roles_to_add, reason=f"Level {new_level} rewards")
@@ -1543,32 +2218,62 @@ async def handle_level_up(user, guild, channel):
                     print(f"Missing permissions to assign roles in {guild.name}")
                 except Exception as e:
                     print(f"Error assigning roles: {str(e)}")
-            
-            # Send notifications for each level up if configured
+
             config = get_level_config(guild_id)
-            if config['announce_level_up']:
+            announce_level_up = bool(config.get('announce_level_up', True))
+            if announce_level_up:
                 await send_level_up_notification(user, guild, channel, new_level, config)
-    
+
     except Exception as e:
         print(f"Error handling level up: {str(e)}")
         traceback.print_exc()
 
 async def send_level_up_notification(user, guild, channel, new_level, config):
     try:
-        target_channel = guild.get_channel(int(config['level_channel'])) if config['level_channel'] else channel
-        if target_channel:
-            embed = discord.Embed(
-                title=config['embed_title'],
-                description=config['embed_description'].format(
-                    user=user.mention, 
-                    level=new_level
-                ),
-                color=config['embed_color']
-            )
+        # Use the configured channel if set, otherwise fallback to the current channel
+        target_channel = None
+        level_channel_id = config.get('level_channel')
+        if level_channel_id:
+            try:
+                target_channel = guild.get_channel(int(level_channel_id))
+            except Exception as ex:
+                print(f"Error: Failed to resolve level_channel {level_channel_id}: {ex}")
+                target_channel = None
+        if not target_channel:
+            target_channel = channel
+
+        # Parse embed color safely
+        embed_color = config.get('embed_color', 0xffd700)
+        if isinstance(embed_color, str):
+            try:
+                if embed_color.startswith('#'):
+                    embed_color = int(embed_color[1:], 16)
+                else:
+                    embed_color = int(embed_color)
+            except Exception as ex:
+                print(f"Error: Failed to parse embed_color '{embed_color}': {ex}")
+                embed_color = 0xffd700
+
+        # Create the embed
+        embed_title = config.get('embed_title', '🎉 Level Up!')
+        embed_description = config.get('embed_description', '{user} has reached level **{level}**!')
+        embed_description = embed_description.format(user=user.mention, level=new_level)
+        embed = discord.Embed(
+            title=embed_title,
+            description=embed_description,
+            color=embed_color
+        )
+        try:
             embed.set_thumbnail(url=user.display_avatar.url)
-            await target_channel.send(embed=embed)
+        except Exception as ex:
+            print(f"Failed to set embed thumbnail: {ex}")
+
+        # Send the embed
+        await target_channel.send(embed=embed)
+
     except Exception as e:
         print(f"Error sending level up notification: {str(e)}")
+        traceback.print_exc()
             
 # -------------------- Message Processing --------------------
 @bot_instance.event
@@ -1593,13 +2298,11 @@ async def on_message(message):
             last_cooldown_time = user_data.get('last_message', 0)
 
             if (current_time - last_cooldown_time) >= cooldown_seconds:
-                # Update message count and last message time
                 db.conn.execute('''
-                    INSERT INTO user_levels (guild_id, user_id, username, message_count, last_message, xp)
-                    VALUES (?, ?, ?, 1, ?, 0)
+                    INSERT INTO user_levels (guild_id, user_id, username, last_message, xp)
+                    VALUES (?, ?, ?, ?, 0)
                     ON CONFLICT(guild_id, user_id) 
-                    DO UPDATE SET 
-                        message_count = message_count + 1,
+                    DO UPDATE SET
                         username = excluded.username,
                         last_message = excluded.last_message
                 ''', (guild_id, user_id, message.author.name, current_time))
@@ -1632,7 +2335,7 @@ async def on_message(message):
                         WHERE guild_id = ? AND user_id = ?
                     ''', (new_level, guild_id, user_id))
                     db.conn.commit()
-                    await handle_level_up(message.author, message.guild, message.channel)
+                    await handle_level_up(message.author, message.guild, message.channel, old_level=user_data.get('level', 0), new_level=new_level)
 
         # ===== BLOCKED WORDS CHECK =====
         content_lower = message.content.lower()
@@ -1681,21 +2384,21 @@ async def on_message(message):
         if not is_excluded:
             # Spam detection
             spam_key = f"{guild_id}:{user_id}"
-            
+
             # Initialize timestamp list if needed
             if spam_key not in message_timestamps:
                 message_timestamps[spam_key] = []
-            
+
             # Add current message timestamp
             message_timestamps[spam_key].append(current_time)
-            
+
             # Filter out expired timestamps (older than time window)
             window_start = current_time - spam_config["spam_time_window"]
             message_timestamps[spam_key] = [
-                t for t in message_timestamps[spam_key] 
+                t for t in message_timestamps[spam_key]
                 if t >= window_start
             ]
-            
+
             # Check if current count exceeds threshold
             if len(message_timestamps[spam_key]) >= spam_config["spam_threshold"]:
                 try:
@@ -1704,8 +2407,7 @@ async def on_message(message):
                             title="Spam Detected",
                             description=f"{message.author.mention} Please stop spamming!",
                             color=discord.Color.red()
-                        ),
-                        delete_after=10
+                        )
                     )
                     await message.delete()
                     await log_event(
@@ -1718,48 +2420,48 @@ async def on_message(message):
                     # Reset after handling spam
                     message_timestamps[spam_key] = []
                 except Exception as e:
-                    print(f"Spam handling error: {str(e)}")
-
-            # Mention flood detection
-            mention_count = len(message.mentions)
-            if mention_count > 0:
-                mention_key = f"{guild_id}:{user_id}"
-                user_mentions[mention_key] = user_mentions.get(mention_key, []) + [current_time] * mention_count
-                
-                # Cleanup old mentions
-                window_start = current_time - spam_config["mention_time_window"]
-                user_mentions[mention_key] = [t for t in user_mentions[mention_key] if t >= window_start]
-                
-                if len(user_mentions[mention_key]) > spam_config["mention_threshold"]:
-                    try:
-                        await message.channel.send(
-                            embed=discord.Embed(
-                                title="Mention Flood",
-                                description=f"{message.author.mention} Too many mentions!",
-                                color=discord.Color.orange()
-                            ),
-                            delete_after=10
-                        )
-                        await message.delete()
-                        await log_event(
-                            message.guild,
-                            "message_delete",
-                            "Mention Flood",
-                            f"**User:** {message.author.mention}\n**Count:** {len(user_mentions[mention_key])} mentions\n**Threshold:** {spam_config['mention_threshold']}/{spam_config['mention_time_window']}s",
-                            color=discord.Color.orange()
-                        )
-                        user_mentions[mention_key] = []
-                    except Exception as e:
-                        print(f"Mention flood handling error: {str(e)}")
-
-        # Track processed messages
-        processed_messages[message.id] = True
-        if len(processed_messages) > 1000:
-            processed_messages.clear()
-
+                    print(f"Spam handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
+        user_data = get_level_data(guild_id, user_id)
+        total_xp = user_data['xp']
+        new_level = calculate_level(total_xp)
+        # Handle multiple level jumps
+        old_level = user_data['level']
+        if new_level > old_level:
+            # Update to new level
+            save_level_data(guild_id, user_id, {'level': new_level})
+            # Get rewards for all levels between old and new
+            rewards = db.get_level_rewards(str(guild_id))
+            roles_to_add = []
+            for level in range(old_level + 1, new_level + 1):
+                role_id = rewards.get(level)
+                if role_id:
+                    role = guild.get_role(int(role_id))
+            try:
+                await message.channel.send(
+                    embed=discord.Embed(
+                        title="Mention Flood Detected",
+                        description=f"{message.author.mention} Please stop mass mentioning!",
+                        color=discord.Color.red()
+                    )
+                )
+                await message.delete()
+                await log_event(
+                    message.guild,
+                    "message_delete",
+                    "Mention Flood Detected",
+                    f"**User:** {message.author.mention}\n**Count:** {len(user_mentions[mention_key])} mentions\n**Threshold:** {spam_config['mention_threshold']}/{spam_config['mention_time_window']}s",
+                    color=discord.Color.orange()
+                )
+                user_mentions[mention_key] = []
+            except Exception as e:
+                print(f"Mention flood handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
     except Exception as e:
-        print(f"Error in on_message handler: {str(e)}")
-        traceback.print_exc()
+        print(f"Error: {str(e)}")
+
+    # Track processed messages
+    processed_messages[message.id] = True
+    if len(processed_messages) > 1000:
+        processed_messages.clear()
 
     await bot_instance.process_commands(message)
 
@@ -1969,24 +2671,43 @@ async def on_guild_remove(guild):
     """Handle when the bot is removed from a guild"""
     try:
         print(f"🚪 Left guild: {guild.name} ({guild.id})")
-        
-        # Convert to string for database compatibility
         guild_id = str(guild.id)
-        
-        # Remove from database
-        db.remove_guild(guild_id)
-        
-        # Clean up related data
-        db.conn.execute('DELETE FROM log_config WHERE guild_id = ?', (guild_id,))
-        db.conn.execute('DELETE FROM level_config WHERE guild_id = ?', (guild_id,))
-        db.conn.execute('DELETE FROM blocked_words WHERE guild_id = ?', (guild_id,))
-        db.conn.execute('DELETE FROM commands WHERE guild_id = ?', (guild_id,))
+
+        # List of all tables with guild_id
+        tables = [
+            'guilds',
+            'log_config',
+            'blocked_words',
+            'blocked_word_embeds',
+            'commands',
+            'level_config',
+            'level_rewards',
+            'user_levels',
+            'warnings',
+            'appeal_forms',
+            'appeals',
+            'welcome_config',
+            'goodbye_config',
+            'spam_detection_config',
+            'autoroles',
+            'game_roles',
+            'user_game_time',
+            'stream_announcements',
+            'video_announcements',
+            'role_menus',
+            'pending_role_changes'
+        ]
+
+        # Delete from all tables
+        for table in tables:
+            db.conn.execute(f'DELETE FROM {table} WHERE guild_id = ?', (guild_id,))
         db.conn.commit()
-        
-        print(f"🧹 Cleaned up data for guild {guild_id}")
-        
+
+        print(f"🧹 Cleaned up all data for guild {guild_id}")
+
     except Exception as e:
         print(f"❌ Error handling guild removal: {str(e)}")
+        import traceback
         traceback.print_exc()
 
 @bot_instance.event

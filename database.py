@@ -113,7 +113,8 @@ class Database:
                     name TEXT NOT NULL,
                     owner_id TEXT NOT NULL,
                     icon TEXT,
-                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_synced REAL DEFAULT 0
                 )''')
             
             cursor.execute('''
@@ -214,7 +215,6 @@ class Database:
                     level INTEGER DEFAULT 0,
                     username TEXT,
                     last_message TIMESTAMP DEFAULT 0,
-                    message_count INTEGER DEFAULT 0,
                     PRIMARY KEY(guild_id, user_id),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 )''')
@@ -380,6 +380,18 @@ class Database:
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS role_menus (
+                    id TEXT PRIMARY KEY,
+                    guild_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    message_id TEXT,
+                    config TEXT NOT NULL,
+                    created_by TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS pending_role_changes (
@@ -404,17 +416,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_appeals_status 
                 ON appeals(status, expires_at)
             ''')
-                
-            # Add message_count column if missing
-            cursor.execute('''
-                PRAGMA table_info(user_levels)
-            ''')
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'message_count' not in columns:
-                cursor.execute('''
-                    ALTER TABLE user_levels 
-                    ADD COLUMN message_count INTEGER DEFAULT 0
-                ''')
                 
             self.conn.commit()
             logger.info("Database initialized successfully")
