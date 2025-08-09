@@ -84,7 +84,7 @@ jobs:
           sudo apt-get install -y ruby ruby-dev build-essential libffi-dev wget squashfs-tools desktop-file-utils imagemagick
           sudo gem install --no-document fpm
 
-          wget https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage
+          wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
           ./appimagetool-x86_64.AppImage --appimage-extract
           sudo mv squashfs-root/usr/bin/appimagetool /usr/local/bin/appimagetool
