@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Blocked Words Management</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+	<link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <style>
+        .embed-preview { border-left: 4px solid #5865F2; }
+        .color-preview { width: 30px; height: 30px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between mb-4">
+            <h2>Blocked Words Management</h2>
+            <div>
+                <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
+            </div>
+        </div>
+
+        <!-- Blocked Words Form -->
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0">Blocked Words List</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="/dashboard/{{ guild_id }}/blocked-words" id="blockedWordsForm">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div id="wordsContainer">
+                        {% for word in words %}
+                        <div class="input-group mb-2">
+                            <input type="text" class="form-control" name="words" value="{{ word }}">
+                            <button type="button" class="btn btn-danger remove-word">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <button type="button" id="addWord" class="btn btn-success mt-2">
+                        <i class="bi bi-plus-lg"></i> Add Word
+                    </button>
+                </div>
+            </div>
+
+            <!-- Embed Configuration -->
+            <div class="card mb-4">
+                <div class="card-header bg-info text-white">
+                    <h4 class="mb-0">Blocked Word Embed Settings</h4>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Embed Title</label>
+                            <input type="text" class="form-control" name="title" 
+                                   value="{{ embed.title if embed else 'Blocked Word Detected!' }}" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Embed Color</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" name="color" 
+                                       value="#{% if embed %}{{ '%06x' % embed.color }}{% else %}ff0000{% endif %}" 
+                                       pattern="#[0-9a-fA-F]{6}">
+                                <span class="input-group-text color-preview" 
+                                      style="background-color: #{% if embed %}{{ '%06x' % embed.color }}{% else %}ff0000{% endif %}"></span>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Embed Description</label>
+                            <textarea class="form-control" name="description" 
+                                      rows="3" required>{% if embed %}{{ embed.description }}{% else %}You have used a word that is not allowed.{% endif %}</textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-grid gap-2">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-save"></i> Save All Changes
+                </button>
+            </div>
+        </form>
+
+        <!-- Embed Preview -->
+        <div class="card mt-4">
+            <div class="card-header">Embed Preview</div>
+            <div class="card-body embed-preview">
+                <h4 class="card-title" id="previewTitle">{{ embed.title if embed else 'Blocked Word Detected!' }}</h4>
+                <p class="card-text" id="previewDescription">{{ embed.description if embed else 'You have used a word that is not allowed.' }}</p>
+                <small class="text-muted" id="previewColor">
+                    Color: #{% if embed %}{{ '%06x' % embed.color }}{% else %}ff0000{% endif %}
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Dynamic Word Management
+        document.getElementById('addWord').addEventListener('click', () => {
+            const newInput = document.createElement('div');
+            newInput.className = 'input-group mb-2';
+            newInput.innerHTML = `
+                <input type="text" class="form-control" name="words" required>
+                <button type="button" class="btn btn-danger remove-word">
+                    <i class="bi bi-trash"></i>
+                </button>
+            `;
+            document.getElementById('wordsContainer').appendChild(newInput);
+        });
+
+        document.addEventListener('click', (e) => {
+            if(e.target.closest('.remove-word')) {
+                e.target.closest('.input-group').remove();
+            }
+        });
+
+        // Color Picker Interactions
+        document.querySelector('input[name="color"]').addEventListener('input', (e) => {
+            const color = e.target.value.replace('#', '');
+            if(/^[0-9a-f]{6}$/i.test(color)) {
+                document.querySelector('.color-preview').style.backgroundColor = `#${color}`;
+                document.getElementById('previewColor').textContent = `Color: #${color}`;
+            }
+        });
+
+        // Live Preview Updates
+        document.querySelectorAll('input[name="title"], textarea[name="description"]').forEach(el => {
+            el.addEventListener('input', (e) => {
+                const targetId = e.target.name.charAt(0).toUpperCase() + e.target.name.slice(1);
+                document.getElementById(`preview${targetId}`).textContent = e.target.value;
+            });
+        });
+
+        // Form Submission
+        document.getElementById('blockedWordsForm').addEventListener('submit', (e) => {
+            const emptyWords = [...document.querySelectorAll('input[name="words"]')]
+                .some(input => input.value.trim() === '');
+            
+            if(emptyWords) {
+                e.preventDefault();
+                alert('Please fill in all blocked word fields or remove empty ones!');
+            }
+        });
+    </script>
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+		<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+	  </p>
+	</footer>
+</body>
+</html>

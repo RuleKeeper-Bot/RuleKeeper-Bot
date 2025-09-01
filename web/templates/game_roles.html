@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Role Configuration</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+	<link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .card {
+            border: none;
+            border-radius: 8px;
+            transition: transform 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+        }
+        .dropdown-menu {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .table-hover tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        .form-control:focus {
+            box-shadow: none;
+            border-color: #86b7fe;
+        }
+        .input-group-text {
+            background-color: #e9ecef;
+            border: none;
+        }
+		.game-dropdown-container {
+			position: relative;
+			z-index: 1001;
+		}
+		#gameDropdown {
+			width: 100%;
+			left: 0 !important;
+			right: 0 !important;
+			transform: none !important;
+			top: 100% !important;
+			margin-top: 0.25rem;
+			z-index: 1000;
+		}
+		#gameRoleForm button[type="submit"] {
+			margin-top: 1.5rem;
+		}
+		.search-container {
+			position: relative;
+		}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="mb-4"><i class="bi bi-controller me-2"></i>Game Role Configuration</h2>
+		
+		<div>
+            <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+        
+        <!-- Configuration Form -->
+        <div class="card mb-5 border-primary">
+			<div class="card-body">
+				<form method="POST" id="gameRoleForm">
+					<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+					<div class="row g-3 align-items-end">
+						<!-- Game Search and Dropdown -->
+						<div class="col-md-5">
+							<label class="form-label fw-bold">Select Game</label>
+							<div class="search-container">
+								<div class="input-group">
+									<input type="text" id="gameSearch" class="form-control" 
+										   placeholder="Search games..." autocomplete="off"
+										   data-bs-toggle="dropdown" aria-expanded="false">
+									<button class="btn btn-outline-primary" type="button">
+										<i class="bi bi-chevron-down"></i>
+									</button>
+									<ul class="dropdown-menu game-dropdown-container" id="gameDropdown">
+										{% for game in top_games %}
+										<li>
+											<a class="dropdown-item game-option" href="#" 
+											   data-game="{{ game.name }}">{{ game.name }}</a>
+										</li>
+										{% endfor %}
+									</ul>
+								</div>
+								<input type="hidden" name="game_name" id="selectedGame" required>
+							</div>
+						</div>
+
+						<!-- Role Selection -->
+						<div class="col-md-4">
+							<label class="form-label fw-bold">Assign Role</label>
+							<select name="role_id" class="form-select" required>
+								<option value="">Choose a role...</option>
+								{% for role in roles %}
+								<option value="{{ role.id }}">{{ role.name }}</option>
+								{% endfor %}
+							</select>
+						</div>
+
+						<!-- Playtime Requirement -->
+						<div class="col-md-3">
+							<label class="form-label fw-bold">Required Playtime</label>
+							<div class="input-group">
+								<input type="number" name="required_minutes" 
+									   class="form-control" min="1" required 
+									   placeholder="e.g., 60">
+								<span class="input-group-text">minutes</span>
+							</div>
+						</div>
+					</div>
+					
+					<!-- Submit Button -->
+					<div class="mt-4 text-center">
+						<button type="submit" class="btn btn-primary btn-lg">
+							<i class="bi bi-save me-2"></i>Save Configuration
+						</button>
+					</div>
+				</form>
+			</div>
+		</div>
+
+        <!-- Current Configurations Table -->
+        <h4 class="mb-3"><i class="bi bi-list-check me-2"></i>Active Configurations</h4>
+        {% if current_config %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Game Name</th>
+                        <th>Assigned Role</th>
+                        <th>Required Playtime</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for config in current_config %}
+                    <tr>
+                        <td class="fw-bold">{{ config.game_name }}</td>
+                        <td>
+                            <span class="badge bg-primary rounded-pill">
+                                {{ get_role_name(config.role_id) }}
+                            </span>
+                        </td>
+                        <td>{{ config.required_minutes }} minutes</td>
+                        <td>
+                            <form method="POST" class="d-inline">
+								<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="hidden" name="game_name" value="{{ config.game_name }}">
+                                <button type="submit" name="delete" 
+                                        class="btn btn-danger btn-sm"
+                                        onclick="return confirm('Are you sure?')">
+                                    <i class="bi bi-trash"></i> Remove
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            No game role configurations found. Add one using the form above.
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+	document.addEventListener('DOMContentLoaded', function() {
+		const searchInput = document.getElementById('gameSearch');
+		const gameDropdown = document.getElementById('gameDropdown');
+		const selectedGame = document.getElementById('selectedGame');
+		let bsDropdown = new bootstrap.Dropdown(searchInput);
+		
+		// Prevent form submission if required fields are empty
+		document.getElementById('gameRoleForm').addEventListener('submit', function(e) {
+			if (!document.getElementById('selectedGame').value || 
+				!document.querySelector('[name="role_id"]').value ||
+				!document.querySelector('[name="required_minutes"]').value) {
+				e.preventDefault();
+				alert('Please fill all required fields');
+			}
+		});
+
+		// Search functionality
+		searchInput.addEventListener('input', function() {
+			const searchTerm = this.value.toLowerCase();
+			Array.from(gameDropdown.getElementsByTagName('li')).forEach(item => {
+				const text = item.textContent.toLowerCase();
+				item.style.display = text.includes(searchTerm) ? 'block' : 'none';
+			});
+			
+			// Keep dropdown open during search
+			if (!gameDropdown.classList.contains('show')) {
+				bsDropdown.show();
+			}
+		});
+
+		// Game selection
+		gameDropdown.querySelectorAll('.game-option').forEach(item => {
+			item.addEventListener('click', function(e) {
+				e.preventDefault();
+				selectedGame.value = this.dataset.game;
+				searchInput.value = this.textContent;
+				bsDropdown.hide();
+			});
+		});
+
+		// Close dropdown when clicking outside
+		document.addEventListener('click', function(e) {
+			if (!e.target.closest('.search-container')) {
+				bsDropdown.hide();
+			}
+		});
+
+		// Keyboard navigation
+		searchInput.addEventListener('keydown', function(e) {
+			if (e.key === 'Escape') {
+				bsDropdown.hide();
+			}
+		});
+
+		// Reset scroll position when dropdown opens
+		searchInput.addEventListener('show.bs.dropdown', function() {
+			gameDropdown.scrollTop = 0;
+		});
+	});
+	</script>
+
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+		<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+	  </p>
+	</footer>
+</body>
+</html>

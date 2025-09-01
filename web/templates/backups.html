@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Server Backups</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <style>
+        body {
+            background: #f7f9fb;
+        }
+        .backup-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 1.5rem;
+        }
+        .backup-header i {
+            font-size: 2rem;
+            color: #0d6efd;
+        }
+        .table thead th {
+            background-color: #e9ecef;
+        }
+        .btn-warning {
+            color: #fff;
+        }
+        .no-backups {
+            text-align: center;
+            color: #888;
+            font-style: italic;
+        }
+        .backup-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .backup-card {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            padding: 2rem 2.5rem;
+            margin-top: 2rem;
+        }
+        #backup-error {
+            display: none;
+        }
+        #backup-step-text {
+            text-align: center;
+            margin-top: 0.5rem;
+            font-size: 1.1rem;
+            color: #0d6efd;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="backup-card">
+        <div class="backup-header">
+            <i class="bi bi-hdd-stack"></i>
+            <h2 class="mb-0">Server Backups</h2>
+        </div>
+        <div class="d-flex gap-2 align-items-center mb-4">
+            <form method="POST" class="d-flex gap-2 align-items-center" id="backup-form">
+                <a href="/dashboard/{{ guild_id }}" class="btn btn-outline-secondary align-self-start">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-primary" type="submit" id="backup-btn">
+                    <i class="bi bi-plus-circle me-1"></i> Create Backup Now
+                </button>
+            </form>
+            <form method="POST" action="{{ url_for('import_backup', guild_id=guild_id) }}" enctype="multipart/form-data" class="d-flex gap-2 align-items-center" id="import-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="file" name="backup_file" accept=".json" required class="form-control form-control-sm" style="max-width: 220px;">
+                <button class="btn btn-outline-primary btn-sm" type="submit">
+                    <i class="bi bi-upload"></i> Import Backup
+                </button>
+            </form>
+            <form method="POST" action="{{ url_for('import_backup_url', guild_id=guild_id) }}" class="d-flex gap-2 align-items-center" id="import-url-form" style="margin-left: 1rem;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="url" name="backup_url" placeholder="Paste share URL here" required class="form-control form-control-sm" style="max-width: 320px;">
+                <button class="btn btn-outline-primary btn-sm" type="submit">
+                    <i class="bi bi-link-45deg"></i> Import from URL
+                </button>
+            </form>
+        </div>
+        <div class="progress mb-2" style="height: 24px; display: none;" id="backup-progress-container">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" id="backup-progress-bar"
+                 role="progressbar" style="width: 0%">0%</div>
+        </div>
+        <div id="backup-step-text" style="display:none;">Preparing backup...</div>
+        <div class="alert alert-danger" id="backup-error"></div>
+        <div class="table-responsive">
+            <table class="table align-middle table-striped">
+                <thead>
+                    <tr>
+                        <th scope="col">Backup ID</th>
+                        <th scope="col">Date</th>
+                        <th scope="col">Download</th>
+                        <th scope="col">Restore</th>
+                        <th scope="col">Remove</th>
+                        <th scope="col">Share</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for backup in backups %}
+                    <tr>
+                        <td>{{ backup.id }}</td>
+                        <td>{{ backup.created_at | datetimeformat }}</td>
+                        <td>
+                            <a href="{{ url_for('download_backup', guild_id=guild_id, backup_id=backup.id) }}" class="btn btn-outline-secondary btn-sm">
+                                <i class="bi bi-download"></i> Download
+                            </a>
+                        </td>
+                        <td>
+                            <form method="POST" action="{{ url_for('restore_backup', guild_id=guild_id, backup_id=backup.id) }}" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button class="btn btn-warning btn-sm" type="submit" onclick="return confirm('Restore this backup? This will overwrite current server settings!')">
+                                    <i class="bi bi-arrow-clockwise"></i> Restore
+                                </button>
+                            </form>
+                        </td>
+                        <td>
+                            <form method="POST" action="{{ url_for('delete_backup', guild_id=guild_id, backup_id=backup.id) }}" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button class="btn btn-danger btn-sm" type="submit" onclick="return confirm('Delete this backup? This cannot be undone!')">
+                                    <i class="bi bi-trash"></i> Remove
+                                </button>
+                            </form>
+                        </td>
+                        <td>
+                            {% if backup.share_id %}
+                                <button type="button"
+                                        class="btn btn-success btn-sm"
+                                        onclick="copyShareLink('{{ FRONTEND_URL }}/share/backup/{{ backup.share_id }}', this)">
+                                    <i class="bi bi-link-45deg"></i> Shared
+                                </button>
+                            {% else %}
+                                <form method="POST" action="{{ url_for('share_backup', guild_id=guild_id, backup_id=backup.id) }}" style="display:inline;">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button class="btn btn-outline-success btn-sm" type="submit">
+                                        <i class="bi bi-share"></i> Share
+                                    </button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="no-backups">No backups found.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+    <p>
+        &copy; 2025 RuleKeeper. All rights reserved. |
+        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+    </p>
+</footer>
+<script>
+const backupSteps = [
+    { min: 0, max: 14, text: "Backing up roles..." },
+    { min: 15, max: 28, text: "Backing up channels..." },
+    { min: 29, max: 42, text: "Backing up bans..." },
+    { min: 43, max: 57, text: "Backing up timed out users..." },
+    { min: 58, max: 71, text: "Backing up emojis..." },
+    { min: 72, max: 85, text: "Backing up stickers..." },
+    { min: 86, max: 99, text: "Backing up server settings..." },
+    { min: 100, max: 100, text: "Backup complete!" }
+];
+
+function getStepText(progress) {
+    for (let step of backupSteps) {
+        if (progress >= step.min && progress <= step.max) {
+            return step.text;
+        }
+    }
+    return "Preparing backup...";
+}
+
+function showProgressBar() {
+    document.getElementById('backup-progress-container').style.display = 'block';
+    document.getElementById('backup-btn').disabled = true;
+}
+
+function hideProgressBar() {
+    document.getElementById('backup-progress-container').style.display = 'none';
+    document.getElementById('backup-btn').disabled = false;
+    let bar = document.getElementById('backup-progress-bar');
+    bar.style.width = '0%';
+    bar.innerText = '0%';
+}
+
+function pollProgress() {
+    fetch(`/api/{{ guild_id }}/backups/progress`)
+        .then(response => response.json())
+        .then(data => {
+            let bar = document.getElementById('backup-progress-bar');
+            let errorDiv = document.getElementById('backup-error');
+            let stepText = document.getElementById('backup-step-text');
+            if (data.error) {
+                errorDiv.innerText = "An error occurred while backing up: " + data.error;
+                errorDiv.style.display = 'block';
+                hideProgressBar();
+                document.getElementById('backup-btn').innerHTML = '<i class="bi bi-plus-circle me-1"></i> Create Backup Now';
+                return;
+            }
+            let progress = data.progress || 0;
+            bar.style.width = progress + '%';
+            bar.innerText = progress + '%';
+            // Only use fallback if step_text is truly empty
+            stepText.innerText = (typeof data.step_text === "string" && data.step_text.length > 0)
+                ? data.step_text
+                : getStepText(progress);
+            if (progress < 100) {
+                showProgressBar();
+                setTimeout(pollProgress, 1000); // 1 second
+            } else {
+                setTimeout(() => {
+                    hideProgressBar();
+                    document.getElementById('backup-btn').innerHTML = '<i class="bi bi-plus-circle me-1"></i> Create Backup Now';
+                    location.reload(); // Refresh the page after backup completes
+                }, 1200);
+            }
+        })
+        .catch(err => {
+            let errorDiv = document.getElementById('backup-error');
+            errorDiv.innerText = "An error occurred while backing up: " + err.message;
+            errorDiv.style.display = 'block';
+            hideProgressBar();
+            document.getElementById('backup-btn').innerHTML = '<i class="bi bi-plus-circle me-1"></i> Create Backup Now';
+        });
+}
+
+// On page load, check if a backup is in progress and show the progress bar if so
+window.addEventListener('DOMContentLoaded', function() {
+    fetch(`/api/{{ guild_id }}/backups/progress`)
+        .then(response => response.json())
+        .then(data => {
+            let progress = data.progress || 0;
+            if (progress > 0 && progress < 100) {
+                showProgressBar();
+                document.getElementById('backup-progress-bar').style.width = progress + '%';
+                document.getElementById('backup-progress-bar').innerText = progress + '%';
+                pollProgress();
+            }
+        });
+});
+
+document.getElementById('backup-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    document.getElementById('backup-btn').disabled = true;
+    document.getElementById('backup-btn').innerText = "Backing up server...";
+    document.getElementById('backup-progress-container').style.display = 'block';
+    document.getElementById('backup-progress-bar').style.width = '0%';
+    document.getElementById('backup-progress-bar').innerText = '0%';
+    document.getElementById('backup-error').style.display = 'none';
+
+    fetch(window.location.pathname, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams(new FormData(this))
+    }).then(() => {
+        pollProgress();
+    }).catch(err => {
+        let errorDiv = document.getElementById('backup-error');
+        errorDiv.innerText = "An error occurred while starting the backup: " + err.message;
+        errorDiv.style.display = 'block';
+        hideProgressBar();
+        // Restore button text immediately on error
+        document.getElementById('backup-btn').innerHTML = '<i class="bi bi-plus-circle me-1"></i> Create Backup Now';
+    });
+});
+
+function copyShareLink(link, btn) {
+    navigator.clipboard.writeText(link).then(function() {
+        let old = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-clipboard-check"></i> Copied!';
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-primary');
+        setTimeout(function() {
+            btn.innerHTML = old;
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+        }, 1500);
+    },
+    function(err) {
+        console.error('Could not copy text: ', err);
+    });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ form.name }} - Fill Out Form</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="icon" type="image/x-icon" href="../../../static/images/favicon.ico">
+    <style>
+        .required-badge { color: #e74c3c; margin-left: 2px; }
+        .form-section { margin-bottom: 2rem; }
+        .fixed-alert {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            z-index: 1050;
+            border-radius: 0;
+            margin-bottom: 0;
+        }
+        body { padding-top: 70px; }
+    </style>
+</head>
+<body>
+<div id="formSuccess" class="alert alert-success d-none fixed-alert text-center"></div>
+<div id="formError" class="alert alert-danger d-none fixed-alert text-center"></div>
+<div class="container py-4">
+    <div class="row justify-content-center">
+        <div class="col-lg-8 col-md-10">
+            <div class="card shadow">
+                <div class="card-body">
+                    <h2 class="mb-2">{{ form.name }}</h2>
+                    {% if form.description %}
+                        <div class="mb-3 text-muted">{{ form.description }}</div>
+                    {% endif %}
+                    <form id="customForm" autocomplete="off">
+                        {% for field in config.fields %}
+                            {% set required = 'required' if field.required else '' %}
+                            {% set req_badge = '<span class="required-badge">*</span>' if field.required else '' %}
+                            {% set label = field.label %}
+                            {% if field.type == 'text' %}
+                                <div class="mb-3">
+                                    <label class="form-label">{{ label|e }}{{ req_badge|safe }}</label>
+                                    <input type="text" class="form-control" name="{{ field.id }}" placeholder="{{ field.placeholder or '' }}" {{ required }} maxlength="2000">
+                                </div>
+                            {% elif field.type == 'textarea' %}
+                                <div class="mb-3">
+                                    <label class="form-label">{{ label|e }}{{ req_badge|safe }}</label>
+                                    <textarea class="form-control" name="{{ field.id }}" rows="{{ field.height or 3 }}" placeholder="{{ field.placeholder or '' }}" {{ required }} maxlength="2000"></textarea>
+                                </div>
+                            {% elif field.type == 'dropdown' %}
+                                <div class="mb-3">
+                                    <label class="form-label">{{ label|e }}{{ req_badge|safe }}</label>
+                                    <select class="form-select" name="{{ field.id }}"
+                                        {% if field.maxSelections and field.maxSelections > 1 %}multiple{% endif %} {{ required }}>
+                                        {% for opt in field.options or [] %}
+                                            <option value="{{ opt }}">{{ opt }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            {% elif field.type == 'checkbox' %}
+                                <div class="mb-3">
+                                    {% if field.checkboxLabelAbove %}
+                                        <div class="mb-1">{{ field.checkboxLabelAbove }}</div>
+                                    {% endif %}
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="{{ field.id }}" id="chk_{{ loop.index0 }}" {{ required }}>
+                                        <label class="form-check-label" for="chk_{{ loop.index0 }}">{{ field.checkboxLabelRight or label or '' }}</label>
+                                    </div>
+                                </div>
+                            {% elif field.type == 'label' %}
+                                <div class="mb-2" style="font-weight:bold">{{ label }}</div>
+                            {% elif field.type == 'section' %}
+                                <hr>
+                            {% endif %}
+                        {% endfor %}
+                        <button type="submit" class="btn btn-primary mt-3 w-100">Submit</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+    <p>
+        &copy; 2025 RuleKeeper. All rights reserved. |
+        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+    </p>
+</footer>
+<script>
+const formId = "{{ form.id }}";
+const formName = {{ form.name|tojson }};
+const formDescription = {{ form.description|tojson }};
+const GUILD_ID = "{{ form.guild_id }}";
+const USER_ID = "{{ session.get('user', {}).get('id', '') }}";
+const CSRF_TOKEN = "{{ csrf_token() }}";
+
+function showSuccess(msg) {
+    document.getElementById('formSuccess').innerText = msg;
+    document.getElementById('formSuccess').classList.remove('d-none');
+    document.getElementById('formError').classList.add('d-none');
+}
+
+function showError(msg) {
+    document.getElementById('formError').innerText = msg;
+    document.getElementById('formError').classList.remove('d-none');
+    document.getElementById('formSuccess').classList.add('d-none');
+}
+
+document.getElementById('customForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const responses = {};
+    {% for field in config.fields %}
+        {% if field.type == 'checkbox' %}
+            responses["{{ field.id }}"] = formData.get("{{ field.id }}") ? 'Yes' : 'No';
+        {% elif field.type == 'dropdown' and field.maxSelections and field.maxSelections > 1 %}
+            responses["{{ field.id }}"] = formData.getAll("{{ field.id }}");
+        {% else %}
+            responses["{{ field.id }}"] = formData.get("{{ field.id }}") || '';
+        {% endif %}
+    {% endfor %}
+
+    fetch(`/api/forms/${formId}/submit`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': CSRF_TOKEN
+        },
+        body: JSON.stringify({
+            form_id: formId,
+            guild_id: GUILD_ID,
+            user_id: USER_ID,
+            form_name: formName,
+            form_description: formDescription,
+            responses: responses
+        })
+    })
+    .then(async response => {
+        let data;
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+            data = await response.json();
+        } else {
+            data = { success: false, error: await response.text() };
+        }
+        if (response.ok && data.success) {
+            // Refresh the page, then show the success alert
+            localStorage.setItem('formSuccessMsg', 'Form submitted successfully!');
+            window.location.reload();
+        } else {
+            throw new Error(data.error || 'Unknown error');
+        }
+    })
+    .catch(error => {
+        let msg = error.message;
+
+        // Try to extract error code from HTML (e.g., <span class="code-label">Error code 520</span>)
+        const codeMatch = msg.match(/Error code (\d+)/i);
+        if (codeMatch) {
+            if (codeMatch[1] === "520") {
+                msg = "This error code is caused by Cloudflare. It still sent the embed.";
+                localStorage.setItem('formSuccessMsg', 'Form submitted successfully!');
+                window.location.reload();
+                return;
+            } else {
+                msg = `Error code ${codeMatch[1]}`;
+            }
+        } else {
+            // Fallback: try to extract HTTP status code from the start of the message
+            const statusMatch = msg.match(/^(\d{3}):/);
+            if (statusMatch) {
+                msg = `Error code ${statusMatch[1]}`;
+            } else {
+                // If the backend returned a JSON error, show it
+                if (error && error.message && error.message !== 'Unknown error' && error.message !== 'An unknown error occurred.') {
+                    msg = error.message;
+                } else {
+                    msg = 'An unknown error occurred.';
+                }
+            }
+        }
+        showError(msg);
+    });
+});
+
+// On page load, show success alert if set
+document.addEventListener('DOMContentLoaded', function() {
+    const msg = localStorage.getItem('formSuccessMsg');
+    if (msg) {
+        showSuccess(msg);
+        localStorage.removeItem('formSuccessMsg');
+    }
+});
+</script>
+</body>
+</html>

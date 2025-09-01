@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Form Builder</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="icon" type="image/x-icon" href="../../../../static/images/favicon.ico">
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+    <style>
+        body { background: #f6f8fa; }
+        .sidebar {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            padding: 1.5rem 1rem;
+            min-height: 500px;
+        }
+        .sidebar .field-type {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s;
+            font-size: 1.05em;
+        }
+        .sidebar .field-type:hover {
+            background: #f0f4fa;
+        }
+        .field-list {
+            min-height: 300px;
+        }
+        .form-field-card {
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+            padding: 1rem 1.25rem;
+            margin-bottom: 1rem;
+            position: relative;
+            transition: box-shadow 0.15s;
+        }
+        .form-field-card.selected {
+            border: 2px solid #0d6efd;
+            box-shadow: 0 2px 8px rgba(13,110,253,0.07);
+        }
+        .form-field-actions {
+            position: absolute;
+            top: 0.5rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+        }
+        .preview-form {
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+            padding: 1.5rem;
+        }
+        .required-badge {
+            color: #dc3545;
+            font-size: 1.1em;
+            margin-left: 0.25em;
+        }
+        .drag-handle {
+            cursor: grab;
+            color: #adb5bd;
+            margin-right: 0.5em;
+        }
+        @media (max-width: 991.98px) {
+            .sidebar { margin-bottom: 2rem; }
+        }
+    </style>
+</head>
+<body>
+<div id="formBuilderApp" class="container py-4">
+    <div class="row g-4">
+        <!-- Sidebar: Field Types -->
+        <div class="col-lg-3">
+            <div class="mb-3">
+                <label for="submissionChannel" class="form-label">Submission Channel</label>
+                {% raw %}
+                <select id="submissionChannel" class="form-select" v-model="submissionChannelId">
+                    <option value="">(Do not send to Discord)</option>
+                    <option v-for="ch in discordChannels" :value="ch.id">{{ ch.name }}</option>
+                </select>
+                {% endraw %}
+            </div>
+            <div class="mb-3">
+                <label for="embedColor" class="form-label">Embed Color</label>
+                <input type="color" id="embedColor" class="form-control form-control-color" v-model="embedColor" style="width: 60px; padding: 0;">
+            </div>
+            <div class="mb-3">
+                <label for="maxSubmissions" class="form-label">Max Submissions Per User</label>
+                <input type="number" min="1" class="form-control" id="maxSubmissions" v-model.number="maxSubmissions">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Send DM to user when...</label>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="dmOnBan" v-model="dmOnBan">
+                    <label class="form-check-label" for="dmOnBan">User is banned</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="dmOnKick" v-model="dmOnKick">
+                    <label class="form-check-label" for="dmOnKick">User is kicked</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="dmOnTimeout" v-model="dmOnTimeout">
+                    <label class="form-check-label" for="dmOnTimeout">User is timed out</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="dmOnWarn" v-model="dmOnWarn">
+                    <label class="form-check-label" for="dmOnWarn">User is warned</label>
+                </div>
+                <label class="form-label mt-2" for="dmMessage">DM Message (optional)</label>
+                <textarea class="form-control" id="dmMessage" v-model="dmMessage" rows="2" placeholder="Enter a message to go with the form link"></textarea>
+            </div>
+            <div class="sidebar">
+                <h5 class="mb-3">Add Field</h5>
+                {% raw %}
+                <div class="field-type" v-for="type in fieldTypes" :key="type.value" @click="addField(type.value)">
+                    <i :class="type.icon"></i>
+                    <span>{{ type.label }}</span>
+                </div>
+                {% endraw %}
+                <hr>
+                <div>
+                    <button class="btn btn-success w-100 mb-2" @click="saveForm">
+                        <i class="bi bi-save me-1"></i> Save Form
+                    </button>
+                    <a :href="backUrl" class="btn btn-outline-secondary w-100">
+                        <i class="bi bi-arrow-left me-1"></i> Back
+                    </a>
+                </div>
+                <!-- Import/Export JSON -->
+                <div class="mt-3">
+                    <button class="btn btn-outline-primary w-100 mb-2" @click="exportForm">
+                        <i class="bi bi-download me-1"></i> Export to JSON
+                    </button>
+                    <label class="btn btn-outline-secondary w-100 mb-2" style="cursor:pointer;">
+                        <i class="bi bi-upload me-1"></i> Import from JSON
+                        <input type="file" accept=".json" @change="importForm" style="display:none;">
+                    </label>
+                </div>
+                <!-- Prebuilt Templates List -->
+                <div class="mt-4">
+                    <h6 class="mb-2">Prebuilt Templates</h6>
+                    {% raw %}
+                    <ul class="list-group">
+                        <li v-for="tpl in prebuiltTemplates" :key="tpl.name"
+                            class="list-group-item list-group-item-action"
+                            style="cursor:pointer"
+                            @click="applyTemplate(tpl, tpl.name, tpl.description)">
+                            <strong>{{ tpl.name }}</strong>
+                            <div class="small text-muted">{{ tpl.description }}</div>
+                        </li>
+                        <li v-if="!prebuiltTemplates.length" class="list-group-item text-muted">No templates available</li>
+                    </ul>
+                    {% endraw %}
+                </div>
+            </div>
+        </div>
+        <!-- Form Fields and Properties -->
+        <div class="col-lg-5">
+            <div class="mb-4">
+                <h2 class="mb-2">Form Builder</h2>
+                <input class="form-control mb-2" v-model="formName" placeholder="Form Name">
+                <textarea class="form-control" v-model="formDesc" placeholder="Form Description" rows="2"></textarea>
+            </div>
+            <div class="field-list">
+                <div v-if="fields.length === 0" class="text-muted text-center py-5">
+                    <i class="bi bi-ui-checks-grid" style="font-size:2em"></i><br>
+                    Add fields from the left to start building your form.
+                </div>
+                <draggable v-model="fields" handle=".drag-handle" item-key="id">
+                <template #item="{element: field, index: idx}">
+                <div :class="['form-field-card', selectedField === idx ? 'selected' : '']"
+                     @click="selectField(idx)">
+                    <div class="form-field-actions">
+                        <button class="btn btn-sm btn-light" @click.stop="moveField(idx, -1)" :disabled="idx===0" title="Move Up"><i class="bi bi-arrow-up"></i></button>
+                        <button class="btn btn-sm btn-light" @click.stop="moveField(idx, 1)" :disabled="idx===fields.length-1" title="Move Down"><i class="bi bi-arrow-down"></i></button>
+                        <button class="btn btn-sm btn-danger" @click.stop="removeField(idx)" title="Delete"><i class="bi bi-trash"></i></button>
+                    </div>
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="drag-handle me-2" style="cursor:grab;"><i class="bi bi-grip-vertical"></i></span>
+                        <input v-model="field.label" class="form-control form-control-sm me-2" placeholder="Field Label" style="max-width: 220px;" v-if="field.type!=='checkbox'">
+                        <span v-if="field.required && field.type!=='checkbox'" class="required-badge">*</span>
+                        <select v-model="field.type" class="form-select form-select-sm ms-2" style="width: 120px;">
+                            {% raw %}
+                            <option v-for="type in fieldTypes" :value="type.value">{{ type.label }}</option>
+                            {% endraw %}
+                        </select>
+                    </div>
+                    <div v-if="selectedField === idx">
+                        <div v-if="['text','textarea'].includes(field.type)" class="mb-2">
+                            <input v-model="field.placeholder" class="form-control form-control-sm" placeholder="Placeholder">
+                        </div>
+                        <div v-if="field.type==='dropdown'" class="mb-2">
+                            <input v-model="field.optionsString" class="form-control form-control-sm" placeholder="Options (comma separated)" @change="updateDropdownOptions(idx)">
+                            <div class="mt-2">
+                                <label class="form-label form-label-sm">Max Selections</label>
+                                <input v-model.number="field.maxSelections" type="number" min="1" :max="(field.options||[]).length" class="form-control form-control-sm" style="max-width:100px;">
+                                <small class="text-muted">How many options can be selected (1 = single select, >1 = multi-select)</small>
+                            </div>
+                        </div>
+                        <div v-if="['text','textarea'].includes(field.type)" class="mb-2 row">
+                            <div class="col">
+                                <label class="form-label form-label-sm">Width</label>
+                                <input v-model.number="field.width" type="number" min="1" max="12" class="form-control form-control-sm">
+                            </div>
+                            <div class="col">
+                                <label class="form-label form-label-sm">Height</label>
+                                <input v-model.number="field.height" type="number" min="1" max="12" class="form-control form-control-sm">
+                            </div>
+                        </div>
+                        <div class="form-check mb-2" v-if="field.type==='checkbox'">
+                            <input class="form-check-input" type="checkbox" v-model="field.required" :id="'req_'+field.id">
+                            <label class="form-check-label" :for="'req_'+field.id">Required</label>
+                        </div>
+                        <div v-if="field.type==='checkbox'" class="mb-2">
+                            <input v-model="field.checkboxLabelAbove" class="form-control form-control-sm mb-1" placeholder="Label above checkbox">
+                            <input v-model="field.checkboxLabelRight" class="form-control form-control-sm" placeholder="Label to right of checkbox">
+                        </div>
+                        <div class="form-check mb-2" v-else>
+                            <input class="form-check-input" type="checkbox" v-model="field.required" :id="'req_'+field.id">
+                            <label class="form-check-label" :for="'req_'+field.id">Required</label>
+                        </div>
+                        <div class="row mb-2">
+                            <div class="col">
+                                <label class="form-label form-label-sm">Row</label>
+                                <input v-model.number="field.row" type="number" min="0" class="form-control form-control-sm" @change="setFieldRowCol(idx, field.row, field.col)">
+                            </div>
+                            <div class="col">
+                                <label class="form-label form-label-sm">Column</label>
+                                <input v-model.number="field.col" type="number" min="0" class="form-control form-control-sm" @change="setFieldRowCol(idx, field.row, field.col)">
+                            </div>
+                            <div class="col" v-if="!['text','textarea'].includes(field.type)">
+                                <label class="form-label form-label-sm">Width</label>
+                                <input v-model.number="field.width" type="number" min="1" max="12" class="form-control form-control-sm" @change="setFieldWidth(idx, field.width)">
+                            </div>
+                        </div>
+                        <div class="mb-2" v-if="field.type!=='checkbox'">
+                            <label class="form-label form-label-sm">Label Position</label>
+                            <select v-model="field.labelPosition" class="form-select form-select-sm" style="max-width:120px;">
+                                <option value="top">Top</option>
+                                <option value="bottom">Bottom</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                </template>
+                </draggable>
+            </div>
+        </div>
+        <!-- Preview -->
+        <div class="col-lg-4">
+            <div class="preview-form">
+                <h5 class="mb-3"><i class="bi bi-eye me-1"></i>Live Preview</h5>
+                {% raw %}
+                <form>
+                    <div class="mb-4">
+                        <h3>{{ formName || 'Form Name' }}</h3>
+                        <div class="text-muted" v-if="formDesc">{{ formDesc }}</div>
+                    </div>
+                    <div v-for="(row, rowIdx) in formRows" :key="'row-'+rowIdx" class="row mb-3">
+                        <div v-for="field in row" :key="field.id" :class="'col-' + (field.width || 4)">
+                            <!-- For non-checkbox fields, label can be top or bottom -->
+                            <template v-if="field.type!=='label' && field.type!=='section' && field.type!=='checkbox'">
+                                <label v-if="field.labelPosition !== 'bottom'" class="form-label">
+                                    {{field.label}}
+                                    <span v-if="field.required" class="required-badge">*</span>
+                                </label>
+                            </template>
+                            <input v-if="field.type==='text'" class="form-control"
+                                :placeholder="field.placeholder"
+                                :required="field.required"
+                                :style="{width: field.width ? (field.width*8)+'%' : '', height: field.height ? (field.height*12)+'px' : ''}"
+                            />
+                            <textarea v-if="field.type==='textarea'" class="form-control"
+                                :placeholder="field.placeholder"
+                                :required="field.required"
+                                :style="{width: field.width ? (field.width*8)+'%' : '', height: field.height ? (field.height*12)+'px' : ''}"
+                                :rows="field.height || 3"></textarea>
+                            <template v-if="field.type==='dropdown'">
+                                <select v-if="!field.maxSelections || field.maxSelections === 1" class="form-select" :required="field.required">
+                                    <option v-for="opt in (field.options||['Option 1','Option 2'])">{{opt}}</option>
+                                </select>
+                                <select v-else multiple class="form-select" :required="field.required" :size="Math.min(field.maxSelections, (field.options||[]).length)">
+                                    <option v-for="opt in (field.options||['Option 1','Option 2'])">{{opt}}</option>
+                                </select>
+                            </template>
+                            <template v-if="field.type==='checkbox'">
+                                <div v-if="field.checkboxLabelAbove" class="mb-1" style="font-weight:500">{{field.checkboxLabelAbove}}</div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" :id="'chk_'+field.id" :required="field.required">
+                                    <label class="form-check-label" :for="'chk_'+field.id">{{field.checkboxLabelRight}}</label>
+                                </div>
+                            </template>
+                            <div v-if="field.type==='label'" style="font-weight:bold">{{field.label}}</div>
+                            <hr v-if="field.type==='section'" />
+                            <template v-if="field.type!=='label' && field.type!=='section' && field.type!=='checkbox'">
+                                <label v-if="field.labelPosition === 'bottom'" class="form-label mt-1">
+                                    {{field.label}}
+                                    <span v-if="field.required" class="required-badge">*</span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+                </form>
+                {% endraw %}
+            </div>
+        </div>
+    </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/vuedraggable@4.1.0/dist/vuedraggable.umd.min.js"></script>
+<script>
+const { createApp } = Vue;
+createApp({
+    components: {
+        draggable: window.vuedraggable,
+    },
+    data() {
+        return {
+            formName: '',
+            formDesc: '',
+            fields: [],
+            selectedField: null,
+            submissionChannelId: "",
+            discordChannels: {{ discord_channels|tojson }},
+            fieldTypes: [
+                { value: 'text', label: 'Short Text', icon: 'bi bi-input-cursor-text' },
+                { value: 'textarea', label: 'Paragraph', icon: 'bi bi-card-text' },
+                { value: 'dropdown', label: 'Dropdown', icon: 'bi bi-caret-down-square' },
+                { value: 'checkbox', label: 'Checkbox', icon: 'bi bi-check-square' },
+                { value: 'label', label: 'Label', icon: 'bi bi-type-bold' },
+                { value: 'section', label: 'Section Break', icon: 'bi bi-dash-lg' }
+            ],
+            backUrl: "{{ url_for('custom_forms_dashboard', guild_id=guild_id) }}",
+            prebuiltTemplates: {{ prebuilt_templates|tojson }},
+            csrfToken: "{{ csrf_token() }}",
+            maxSubmissions: 1,
+            embedColor: "#5865F2", // Default Discord blurple
+            dmOnBan: false,
+            dmOnKick: false,
+            dmOnTimeout: false,
+            dmOnWarn: false,
+            dmMessage: ''
+        }
+    },
+    computed: {
+        // Group fields into rows based on their row property
+        formRows() {
+            let rows = {};
+            this.fields.forEach(f => {
+                let rowIdx = f.row || 0;
+                if (!rows[rowIdx]) rows[rowIdx] = [];
+                rows[rowIdx].push(f);
+            });
+            Object.values(rows).forEach(rowArr => rowArr.sort((a, b) => (a.col || 0) - (b.col || 0)));
+            return Object.keys(rows).sort((a, b) => a - b).map(idx => rows[idx]);
+        }
+    },
+    mounted() {
+        // Load existing form if editing
+        {% if form %}
+        let config = JSON.parse({{ form['config']|tojson }});
+        this.fields = (config?.fields || []).map((f, i) => ({
+            ...f,
+            optionsString: f.options ? f.options.join(', ') : '',
+            required: f.required || false,
+            row: typeof f.row === 'number' ? f.row : i,
+            col: typeof f.col === 'number' ? f.col : 0,
+            width: typeof f.width === 'number' ? f.width : 4,
+            height: typeof f.height === 'number' ? f.height : (f.type === 'textarea' ? 3 : 1),
+            labelPosition: f.labelPosition || 'top',
+            maxSelections: f.maxSelections || 1,
+            checkboxLabelAbove: f.checkboxLabelAbove || '',
+            checkboxLabelRight: f.checkboxLabelRight || ''
+        }));
+        this.formName = {{ form['name']|tojson }};
+        this.formDesc = {{ form['description']|tojson }};
+        this.submissionChannelId = (config.embed && config.embed.channel_id) ? config.embed.channel_id : "";
+        this.embedColor = (config.embed && config.embed.color) ? config.embed.color : "#5865F2";
+        this.maxSubmissions = config.max_submissions ? Number(config.max_submissions) : 1;
+        this.dmOnBan = config.dm_on?.ban || false;
+        this.dmOnKick = config.dm_on?.kick || false;
+        this.dmOnTimeout = config.dm_on?.timeout || false;
+        this.dmOnWarn = config.dm_on?.warn || false;
+        this.dmMessage = config.dm_on?.message || "";
+        {% endif %}
+    },
+    methods: {
+        addField(type) {
+            let maxRow = this.fields.length ? Math.max(...this.fields.map(f => f.row || 0)) : 0;
+            let field = {
+                id: Math.random().toString(36).substr(2,9),
+                type,
+                label: this.fieldTypes.find(t => t.value === type).label,
+                placeholder: '',
+                width: 4,
+                height: type === 'textarea' ? 3 : 1,
+                required: false,
+                options: type==='dropdown' ? ['Option 1','Option 2'] : undefined,
+                optionsString: type==='dropdown' ? 'Option 1, Option 2' : '',
+                row: maxRow + 1,
+                col: 0,
+                labelPosition: 'top',
+                maxSelections: 1,
+                checkboxLabelAbove: '',
+                checkboxLabelRight: ''
+            };
+            this.fields.push(field);
+            this.selectedField = this.fields.length - 1;
+        },
+        removeField(idx) {
+            this.fields.splice(idx,1);
+            if(this.selectedField === idx) this.selectedField = null;
+            else if(this.selectedField > idx) this.selectedField--;
+        },
+        selectField(idx) {
+            this.selectedField = idx;
+        },
+        moveField(idx, dir) {
+            const newIdx = idx + dir;
+            if(newIdx < 0 || newIdx >= this.fields.length) return;
+            const temp = this.fields[newIdx];
+            this.fields[newIdx] = this.fields[idx];
+            this.fields[idx] = temp;
+            this.selectedField = newIdx;
+        },
+        updateDropdownOptions(idx) {
+            let field = this.fields[idx];
+            if(field && field.type==='dropdown') {
+                field.options = field.optionsString.split(',').map(s => s.trim()).filter(Boolean);
+                if (!field.maxSelections || field.maxSelections > field.options.length) {
+                    field.maxSelections = 1;
+                }
+            }
+        },
+        setFieldRowCol(idx, row, col) {
+            this.fields[idx].row = row;
+            this.fields[idx].col = col;
+        },
+        setFieldWidth(idx, width) {
+            this.fields[idx].width = width;
+        },
+        saveForm() {
+            this.fields.forEach(f => {
+                if(f.type==='dropdown') {
+                    f.options = f.optionsString.split(',').map(s => s.trim()).filter(Boolean);
+                }
+            });
+            fetch(window.location.pathname, {
+                method: 'POST',
+                headers: {
+                    'Content-Type':'application/json',
+                    'X-CSRFToken': this.csrfToken
+                },
+                body: JSON.stringify({
+                    name: this.formName,
+                    description: this.formDesc,
+                    config: {
+                        fields: this.fields,
+                        embed: {
+                            channel_id: this.submissionChannelId,
+                            color: this.embedColor
+                        },
+                        max_submissions: this.maxSubmissions,
+                        dm_on: {
+                            ban: this.dmOnBan,
+                            kick: this.dmOnKick,
+                            timeout: this.dmOnTimeout,
+                            warn: this.dmOnWarn,
+                            message: this.dmMessage
+                        }
+                    }
+                })
+            }).then(r=>r.json()).then(data=>{
+                if(data.success) {
+                    window.location.href = this.backUrl;
+                } else {
+                    alert('Failed to save form.');
+                }
+            });
+        },
+        applyTemplate(tpl, name, description) {
+            // tpl is the full template object from prebuilt_templates.json
+            if (!tpl || !tpl.fields) return;
+            if (!confirm(`Replace current fields with the "${name}" template? This will overwrite your current form fields.`)) return;
+            this.fields = tpl.fields.map(f => ({
+                ...f,
+                optionsString: f.options ? f.options.join(', ') : '',
+                required: f.required || false,
+                row: typeof f.row === 'number' ? f.row : 0,
+                col: typeof f.col === 'number' ? f.col : 0,
+                width: typeof f.width === 'number' ? f.width : 4,
+                height: typeof f.height === 'number' ? f.height : (f.type === 'textarea' ? 3 : 1),
+                labelPosition: f.labelPosition || 'top',
+                maxSelections: f.maxSelections || 1,
+                checkboxLabelAbove: f.checkboxLabelAbove || '',
+                checkboxLabelRight: f.checkboxLabelRight || ''
+            }));
+            this.formName = name;
+            this.formDesc = description;
+        },
+        exportForm() {
+            const data = {
+                name: this.formName,
+                description: this.formDesc,
+                config: { fields: this.fields }
+            };
+            const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = (this.formName || "form") + ".json";
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 100);
+        },
+        importForm(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = evt => {
+                try {
+                    const data = JSON.parse(evt.target.result);
+                    if (data.config && Array.isArray(data.config.fields)) {
+                        this.fields = data.config.fields.map(f => ({
+                            ...f,
+                            optionsString: f.options ? f.options.join(', ') : '',
+                            required: f.required || false,
+                            row: typeof f.row === 'number' ? f.row : 0,
+                            col: typeof f.col === 'number' ? f.col : 0,
+                            width: typeof f.width === 'number' ? f.width : 4,
+                            height: typeof f.height === 'number' ? f.height : (f.type === 'textarea' ? 3 : 1),
+                            labelPosition: f.labelPosition || 'top',
+                            maxSelections: f.maxSelections || 1,
+                            checkboxLabelAbove: f.checkboxLabelAbove || '',
+                            checkboxLabelRight: f.checkboxLabelRight || ''
+                        }));
+                        this.formName = data.name || '';
+                        this.formDesc = data.description || '';
+                    } else {
+                        alert("Invalid form JSON.");
+                    }
+                } catch (err) {
+                    alert("Failed to import: " + err);
+                }
+                e.target.value = "";
+            };
+            reader.readAsText(file);
+        }
+    }
+}).mount('#formBuilderApp');
+</script>
+</body>
+</html>

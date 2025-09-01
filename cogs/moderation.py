@@ -2,15 +2,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
-from bot.bot import log_event, load_log_config
+from bot.bot import log_event, load_log_config, send_custom_form_dm
 from config import Config
 import uuid
 import traceback
 import sqlite3
 import json
 import time
-
-WARNING_ACTIONS = {2: "timeout", 3: "ban"}
 
 class ModerationCog(commands.Cog):
     def __init__(self, bot):
@@ -22,15 +20,15 @@ class ModerationCog(commands.Cog):
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         guild_id = str(interaction.guild.id)
         user_id = str(member.id)
-        user_warnings = self.db.get_warnings(guild_id, user_id)
-        # Check bot permissions
-        if not interaction.guild.me.guild_permissions.moderate_members:
+
+        # Check if the user is still in the server
+        if interaction.guild.get_member(member.id) is None:
             await interaction.response.send_message(
-                "I don't have permission to timeout or ban users.",
+                "❌ That user is no longer in the server.",
                 ephemeral=True
             )
             return
-            
+
         # Check role hierarchy
         if interaction.guild.me.top_role <= member.top_role:
             await interaction.response.send_message(
@@ -38,7 +36,7 @@ class ModerationCog(commands.Cog):
                 ephemeral=True
             )
             return
-        
+
         # Check if the user is in the server
         if member not in interaction.guild.members:
             await interaction.response.send_message(
@@ -46,17 +44,14 @@ class ModerationCog(commands.Cog):
                 ephemeral=True
             )
             return
-            
-        guild_id = str(interaction.guild.id)
-        user_id = str(member.id)
-        
+
         # Add warning to database
         warning_id = self.db.add_warning(guild_id, user_id, reason)
-        
+
         # Get current warnings from database
         user_warnings = self.db.get_warnings(guild_id, user_id)
         warning_count = len(user_warnings)
-        
+
         # Send DM to the user
         dm_embed = discord.Embed(
             title="You have been warned!",
@@ -64,85 +59,95 @@ class ModerationCog(commands.Cog):
             color=discord.Color.orange()
         )
         dm_embed.add_field(name="Total Warnings", value=str(warning_count))
-        
-        # Check if an action should be taken based on the number of warnings
-        if warning_count in WARNING_ACTIONS:
-            action = WARNING_ACTIONS[warning_count]
-            action_text = ""
-            if action == "timeout":
-                try:
-                    await member.timeout(discord.utils.utcnow() + timedelta(hours=24), reason="You got 2 warnings")
-                    action_text = "24-hour timeout applied"
-                except discord.Forbidden:
-                    await interaction.response.send_message(
-                        "I don't have permission to timeout this user.",
-                        ephemeral=True
-                    )
-                    return
-            elif action == "ban":
-                # Load appeal configuration from database
-                appeal_forms = self.db.get_appeal_forms(guild_id)
-                ban_config = appeal_forms.get('ban', {})
-                    
-                ban_embed = discord.Embed(
-                    title="You have been banned!",
-                    description=("**Reason:** You got 3 warnings\n\n"
-                                 "You have reached the maximum number of warnings and have been banned from the server."),
-                    color=discord.Color.red()
-                )
-                    
-                if ban_config.get('enabled', False) and ban_config.get('form_url'):
-                    appeal_url = f"{Config.FRONTEND_URL}{ban_config['form_url']}?user_id={member.id}"
-                    ban_embed.add_field(
-                        name="Appeal Form",
-                        value=f"[Click here to appeal]({appeal_url})",
-                        inline=False
-                    )
-                else:
-                    ban_embed.add_field(
-                        name="Appeal Information",
-                        value="Contact server staff to appeal your ban",
-                        inline=False
-                    )
 
-                try:
-                    await member.send(embed=ban_embed)
-                except discord.Forbidden:
-                    pass
-                try:
-                    await member.ban(reason="Too many warnings")
-                    action_text = "Permanent ban applied"
-                    # Clear warnings after ban
-                    self.db.conn.execute('DELETE FROM warnings WHERE guild_id = ? AND user_id = ?', 
-                                  (guild_id, user_id))
-                    self.db.conn.commit()
-                except discord.Forbidden:
-                    await interaction.response.send_message(
-                        "I don't have permission to ban this user.",
-                        ephemeral=True
-                    )
-                    return
-                
+        # Track if moderation action was attempted and if permission was missing
+        action_attempted = False
+        missing_permission = None
+
+        # --- NEW: Check for configured warning actions ---
+        warning_actions = self.db.get_warning_actions(guild_id)
+        action_row = next((a for a in warning_actions if a['warning_count'] == warning_count), None)
+
+        action_text = ""
+        if action_row:
+            action_attempted = True
+            action_type = action_row['action']
+            duration_seconds = action_row.get('duration_seconds')
+            if action_type == "timeout":
+                if interaction.guild.me.guild_permissions.moderate_members:
+                    try:
+                        timeout_until = discord.utils.utcnow() + timedelta(seconds=duration_seconds or 3600)
+                        await member.timeout(timeout_until, reason=f"Reached {warning_count} warnings")
+                        action_text = f"Timeout applied for {duration_seconds//60 if duration_seconds else 60} minutes"
+                        await send_custom_form_dm(member, interaction.guild, "timeout")
+                    except discord.Forbidden:
+                        missing_permission = "timeout"
+                else:
+                    missing_permission = "timeout"
+            elif action_type == "kick":
+                if interaction.guild.me.guild_permissions.kick_members:
+                    try:
+                        await member.kick(reason=f"Reached {warning_count} warnings")
+                        action_text = "User kicked"
+                        await send_custom_form_dm(member, interaction.guild, "kick")
+                    except discord.Forbidden:
+                        missing_permission = "kick"
+                else:
+                    missing_permission = "kick"
+            elif action_type == "ban":
+                if interaction.guild.me.guild_permissions.ban_members:
+                    try:
+                        await member.ban(reason=f"Reached {warning_count} warnings")
+                        action_text = "User banned"
+                        # Clear warnings after ban
+                        self.db.conn.execute('DELETE FROM warnings WHERE guild_id = ? AND user_id = ?', 
+                                      (guild_id, user_id))
+                        self.db.conn.commit()
+                        await send_custom_form_dm(member, interaction.guild, "ban")
+                    except discord.Forbidden:
+                        missing_permission = "ban"
+                else:
+                    missing_permission = "ban"
+
+        if action_text:
             dm_embed.add_field(name="Action Taken", value=action_text, inline=False)
-            
+
         dm_embed.set_footer(text=f"Server: {interaction.guild.name}")
         try:
             await member.send(embed=dm_embed)
         except discord.Forbidden:
-            pass  # Add note to moderator response
             await interaction.followup.send(
                 "Couldn't DM user warning details", 
                 ephemeral=True
             )
-            
+
+        await send_custom_form_dm(member, interaction.guild, "warn")
+
         # Log the warning event
         await log_event(interaction.guild, "member_warn", "Member Warned", 
                         f"**Member:** {member.mention}\n**Reason:** {reason}\n**Total Warnings:** {warning_count}",
                         color=discord.Color.orange())
-            
+
         # Respond to the moderator
+        if action_row:
+            action_past = {
+                "timeout": "timed out",
+                "kick": "kicked",
+                "ban": "banned"
+            }.get(action_row['action'], action_row['action'])
+            response = (
+                f"{member.mention} warned. They now have {warning_count} warning(s). "
+                f"They have also been {action_past}."
+            )
+        else:
+            response = f"{member.mention} warned. They now have {warning_count} warning(s)."
+
+        if missing_permission:
+            response += (
+                f"\n⚠️ RuleKeeper does not have permission to {missing_permission} this user, so no moderation action was taken."
+            )
         await interaction.response.send_message(
-            f"{member.mention} warned. They now have {warning_count} warning(s).",
+            response,
             ephemeral=True
         )
 
@@ -213,17 +218,17 @@ class ModerationCog(commands.Cog):
             new_count = len(warnings) - 1
                 
             # Check if we need to remove moderation actions
-            if (new_count + 1) in WARNING_ACTIONS:
-                action = WARNING_ACTIONS[new_count + 1]
-                if action == "timeout":
-                    try:
-                        await member.timeout(None, reason="Warning removed")
-                    except discord.Forbidden:
-                        await interaction.response.send_message(
-                            "I don't have permission to remove the timeout for this user.",
-                            ephemeral=True
-                        )
-                        return
+            warning_actions = self.db.get_warning_actions(guild_id)
+            prev_action_row = next((a for a in warning_actions if a['warning_count'] == (new_count + 1)), None)
+            if prev_action_row and prev_action_row['action'] == "timeout":
+                try:
+                    await member.timeout(None, reason="Warning removed")
+                except discord.Forbidden:
+                    await interaction.response.send_message(
+                        "I don't have permission to remove the timeout for this user.",
+                        ephemeral=True
+                    )
+                    return
                 
             # Log the action
             await log_event(
@@ -254,7 +259,7 @@ class ModerationCog(commands.Cog):
     async def ban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
         try:
             await interaction.response.defer()
-            
+
             # Check bot permissions
             if not interaction.guild.me.guild_permissions.ban_members:
                 await interaction.followup.send("❌ I don't have permission to ban users.", ephemeral=True)
@@ -270,52 +275,6 @@ class ModerationCog(commands.Cog):
                     return
 
             guild = interaction.guild
-            guild_id = str(guild.id)
-            user_id = str(user.id)
-            moderator_id = str(interaction.user.id)
-            timestamp = int(time.time())
-
-            # Generate appeal data
-            appeal_token = str(uuid.uuid4())
-            appeal_expires = timestamp + (7 * 24 * 3600)  # 1 week
-
-            # Get appeal configuration
-            appeal_config = self.db.get_appeal_forms(guild_id) or {}
-            ban_enabled = appeal_config.get('ban_enabled', False)
-            ban_form_url = appeal_config.get('ban_form_url', '')
-            ban_channel_id = appeal_config.get('ban_channel_id')
-
-            # Build appeal message
-            appeal_message = "Contact server staff to appeal your ban"
-            appeal_url = ""
-            if ban_enabled and ban_form_url and Config.FRONTEND_URL:
-                try:
-                    appeal_url = f"{Config.FRONTEND_URL}{ban_form_url}?token={appeal_token}"
-                    appeal_message = f"[Appeal Your Ban]({appeal_url})\nExpires <t:{appeal_expires}:R>"
-                    
-                    # Database operations
-                    with self.db.conn:
-                        self.db.conn.execute('''
-                            INSERT INTO appeals 
-                            (appeal_id, guild_id, user_id, type, appeal_data, 
-                             status, appeal_token, expires_at, moderator_id, submitted_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            str(uuid.uuid4()),
-                            guild_id,
-                            user_id,
-                            'ban',
-                            json.dumps({"reason": reason}),
-                            'pending',
-                            appeal_token,
-                            appeal_expires,
-                            moderator_id,
-                            timestamp
-                        ))
-                        
-                except Exception as e:
-                    print(f"[APPEAL ERROR] {str(e)}")
-                    appeal_message = "⚠️ Temporary appeal system issue"
 
             # Create ban embed
             ban_embed = discord.Embed(
@@ -324,7 +283,6 @@ class ModerationCog(commands.Cog):
                 color=discord.Color.red()
             )
             ban_embed.add_field(name="Reason", value=reason, inline=False)
-            ban_embed.add_field(name="Appeal Information", value=appeal_message, inline=False)
 
             # Execute ban
             try:
@@ -337,7 +295,7 @@ class ModerationCog(commands.Cog):
 
             # Send response
             response = f"✅ {user.mention} has been banned"
-            response += "\n📩 Appeal link sent" if dm_success else "\n⚠️ Couldn't send DM"
+            response += "\n📩 DM sent" if dm_success else "\n⚠️ Couldn't send DM"
             await interaction.followup.send(response, ephemeral=True)
 
             # Log event
@@ -345,22 +303,9 @@ class ModerationCog(commands.Cog):
                 guild,
                 "member_ban",
                 "Member Banned",
-                f"**User:** {user.mention}\n**Reason:** {reason}\n"
-                f"**Appeal Token:** `{appeal_token or 'None'}`",
+                f"**User:** {user.mention}\n**Reason:** {reason}",
                 color=discord.Color.red()
             )
-
-            # Send to ban appeals channel
-            if ban_channel_id:
-                try:
-                    channel = guild.get_channel(int(ban_channel_id))
-                    if channel:
-                        await channel.send(
-                            f"New ban appeal created: {appeal_url}" if appeal_url else
-                            f"User {user.mention} was banned without appeal system"
-                        )
-                except Exception as e:
-                    print(f"[CHANNEL ERROR] {str(e)}")
 
         except discord.Forbidden:
             await interaction.followup.send("❌ Missing permissions to ban this user", ephemeral=True)
@@ -404,7 +349,7 @@ class ModerationCog(commands.Cog):
             if not interaction.guild.me.guild_permissions.kick_members:
                 await interaction.response.send_message("I don't have permission to kick users.", ephemeral=True)
                 return
-                
+
             if interaction.user.top_role <= member.top_role:
                 await interaction.response.send_message(
                     "Target has equal/higher role than you",
@@ -418,23 +363,12 @@ class ModerationCog(commands.Cog):
                 )
                 return
 
-            guild_id = str(interaction.guild.id)
-            appeal_config = self.db.get_appeal_forms(guild_id)
-            kick_config = appeal_config.get('kick', {}) if appeal_config else {}
-                
+            # Create kick embed
             kick_embed = discord.Embed(
                 title="You have been kicked!",
                 description=f"**Reason:** {reason}\n\nYou have been kicked from {interaction.guild.name}.",
                 color=discord.Color.orange()
             )
-                
-            if kick_config.get('enabled') and kick_config.get('form_url'):
-                appeal_url = f"{kick_config.get('base_url', Config.FRONTEND_URL)}{kick_config['form_url']}?user_id={member.id}"
-                kick_embed.add_field(
-                    name="Appeal Form",
-                    value=f"[Click here to appeal]({appeal_url})",
-                    inline=False
-                )
 
             try:
                 await member.send(embed=kick_embed)
@@ -446,7 +380,9 @@ class ModerationCog(commands.Cog):
                 f"{member.mention} has been kicked. Reason: {reason}",
                 ephemeral=True
             )
-                
+
+            await send_custom_form_dm(member, interaction.guild, "kick")
+
             await log_event(
                 interaction.guild,
                 "member_kick",
@@ -526,7 +462,6 @@ class ModerationCog(commands.Cog):
         duration: str = "5m",
         reason: str = "No reason provided"
     ):
-        guild_id = str(interaction.guild.id)
         try:
             if not interaction.guild.me.guild_permissions.moderate_members:
                 await interaction.response.send_message("I don't have permission to timeout members.", ephemeral=True)
@@ -551,25 +486,13 @@ class ModerationCog(commands.Cog):
 
             timeout_duration = discord.utils.utcnow() + timedelta(seconds=seconds)
 
-            # Get appeal forms from database
-            appeal_forms = self.db.get_appeal_forms(guild_id)
-            timeout_config = appeal_forms.get('timeout', {}) if appeal_forms else {}
-                
             # Create timeout embed
             timeout_embed = discord.Embed(
                 title="You have been timed out!",
                 description=f"**Duration:** {duration}\n**Reason:** {reason}",
                 color=discord.Color.orange()
             )
-                
-            # Add appeal form if configured in database
-            if timeout_config.get('enabled') and timeout_config.get('form_url'):
-                appeal_url = f"{Config.FRONTEND_URL}{timeout_config['form_url']}?user_id={member.id}"
-                timeout_embed.add_field(
-                    name="Appeal Form",
-                    value=f"[Click here to appeal]({appeal_url})",
-                    inline=False
-                )
+
             try:
                 await member.send(embed=timeout_embed)
             except discord.Forbidden:
@@ -579,7 +502,9 @@ class ModerationCog(commands.Cog):
                 f"{member.mention} has been timed out for {duration}. Reason: {reason}",
                 ephemeral=True
             )
-            
+
+            await send_custom_form_dm(member, interaction.guild, "timeout")
+
             await log_event(
                 interaction.guild,
                 "member_timeout",

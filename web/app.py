@@ -10,17 +10,19 @@ import threading
 import time
 import traceback
 import uuid
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from functools import wraps
 
 # Third-Party Libraries
 import bcrypt
 import requests
 import jwt
+from pytz import timezone as pytz_timezone, all_timezones
 from authlib.integrations.flask_client import OAuth
 from cachetools import TTLCache
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash, abort, render_template_string, send_file
 from markupsafe import Markup
 from flask.sessions import SecureCookieSessionInterface
 from flask_discord import DiscordOAuth2Session, Unauthorized
@@ -34,10 +36,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
 from database import Database
 from shared import shared
-from bot.bot import bot_instance
+from bot.bot import bot_instance, load_schedules
+from backups.backups import get_backups, get_backup, init_db, get_conn, set_backup_share_id, import_backup_file, import_backup_file_from_bytes, get_backup_by_share_id
 
 # Runtime Config
 load_dotenv()
+init_db()
 
 # Initialize database
 Config.verify_paths()
@@ -61,13 +65,13 @@ app.config['DISCORD_REDIRECT_URI'] = os.getenv('FRONTEND_URL') + '/callback'
 app.config["DISCORD_OAUTH2_SESSION_PROXIED"] = True
 app.config["DISCORD_SESSION_COOKIE_SECURE"] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['PERMANENT_SESSION_LIFETIME'] = 7200  # 2 hour expiration
+app.config['PERMANENT_SESSION_LIFETIME'] = 14400  # 4 hour expiration
 app.config["DISCORD_SCOPE"] = ["identify", "guilds"]
 app.config.update({
     'SESSION_COOKIE_SECURE': True,
     'SESSION_COOKIE_HTTPONLY': True,
     'SESSION_COOKIE_SAMESITE': 'Lax',
-    'PERMANENT_SESSION_LIFETIME': 7200, # 2 hour expiration
+    'PERMANENT_SESSION_LIFETIME': 14400, # 4 hour expiration
     'WTF_CSRF_CHECK_DEFAULT': True,
     'WTF_CSRF_SSL_STRICT': False
 })
@@ -529,7 +533,7 @@ def get_guild_invite(guild_id):
     """Get or create an invite link for a guild via the bot's webserver API."""
     try:
         csrf.protect()
-        api_url = f"{API_URL}/get_guild_invite"
+        api_url = f"{API_URL}/api/get_guild_invite"
         resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
         data = resp.json()
         if resp.status_code == 200 and "invite" in data:
@@ -549,7 +553,7 @@ def get_guild_audit_log(guild_id):
     """Fetch and display the audit log for a guild via the bot's webserver API."""
     try:
         csrf.protect()
-        api_url = f"{API_URL}/get_guild_audit_log"
+        api_url = f"{API_URL}/api/get_guild_audit_log"
         resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
         data = resp.json()
         if resp.status_code == 200 and "log" in data:
@@ -575,12 +579,12 @@ def admin_dashboard():
     admin_count_result = db.execute_query('SELECT COUNT(*) as count FROM bot_admins', fetch='one')
     admin_count = admin_count_result['count'] if admin_count_result else 0
     
-    # Get appeal count
-    appeal_count_result = db.execute_query(
-        'SELECT COUNT(*) as count FROM appeals WHERE status = "pending"',
+    # Get custom for submission count
+    submission_count_result = db.execute_query(
+        'SELECT COUNT(*) as count FROM form_submissions',
         fetch='one'
     )
-    appeal_count = appeal_count_result['count'] if appeal_count_result else 0
+    submission_count = submission_count_result['count'] if submission_count_result else 0
     
     # Get recent logs
     recent_logs = db.execute_query('''
@@ -593,7 +597,7 @@ def admin_dashboard():
     return render_template('admin_dashboard.html',
                          guild_count=guild_count,
                          admin_count=admin_count,
-                         appeal_count=appeal_count,
+                         submission_count=submission_count,
                          recent_logs=recent_logs)
 
 @app.route('/admin/bot-admins', methods=['GET', 'POST'])
@@ -718,8 +722,7 @@ def remove_guild(guild_id):
             'level_rewards',
             'user_levels',
             'warnings',
-            'appeal_forms',
-            'appeals',
+            'warning_actions',
             'welcome_config',
             'goodbye_config',
             'spam_detection_config',
@@ -729,12 +732,14 @@ def remove_guild(guild_id):
             'stream_announcements',
             'video_announcements',
             'role_menus',
+            'custom_forms',
+            'form_submissions',
             'pending_role_changes'
         ]
         for table in tables:
             db.execute_query(f'DELETE FROM {table} WHERE guild_id = ?', (guild_id,))
 
-        api_url = f"{API_URL}/leave_guild"
+        api_url = f"{API_URL}/api/leave_guild"
         resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
         data = resp.json()
         if resp.status_code == 200 and data.get("success"):
@@ -776,8 +781,7 @@ def remove_all_guild_data(guild_id):
             'level_rewards',
             'user_levels',
             'warnings',
-            'appeal_forms',
-            'appeals',
+            'warning_actions',
             'welcome_config',
             'goodbye_config',
             'spam_detection_config',
@@ -787,6 +791,8 @@ def remove_all_guild_data(guild_id):
             'stream_announcements',
             'video_announcements',
             'role_menus',
+            'custom_forms',
+            'form_submissions',
             'pending_role_changes'
         ]
         for table in tables:
@@ -815,7 +821,8 @@ def remove_all_user_data(guild_id):
         tables = [
             ('user_levels', True),
             ('warnings', True),
-            ('appeals', True),
+            ('warning_actions', True),
+            ('form_submissions', True),
             ('pending_role_changes', True),
             ('user_game_time', True),
             ('user_connections', True)
@@ -893,7 +900,7 @@ def delete_command_api(guild_id, command_name):
 @guild_required
 def sync_commands(guild_id):
     try:
-        api_url = f"{API_URL}/sync"
+        api_url = f"{API_URL}/api/sync"
         resp = jwt_requests.post(api_url, timeout=60)
         if resp.status_code != 200:
             logger.error(f"Sync API error: {resp.status_code} {resp.text}")
@@ -1830,6 +1837,278 @@ def api_create_role_menu(guild_id=None):
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# Backups Management
+@app.route('/dashboard/<guild_id>/backups', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def guild_backups(guild_id):
+    try:
+        if request.method == 'POST':
+            api_url = f"{API_URL}/api/start_backup"
+            resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
+            data = resp.json()
+            if resp.status_code != 200 or not data.get("success"):
+                flash(data.get("error", "Failed to start backup."), "danger")
+                return redirect(url_for('guild_backups', guild_id=guild_id))
+            return jsonify({"success": True}), 202
+
+        backups = []
+        try:
+            backups = get_backups(guild_id)
+        except Exception as e:
+            logger.error(f"Failed to fetch backups: {e}")
+            flash('Failed to fetch backups: ' + str(e), 'danger')
+        return render_template('backups.html', guild_id=guild_id, backups=backups, FRONTEND_URL=FRONTEND_URL)
+    except Exception as e:
+        logger.error(f"Unexpected error in backups page: {e}")
+        flash('Unexpected error: ' + str(e), 'danger')
+        return redirect(url_for('guild_dashboard', guild_id=guild_id))
+
+@app.route('/api/<guild_id>/backups/progress')
+@login_required
+@guild_required
+def backup_progress(guild_id):
+    try:
+        api_url = f"{API_URL}/api/backup_progress?guild_id={guild_id}"
+        resp = jwt_requests.get(api_url, timeout=1)
+        return jsonify(resp.json())
+    except Exception as e:
+        logger.error(f"Error fetching backup progress: {e}")
+        return jsonify({"progress": 0, "step_text": "", "error": str(e)}), 200
+
+@app.route('/api/<guild_id>/backups/download/<backup_id>')
+@login_required
+@guild_required
+def download_backup(guild_id, backup_id):
+    try:
+        backup = get_backup(backup_id, guild_id)
+        if not backup:
+            flash('Backup not found.', 'danger')
+            abort(404)
+        if not os.path.exists(backup['file_path']):
+            flash('Backup file missing on server.', 'danger')
+            abort(404)
+        return send_file(backup['file_path'], as_attachment=True)
+    except Exception as e:
+        logger.error(f"Error downloading backup: {e}")
+        flash('Failed to download backup: ' + str(e), 'danger')
+        return redirect(url_for('guild_backups', guild_id=guild_id))
+
+@app.route('/api/<guild_id>/backups/restore/<backup_id>', methods=['POST'])
+@login_required
+@guild_required
+def restore_backup(guild_id, backup_id):
+    try:
+        backup = get_backup(backup_id, guild_id)
+        if not backup or not os.path.exists(backup['file_path']):
+            flash('Backup not found or file missing.', 'danger')
+            abort(404)
+
+        # Call the bot's API to start the restore
+        api_url = f"{API_URL}/api/start_restore"
+        resp = jwt_requests.post(api_url, json={
+            "guild_id": str(guild_id),
+            "backup_path": backup['file_path']
+        }, timeout=10)
+        data = resp.json()
+        if resp.status_code != 200 or not data.get("success"):
+            flash(data.get("error", "Failed to start restore."), "danger")
+            return redirect(url_for('guild_backups', guild_id=guild_id))
+
+        flash('Restore started. The server owner will receive DM progress updates.', 'info')
+        return redirect(url_for('guild_backups', guild_id=guild_id))
+    except Exception as e:
+        logger.error(f"Unexpected error in restore: {e}\n{traceback.format_exc()}")
+        flash('Unexpected error: ' + str(e), 'danger')
+        return redirect(url_for('guild_backups', guild_id=guild_id))
+
+@app.route('/api/<guild_id>/backups/delete/<backup_id>', methods=['POST'])
+@login_required
+@guild_required
+def delete_backup(guild_id, backup_id):
+    try:
+        backup = get_backup(backup_id, guild_id)
+        if not backup:
+            flash('Backup not found.', 'danger')
+            return redirect(url_for('guild_backups', guild_id=guild_id))
+        # Remove file from disk
+        if backup['file_path'] and os.path.exists(backup['file_path']):
+            os.remove(backup['file_path'])
+        # Remove from DB
+        with get_conn() as conn:
+            conn.execute('DELETE FROM backups WHERE id = ? AND guild_id = ?', (backup_id, guild_id))
+        flash('Backup deleted.', 'success')
+    except Exception as e:
+        logger.error(f"Error deleting backup: {e}")
+        flash('Failed to delete backup: ' + str(e), 'danger')
+    return redirect(url_for('guild_backups', guild_id=guild_id))
+
+@app.route('/api/<guild_id>/backups/share/<backup_id>', methods=['POST'])
+@login_required
+@guild_required
+def share_backup(guild_id, backup_id):
+    share_id = set_backup_share_id(backup_id, guild_id)
+    flash(f'Share link created: {FRONTEND_URL}/backup/{share_id}', 'success')
+    return redirect(url_for('guild_backups', guild_id=guild_id))
+
+@app.route('/api/<guild_id>/backups/import', methods=['POST'])
+@login_required
+@guild_required
+def import_backup(guild_id):
+    file = request.files.get('backup_file')
+    if not file or not file.filename.endswith('.json'):
+        flash('Please upload a valid backup JSON file.', 'danger')
+        return redirect(url_for('guild_backups', guild_id=guild_id))
+    # Save the file and register it as a backup for this guild
+    try:
+        import_backup_file(file, guild_id)
+        flash('Backup imported successfully!', 'success')
+    except Exception as e:
+        flash(f'Failed to import backup: {e}', 'danger')
+    return redirect(url_for('guild_backups', guild_id=guild_id))
+
+@app.route('/api/<guild_id>/backups/import-url', methods=['POST'])
+@login_required
+@guild_required
+def import_backup_url(guild_id):
+    backup_url = request.form.get('backup_url', '').strip()
+    if not backup_url or not backup_url.startswith('http'):
+        flash('Please enter a valid backup share URL.', 'danger')
+        return redirect(url_for('guild_backups', guild_id=guild_id))
+    try:
+        # Download the backup JSON from the share URL
+        resp = requests.get(backup_url, timeout=10)
+        if resp.status_code != 200:
+            flash('Failed to download backup from the provided URL.', 'danger')
+            return redirect(url_for('guild_backups', guild_id=guild_id))
+        # Save the file and register it as a backup for this guild
+        import_backup_file_from_bytes(resp.content, guild_id)
+        flash('Backup imported successfully from URL!', 'success')
+    except Exception as e:
+        flash(f'Failed to import backup from URL: {e}', 'danger')
+    return redirect(url_for('guild_backups', guild_id=guild_id))
+
+@app.route('/share/backup/<share_id>')
+def public_backup_download(share_id):
+    backup = get_backup_by_share_id(share_id)
+    if not backup or not os.path.exists(backup['file_path']):
+        return "Backup not found or file missing.", 404
+    return send_file(backup['file_path'], as_attachment=True)
+
+@app.route('/dashboard/<guild_id>/backups/schedule', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def schedule_backup(guild_id):
+    if request.method == 'POST':
+        start_date = request.form.get('start_date')
+        start_time = request.form.get('start_time')
+        timezone_str = request.form.get('timezone', 'UTC')
+        frequency_value = int(request.form.get('frequency_value'))
+        frequency_unit = request.form.get('frequency_unit')
+        enabled = 1 if request.form.get('enabled') == 'on' else 0
+        schedule_id = ''.join(random.choices('0123456789', k=5))
+
+        # Store the timezone string in the DB
+        with get_conn() as conn:
+            conn.execute(
+                'INSERT INTO schedules (id, guild_id, start_date, start_time, timezone, frequency_value, frequency_unit, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                (schedule_id, guild_id, start_date, start_time, timezone_str, frequency_value, frequency_unit, enabled)
+            )
+        flash(f'Backup schedule saved! Schedule ID: {schedule_id}', 'success')
+    
+        # Notify the bot process to reload schedules
+        try:
+            api_url = f"{API_URL}/api/reload_schedules"
+            resp = jwt_requests.post(api_url, timeout=5)
+        except Exception as e:
+            print(f"[WARNING] Could not notify bot to reload schedules: {e}")
+
+        return redirect(url_for('schedule_backup', guild_id=guild_id))
+
+    # For GET: fetch schedules and pass all_timezones for dropdown
+    with get_conn() as conn:
+        schedules = conn.execute(
+            'SELECT * FROM schedules WHERE guild_id = ? ORDER BY start_date, start_time', (guild_id,)
+        ).fetchall()
+
+    now_utc = datetime.utcnow().replace(second=0, microsecond=0)
+    processed_schedules = []
+    for sched in schedules:
+        # Parse start datetime, handle 24:00 edge case
+        try:
+            start_time = sched['start_time']
+            start_date = sched['start_date']
+            tz_str = sched['timezone'] if 'timezone' in sched.keys() and sched['timezone'] else 'UTC'
+            if start_time == "24:00":
+                dt = datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=1)
+                start_date = dt.strftime("%Y-%m-%d")
+                start_time = "00:00"
+            local_tz = pytz_timezone(tz_str)
+            start_dt_local = local_tz.localize(datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M"))
+            freq_val = int(sched['frequency_value'])
+            freq_unit = sched['frequency_unit']
+            next_backup_local = start_dt_local
+            now_local = datetime.now(local_tz).replace(second=0, microsecond=0)
+            # Calculate next_backup in the future (local time)
+            while next_backup_local < now_local:
+                if freq_unit == 'days':
+                    next_backup_local += timedelta(days=freq_val)
+                elif freq_unit == 'weeks':
+                    next_backup_local += timedelta(weeks=freq_val)
+                elif freq_unit == 'months':
+                    next_backup_local += timedelta(days=30 * freq_val)  # Approximate
+                elif freq_unit == 'years':
+                    next_backup_local += timedelta(days=365 * freq_val)  # Approximate
+            # Also calculate UTC for the scheduler
+            next_backup_utc = next_backup_local.astimezone(pytz_timezone('UTC'))
+            seconds_until = int((next_backup_local - now_local).total_seconds())
+        except Exception as e:
+            next_backup_local = now_local
+            next_backup_utc = now_utc
+            seconds_until = 0
+
+        processed_schedules.append({
+            **sched,
+            'next_backup_local': next_backup_local,
+            'next_backup_utc': next_backup_utc,
+            'seconds_until': seconds_until,
+            'timezone': sched['timezone'] if 'timezone' in sched.keys() and sched['timezone'] else 'UTC'
+        })
+
+    return render_template(
+        'schedule_backup.html',
+        guild_id=guild_id,
+        schedules=processed_schedules,
+        all_timezones=all_timezones
+    )
+
+@app.route('/dashboard/<guild_id>/backups/schedule/delete/<schedule_id>', methods=['POST'])
+@login_required
+@guild_required
+def delete_schedule(guild_id, schedule_id):
+    try:
+        with get_conn() as conn:
+            conn.execute('DELETE FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id))
+        flash('Schedule deleted.', 'success')
+    except Exception as e:
+        logger.error(f"Error deleting schedule: {e}")
+        flash('Failed to delete schedule: ' + str(e), 'danger')
+    return redirect(url_for('schedule_backup', guild_id=guild_id))
+
+@app.route('/dashboard/<guild_id>/backups/schedule/toggle/<schedule_id>', methods=['POST'])
+@login_required
+@guild_required
+def toggle_schedule(guild_id, schedule_id):
+    with get_conn() as conn:
+        sched = conn.execute('SELECT enabled FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id)).fetchone()
+        if sched:
+            new_status = 0 if sched['enabled'] else 1
+            conn.execute('UPDATE schedules SET enabled = ? WHERE id = ? AND guild_id = ?', (new_status, schedule_id, guild_id))
+            flash('Schedule updated.', 'success')
+        else:
+            flash('Schedule not found.', 'danger')
+    return redirect(url_for('schedule_backup', guild_id=guild_id))
+
 # Warnings Management
 @app.route('/dashboard/<guild_id>/warnings')
 @login_required
@@ -1930,7 +2209,66 @@ def delete_warning(guild_id, user_id, warning_id):
     return redirect(url_for('user_warnings', 
                           guild_id=guild_id, 
                           user_id=user_id))
-     
+
+@app.route('/dashboard/<guild_id>/warning-actions', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def warning_actions_config(guild_id):
+    guild = get_guild_or_404(guild_id)
+    actions = db.get_warning_actions(guild_id)
+
+    if request.method == 'POST':
+        try:
+            csrf.protect()
+            # Parse all rows from the form
+            rows = []
+            for idx in range(1, 51):  # Support up to 50 rules
+                count = request.form.get(f'warning_count_{idx}')
+                action = request.form.get(f'action_{idx}')
+                duration = request.form.get(f'duration_{idx}')
+                if not count or not action:
+                    continue
+                try:
+                    count = int(count)
+                except ValueError:
+                    continue
+                duration_seconds = None
+                if action == "timeout" and duration:
+                    # Accept the formats: "45s", "30m", "1h", "2d", or "1w"
+                    m = re.match(r'^(\d+)([smhdw]?)$', duration.strip().lower())
+                    if m:
+                        val, unit = m.groups()
+                        val = int(val)
+                        if unit == 's' or unit == '':
+                            duration_seconds = val
+                        elif unit == 'm':
+                            duration_seconds = val * 60
+                        elif unit == 'h':
+                            duration_seconds = val * 3600
+                        elif unit == 'd':
+                            duration_seconds = val * 86400
+                        elif unit == 'w':
+                            duration_seconds = val * 604800
+                    else:
+                        try:
+                            duration_seconds = int(duration)
+                        except Exception:
+                            duration_seconds = 3600
+                db.set_warning_action(guild_id, count, action, duration_seconds)
+            # Remove deleted rules
+            existing_counts = {int(request.form.get(f'warning_count_{idx}')) for idx in range(1, 21) if request.form.get(f'warning_count_{idx}')}
+            for a in actions:
+                if a['warning_count'] not in existing_counts:
+                    db.remove_warning_action(guild_id, a['warning_count'])
+            flash('Warning actions updated!', 'success')
+            return redirect(url_for('warning_actions_config', guild_id=guild_id))
+        except Exception as e:
+            logger.error(f"Warning actions config error: {str(e)}")
+            flash('Failed to update warning actions', 'danger')
+    # Compute max_rows for the template
+    max_rows = max(len(actions), 5) + 2
+    return render_template('warning_actions.html', guild_id=guild_id, guild=guild, actions=actions, max_rows=max_rows)
+
 # Spam Configuration
 @app.route('/dashboard/<guild_id>/spam-config', methods=['GET', 'POST'])
 @login_required
@@ -1944,26 +2282,28 @@ def spam_config(guild_id):
     if request.method == 'POST':
         try:
             csrf.protect()
+            enabled = request.form.get("enabled") == "on"
             new_config = {
                 "spam_threshold": int(request.form.get("spam_threshold", 5)),
                 "spam_time_window": int(request.form.get("spam_time_window", 10)),
                 "mention_threshold": int(request.form.get("mention_threshold", 3)),
                 "mention_time_window": int(request.form.get("mention_time_window", 30)),
                 "excluded_channels": request.form.getlist("excluded_channels"),
-                "excluded_roles": request.form.getlist("excluded_roles")
+                "excluded_roles": request.form.getlist("excluded_roles"),
+                "enabled": enabled,
+                "spam_strikes_before_warning": int(request.form.get("spam_strikes_before_warning", 1))
             }
 
-            # Validate input
             if any(val < 1 for val in [
                 new_config["spam_threshold"],
                 new_config["spam_time_window"],
                 new_config["mention_threshold"],
-                new_config["mention_time_window"]
+                new_config["mention_time_window"],
+                new_config["spam_strikes_before_warning"]
             ]):
                 flash("All thresholds and windows must be at least 1", "danger")
                 return redirect(url_for("spam_config", guild_id=guild_id))
 
-            # Add default values for any missing keys
             complete_config = {
                 "spam_threshold": 5,
                 "spam_time_window": 10,
@@ -1971,6 +2311,8 @@ def spam_config(guild_id):
                 "mention_time_window": 30,
                 "excluded_channels": [],
                 "excluded_roles": [],
+                "enabled": True,
+                "spam_strikes_before_warning": 1,
                 **new_config
             }
 
@@ -1990,890 +2332,173 @@ def spam_config(guild_id):
                          guild=guild,
                          channels=text_channels,
                          roles=roles)
-     
-# Appeal System
-@app.route('/dashboard/<guild_id>/ban-appeal-forms', methods=['GET', 'POST'])
-@login_required
-@guild_required
-def ban_appeal_forms(guild_id):
-    guild = get_guild_or_404(guild_id)
-    forms = db.get_appeal_forms(guild_id) or {}
-    text_channels = get_text_channels(guild_id)
-    
-    if request.method == 'POST':
-        try:
-            csrf.protect()
-            # Get existing config first
-            existing = db.get_appeal_forms(guild_id) or {}
-            update_data = {
-                'ban_enabled': 'ban_enabled' in request.form,
-                'ban_channel_id': request.form.get('ban_channel_id'),
-                'ban_form_url': request.form.get('ban_form_url'),
-                'ban_form_fields': json.dumps(
-                    [f.strip() for f in request.form.get('ban_form_fields', '').split('\n') if f.strip()]
-                ),
-                # Preserve other configs
-                'kick_enabled': existing.get('kick_enabled', False),
-                'kick_channel_id': existing.get('kick_channel_id'),
-                'kick_form_fields': existing.get('kick_form_fields'),
-                'timeout_enabled': existing.get('timeout_enabled', False),
-                'timeout_channel_id': existing.get('timeout_channel_id'),
-                'timeout_form_fields': existing.get('timeout_form_fields'),
-                'base_url': FRONTEND_URL
-            }
-            
-            db.update_appeal_forms(guild_id, **update_data)
-            flash('Ban appeal settings updated', 'success')
-            return redirect(url_for('ban_appeal_forms', guild_id=guild_id))
-        
-        except CSRFError:
-            flash('Security token expired. Please submit the form again.', 'danger')
-            return redirect(url_for('ban_appeal_forms', guild_id=guild_id))
-    
-    return render_template('ban_appeal_form.html',
-                         forms=forms,
-                         guild_id=guild_id,
-                         guild=guild,
-                         channels=text_channels,
-                         FRONTEND_URL=FRONTEND_URL)
 
-@app.route('/dashboard/<guild_id>/kick-appeal-forms', methods=['GET', 'POST'])
+# Custom Forms Routes
+@app.route('/dashboard/<guild_id>/forms')
 @login_required
 @guild_required
-def kick_appeal_forms(guild_id):
+def custom_forms_dashboard(guild_id):
+    forms = db.execute_query(
+        'SELECT * FROM custom_forms WHERE guild_id = ? OR is_template = 1 ORDER BY is_template DESC, created_at DESC',
+        (guild_id,),
+        fetch='all'
+    )
     guild = get_guild_or_404(guild_id)
-    forms = db.get_appeal_forms(guild_id) or {}
-    text_channels = get_text_channels(guild_id)
-    
-    if request.method == 'POST':
-        try:
-            csrf.protect()
-            # Get existing config first
-            existing = db.get_appeal_forms(guild_id) or {}
-            update_data = {
-                'kick_enabled': 'kick_enabled' in request.form,
-                'kick_channel_id': request.form.get('kick_channel_id'),
-                'kick_form_url': request.form.get('kick_form_url'),
-                'kick_form_fields': json.dumps(
-                    [f.strip() for f in request.form.get('kick_form_fields', '').split('\n') if f.strip()]
-                ),
-                # Preserve other configs
-                'ban_enabled': existing.get('ban_enabled', False),
-                'ban_channel_id': existing.get('ban_channel_id'),
-                'ban_form_fields': existing.get('ban_form_fields'),
-                'timeout_enabled': existing.get('timeout_enabled', False),
-                'timeout_channel_id': existing.get('timeout_channel_id'),
-                'timeout_form_fields': existing.get('timeout_form_fields'),
-                'base_url': FRONTEND_URL
-            }
-            
-            db.update_appeal_forms(guild_id, **update_data)
-            flash('Kick appeal settings updated', 'success')
-            return redirect(url_for('ban_appeal_forms', guild_id=guild_id))
-        
-        except CSRFError:
-            flash('Security token expired. Please submit the form again.', 'danger')
-            return redirect(url_for('kick_appeal_forms', guild_id=guild_id))
-    
-    return render_template('kick_appeal_form.html',
-                         forms=forms,
-                         guild_id=guild_id,
-                         guild=guild,
-                         channels=text_channels,
-                         FRONTEND_URL=FRONTEND_URL)
+    return render_template('form_dashboard.html', guild=guild, forms=forms, guild_id=guild_id, FRONTEND_URL=FRONTEND_URL)
 
-@app.route('/dashboard/<guild_id>/timeout-appeal-forms', methods=['GET', 'POST'])
+@app.route('/dashboard/<guild_id>/forms/new', methods=['GET', 'POST'])
 @login_required
 @guild_required
-def timeout_appeal_forms(guild_id):
-    guild = get_guild_or_404(guild_id)
-    forms = db.get_appeal_forms(guild_id) or {}
-    text_channels = get_text_channels(guild_id)
-    
+def create_custom_form(guild_id):
+    with open(os.path.join('web', 'static', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
+        prebuilt_templates = json.load(f)
     if request.method == 'POST':
-        try:
-            csrf.protect()
-            # Get existing config first
-            existing = db.get_appeal_forms(guild_id) or {}
-            update_data = {
-                'timeout_enabled': 'timeout_enabled' in request.form,
-                'timeout_channel_id': request.form.get('timeout_channel_id'),
-                'timeout_form_url': request.form.get('timeout_form_url'),
-                'timeout_form_fields': json.dumps(
-                    [f.strip() for f in request.form.get('timeout_form_fields', '').split('\n') if f.strip()]
-                ),
-                # Preserve other configs
-                'kick_enabled': existing.get('kick_enabled', False),
-                'kick_channel_id': existing.get('kick_channel_id'),
-                'kick_form_fields': existing.get('kick_form_fields'),
-                'ban_enabled': existing.get('ban_enabled', False),
-                'ban_channel_id': existing.get('ban_channel_id'),
-                'ban_form_fields': existing.get('ban_form_fields'),
-                'base_url': FRONTEND_URL
-            }
-            
-            db.update_appeal_forms(guild_id, **update_data)
-            flash('Timeout appeal settings updated', 'success')
-            return redirect(url_for('timeout_appeal_forms', guild_id=guild_id))
-        
-        except CSRFError:
-            flash('Security token expired. Please submit the form again.', 'danger')
-            return redirect(url_for('timeout_appeal_forms', guild_id=guild_id))
-    
-    return render_template('timeout_appeal_form.html',
-                         forms=forms,
-                         guild_id=guild_id,
-                         guild=guild,
-                         channels=text_channels,
-                         FRONTEND_URL=FRONTEND_URL)
-                         
-@app.route('/dashboard/<guild_id>/ban-appeals')
-@login_required
-@guild_required
-def ban_appeals(guild_id):
-    try:
-        # Get appeal form configuration
-        form_config = db.execute_query(
-            'SELECT ban_form_fields FROM appeal_forms WHERE guild_id = ?',
-            (guild_id,),
-            fetch='one'
+        data = request.get_json(force=True)
+        form_id = str(uuid.uuid4())
+        db.execute_query(
+            '''INSERT INTO custom_forms (id, guild_id, name, description, config, is_template, created_by)
+               VALUES (?, ?, ?, ?, ?, 0, ?)''',
+            (form_id, guild_id, data['name'], data.get('description', ''), json.dumps(data['config']), session['user']['id'])
         )
-        
-        form_fields = []
-        if form_config and form_config.get('ban_form_fields'):
-            form_fields = [field.split('(')[0].strip() 
-                         for field in json.loads(form_config['ban_form_fields'])]
+        return jsonify({'success': True, 'form_id': form_id})
+    discord_channels = get_text_channels(guild_id)
+    return render_template('form_builder.html', guild_id=guild_id, prebuilt_templates=prebuilt_templates, discord_channels=discord_channels)
 
-        # Fetch appeals with review information
-        appeals = db.execute_query('''
-            SELECT 
-                appeal_id as id,
-                user_id,
-                submitted_at,
-                status,
-                appeal_data,
-                preview_text,
-                reviewed_by,
-                reviewed_at,
-                moderator_notes
-            FROM appeals 
-            WHERE guild_id = ? AND type = 'ban'
-            ORDER BY submitted_at DESC
-        ''', (guild_id,), fetch='all')
-
-        processed_appeals = []
-        for appeal in appeals:
-            try:
-                appeal_data = json.loads(appeal['appeal_data']) if appeal['appeal_data'] else {}
-            except json.JSONDecodeError:
-                appeal_data = {}
-
-            processed_appeals.append({
-                'id': appeal['id'],
-                'user_id': appeal['user_id'],
-                'date': datetime.fromtimestamp(appeal['submitted_at']).strftime('%Y-%m-%d %H:%M'),
-                'preview': appeal.get('preview_text', 'No preview'),
-                'full_data': appeal_data,
-                'status': appeal.get('status', 'under_review').lower(),
-                'reviewed_by': appeal.get('reviewed_by'),
-                'reviewed_at': datetime.fromtimestamp(appeal['reviewed_at']).strftime('%Y-%m-%d %H:%M') if appeal.get('reviewed_at') else None,
-                'moderator_notes': appeal.get('moderator_notes'),
-                'questions': form_fields
-            })
-
-        guild = get_guild_or_404(guild_id)
-        return render_template('ban_appeals.html',
-                            appeals=processed_appeals,
-                            guild_id=guild_id,
-                            guild=guild)
-
-    except Exception as e:
-        logger.error(f"Error in ban_appeals: {traceback.format_exc()}")
-        abort(500, description="Failed to load ban appeals")
-
-# Appeal forms (ban_form_url/kick_form_url/timeout_form_url in the database [appeal_forms table])
-@app.route('/ban-appeal-form')
-def ban_appeal_form():
-    token = request.args.get('token')
-    return handle_appeal_form(token, 'ban')
-    
-@app.route('/kick-appeal-form')
-def kick_appeal_form():
-    token = request.args.get('token')
-    return handle_appeal_form(token, 'kick')
-
-@app.route('/timeout-appeal-form')
-def timeout_appeal_form():
-    token = request.args.get('token')
-    return handle_appeal_form(token, 'timeout')
-
-def handle_appeal_form(token: str, appeal_type: str):
-    if not token:
-        return "Missing appeal token", 400
-
-    # Validate appeal_type to prevent SQL injection
-    valid_types = {'ban', 'kick', 'timeout'}
-    if appeal_type not in valid_types:
-        return "Invalid appeal type", 400
-        
-    # Initialize session for anonymous users
-    session.permanent = True
-    if not session.get('_anon_session'):
-        session['_anon_session'] = str(uuid.uuid4())
-        session.modified = True
-
-    # Determine the correct columns based on appeal_type
-    enabled_column = f"{appeal_type}_enabled"
-    form_fields_column = f"{appeal_type}_form_fields"
-
-    # Get appeal data with guild config
-    appeal = db.execute_query(
-        f'''
-        SELECT a.*, af.{enabled_column}, af.{form_fields_column}, g.name as guild_name 
-        FROM appeals a
-        JOIN appeal_forms af ON a.guild_id = af.guild_id
-        JOIN guilds g ON a.guild_id = g.guild_id
-        WHERE a.appeal_token = ?
-        AND a.type = ?
-        AND a.status = 'pending'
-        AND a.expires_at > ?
-        ''',
-        (token, appeal_type, int(time.time())),
+@app.route('/dashboard/<guild_id>/forms/<form_id>/edit', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def edit_custom_form(guild_id, form_id):
+    with open(os.path.join('web', 'static', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
+        prebuilt_templates = json.load(f)
+    form = db.execute_query(
+        'SELECT * FROM custom_forms WHERE id = ? AND guild_id = ?',
+        (form_id, guild_id),
         fetch='one'
     )
-
-    if not appeal:
-        return render_template('appeal_form.html',
-                            form_config={'enabled': False},
-                            guild_name="Unknown Server")
-
-    # Build form config from database values
-    form_config = {
-        'enabled': bool(appeal[enabled_column]),
-        'form_fields': json.loads(appeal[form_fields_column]),
-        'guild_name': appeal['guild_name']
-    }
-
-    if not form_config['enabled']:
-        return "Form Disabled", 403
-
-    return render_template('appeal_form.html',
-                         appeal_type=appeal_type,
-                         form_config=form_config,
-                         guild_name=appeal['guild_name'],
-                         expires_at=appeal['expires_at'],
-                         token=token)
-
-@app.route('/submit-appeal', methods=['POST'])
-def submit_appeal():
-    """Handle appeal submissions with full validation and error handling"""
-    try:
-        # ===== [1] CSRF Validation =====
-        csrf.protect()
-        
-        # ===== [2] Initial Data Validation =====
-        required_fields = ['token', 'appeal_type']
-        if any(field not in request.form for field in required_fields):
-            return jsonify({
-                "error": "Missing required fields",
-                "required": required_fields
-            }), 400
-
-        token = request.form['token'].strip()
-        appeal_type = request.form['appeal_type'].lower().strip()
-        valid_types = {'ban', 'kick', 'timeout'}
-        
-        if appeal_type not in valid_types:
-            return jsonify({
-                "error": "Invalid appeal type",
-                "valid_types": list(valid_types)
-            }), 400
-
-        # ===== [3] Appeal Validation =====
-        appeal = db.get_appeal_by_token(token)
-        if not appeal:
-            return jsonify({"error": "Invalid or expired token"}), 400
-            
-        if appeal['status'] != 'pending':
-            return jsonify({
-                "error": "Appeal already processed",
-                "current_status": appeal['status']
-            }), 409
-
-        # ===== [4] Form Configuration Check =====
-        form_config = db.get_appeal_forms(appeal['guild_id']) or {}
-        if not form_config.get(f"{appeal_type}_enabled", False):
-            return jsonify({
-                "error": "This appeal type is disabled",
-                "type": appeal_type
-            }), 403
-            
-        channel_id = form_config.get(f"{appeal_type}_channel_id")
-        if not channel_id:
-            return jsonify({
-                "error": "No channel configured for this appeal type",
-                "type": appeal_type
-            }), 400
-
-        # ===== [5] Response Data Collection =====
-        form_fields = json.loads(form_config.get(f"{appeal_type}_form_fields", "[]"))
-        response_data = {}
-        
-        for idx, field in enumerate(form_fields, 1):
-            response_key = f"response_{idx}"
-            response_data[response_key] = request.form.get(response_key, "").strip()[:2000]
-
-        # ===== [6] Database Update =====
-        db.update_appeal(
-            appeal_id=appeal['appeal_id'],
-            appeal_data=response_data,
-            status='under_review',
-            preview_text=" | ".join(
-                f"{q[:20]}: {v[:30]}" 
-                for q, v in zip(form_fields, response_data.values())
-            )[:255]
-        )
-
-        # ===== [7] Send to Discord =====
-        try:
-            response = requests.post(
-                f"{API_URL}/send_appeal_to_discord",
-                json={
-                    "appeal_id": appeal['appeal_id'],
-                    "guild_id": appeal['guild_id']
-                },
-                timeout=10  # 10 second timeout
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Bot API error: {response.status_code} {response.text}")
-                return jsonify({
-                    "error": "Failed to submit to Discord",
-                    "details": response.text
-                }), 502
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Bot API connection failed: {str(e)}")
-            return jsonify({
-                "error": "Could not reach moderation service",
-                "details": str(e)
-            }), 503
-
-        # ===== [8] Success Response =====
-        return jsonify({
-            "success": True,
-            "appeal_id": appeal['appeal_id'],
-            "guild_id": appeal['guild_id'],
-            "status": "under_review"
-        })
-
-    except CSRFError as e:
-        logger.warning(f"CSRF validation failed: {str(e)}")
-        return jsonify({
-            "error": "Security token expired. Please refresh and try again."
-        }), 403
-        
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {str(e)}")
-        return jsonify({
-            "error": "Failed to save appeal data"
-        }), 500
-        
-    except Exception as e:
-        logger.error(f"Unexpected error: {traceback.format_exc()}")
-        return jsonify({
-            "error": "Internal server error"
-        }), 500
-
-@app.route('/api/<guild_id>/ban-appeals/<appeal_id>/approve', methods=['POST'])
-@login_required
-@guild_required
-def approve_ban_appeal(guild_id, appeal_id):
-    try:
-        csrf.protect()
-        moderator_id = session['user']['id']
-        
-        # Validate appeal exists
-        appeal = db.execute_query(
-            '''SELECT user_id, status, moderator_notes 
-               FROM appeals 
-               WHERE appeal_id = ? AND guild_id = ?''',
-            (str(appeal_id), str(guild_id)),
-            fetch='one'
-        )
-
-        if not appeal:
-            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
-
-        if appeal['status'].lower() != 'under_review':
-            return jsonify({
-                'success': False,
-                'error': f'Appeal cannot be approved from {appeal["status"]} state'
-            }), 400
-
-        # Update appeal status
-        new_notes = f"{appeal['moderator_notes']}\nApproved by {moderator_id} at {int(time.time())}" if appeal['moderator_notes'] else f"Approved by {moderator_id} at {int(time.time())}"
-        
+    if not form:
+        abort(404)
+    if request.method == 'POST':
+        data = request.get_json(force=True)
         db.execute_query(
-            '''UPDATE appeals 
-               SET status = 'approved',
-                   reviewed_at = ?,
-                   reviewed_by = ?,
-                   moderator_notes = ?
-               WHERE appeal_id = ? AND guild_id = ?''',
-            (
-                int(time.time()), 
-                moderator_id, 
-                new_notes, 
-                str(appeal_id),
-                str(guild_id)
-            )
-        )
-
-        # Direct REST API implementation
-        def perform_unban():
-            headers = {
-                'Authorization': f'Bot {os.getenv("BOT_TOKEN")}',
-                'Content-Type': 'application/json'
-            }
-            user_id = appeal['user_id']
-            
-            try:
-                # Remove ban using Discord REST API
-                response = requests.delete(
-                    f'https://discord.com/api/v9/guilds/{guild_id}/bans/{user_id}',
-                    headers=headers,
-                    json={'reason': f'Ban appeal approved (ID: {appeal_id})'}
-                )
-
-                if response.status_code == 204:
-                    logger.info(f"Successfully unbanned user {user_id}")
-                elif response.status_code == 404:
-                    logger.info(f"User {user_id} not banned in guild {guild_id}")
-                else:
-                    error_msg = f"Unban failed: {response.status_code} {response.text}"
-                    logger.error(error_msg)
-                    db.execute_query(
-                        '''UPDATE appeals 
-                           SET moderator_notes = moderator_notes || ?
-                           WHERE appeal_id = ?''',
-                        (f"\n{error_msg}", appeal_id)
-                    )
-                    
-            except Exception as e:
-                logger.error(f"Unban error: {str(e)}")
-                db.execute_query(
-                    '''UPDATE appeals 
-                       SET moderator_notes = moderator_notes || ?
-                       WHERE appeal_id = ?''',
-                    (f"\nUnban failed: {str(e)}", appeal_id)
-                )
-
-        # Execute in a thread to avoid blocking
-        threading.Thread(target=perform_unban, daemon=True).start()
-
-        return jsonify({
-            'success': True,
-            'message': 'Appeal approved. Unban process initiated.'
-        })
-
-    except CSRFError as e:
-        logger.warning(f"CSRF failure: {str(e)}")
-        return jsonify({'success': False, 'error': 'Invalid security token'}), 403
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Database operation failed'}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error: {traceback.format_exc()}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
-
-@app.route('/api/<guild_id>/ban-appeals/<appeal_id>/reject', methods=['POST'])
-@login_required
-@guild_required
-def reject_ban_appeal(guild_id, appeal_id):
-    try:
-        csrf.protect()
-        moderator_id = session['user']['id']
-        reason = request.json.get('reason', 'No reason provided').strip()[:1000]
-        
-        if not reason:
-            return jsonify({'success': False, 'error': 'Rejection reason required'}), 400
-
-        # Verify appeal exists and is in correct state
-        appeal = db.execute_query(
-            '''SELECT status FROM appeals 
-               WHERE appeal_id = ? AND guild_id = ?''',
-            (str(appeal_id), str(guild_id)),  # Fixed parameter format
-            fetch='one'
-        )
-
-        if not appeal:
-            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
-
-        if appeal['status'].lower() != 'under_review':
-            return jsonify({
-                'success': False,
-                'error': f'Appeal cannot be rejected from {appeal["status"]} state'
-            }), 400
-
-        # Update appeal with rejection details
-        db.execute_query(
-            '''UPDATE appeals 
-               SET status = 'rejected',
-                   reviewed_at = ?,
-                   reviewed_by = ?,
-                   moderator_notes = ?
-               WHERE appeal_id = ? AND guild_id = ?''',
-            (
-                int(time.time()), 
-                moderator_id, 
-                reason, 
-                str(appeal_id), 
-                str(guild_id)
-            )
-        )
-
-        return jsonify({
-            'success': True,
-            'message': 'Appeal rejected successfully'
-        })
-
-    except CSRFError as e:
-        return jsonify({'success': False, 'error': 'Invalid CSRF token'}), 403
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Database operation failed'}), 500
-    except Exception as e:
-        logger.error(f"Rejection error: {traceback.format_exc()}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
-
-@app.route('/api/<guild_id>/ban-appeals/<appeal_id>/delete', methods=['POST'])
-@login_required
-@guild_required
-def delete_ban_appeal(guild_id, appeal_id):
-    try:
-        csrf.protect()
-        
-        # Verify appeal exists
-        appeal = db.execute_query(
-            'SELECT 1 FROM appeals WHERE appeal_id = ? AND guild_id = ?',
-            (str(appeal_id), str(guild_id)),
-            fetch='one'
-        )
-        
-        if not appeal:
-            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
-
-        # Delete appeal record
-        db.execute_query(
-            'DELETE FROM appeals WHERE appeal_id = ? AND guild_id = ?',
-            (str(appeal_id), str(guild_id))
-        )
-
-        return jsonify({'success': True, 'message': 'Appeal permanently deleted'})
-
-    except CSRFError:
-        return jsonify({'success': False, 'error': 'CSRF validation failed'}), 403
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {str(e)}")
-        return jsonify({'success': False, 'error': 'Database operation failed'}), 500
-    except Exception as e:
-        logger.error(f"Deletion error: {traceback.format_exc()}")
-        return jsonify({'success': False, 'error': 'Internal server error'}), 500
-
-# Kick Appeals Routes
-@app.route('/dashboard/<guild_id>/kick-appeals')
-@login_required
-@guild_required
-def kick_appeals(guild_id):
-    try:
-        # Get appeal form configuration
-        form_config = db.execute_query(
-            'SELECT kick_form_fields FROM appeal_forms WHERE guild_id = ?',
-            (guild_id,),
-            fetch='one'
-        )
-        
-        form_fields = []
-        if form_config and form_config.get('kick_form_fields'):
-            form_fields = [field.split('(')[0].strip() 
-                         for field in json.loads(form_config['kick_form_fields'])]
-
-        # Fetch appeals with review information
-        appeals = db.execute_query('''
-            SELECT 
-                appeal_id as id,
-                user_id,
-                submitted_at,
-                status,
-                appeal_data,
-                preview_text,
-                reviewed_by,
-                reviewed_at,
-                moderator_notes
-            FROM appeals 
-            WHERE guild_id = ? AND type = 'kick'
-            ORDER BY submitted_at DESC
-        ''', (guild_id,), fetch='all')
-
-        processed_appeals = []
-        for appeal in appeals:
-            try:
-                appeal_data = json.loads(appeal['appeal_data']) if appeal['appeal_data'] else {}
-            except json.JSONDecodeError:
-                appeal_data = {}
-
-            processed_appeals.append({
-                'id': appeal['id'],
-                'user_id': appeal['user_id'],
-                'date': datetime.fromtimestamp(appeal['submitted_at']).strftime('%Y-%m-%d %H:%M'),
-                'preview': appeal.get('preview_text', 'No preview'),
-                'full_data': appeal_data,
-                'status': appeal.get('status', 'under_review').lower(),
-                'reviewed_by': appeal.get('reviewed_by'),
-                'reviewed_at': datetime.fromtimestamp(appeal['reviewed_at']).strftime('%Y-%m-%d %H:%M') if appeal.get('reviewed_at') else None,
-                'moderator_notes': appeal.get('moderator_notes'),
-                'questions': form_fields
-            })
-
-        guild = get_guild_or_404(guild_id)
-        return render_template('kick_appeals.html',
-                            appeals=processed_appeals,
-                            guild_id=guild_id,
-                            guild=guild)
-
-    except Exception as e:
-        logger.error(f"Error in kick_appeals: {traceback.format_exc()}")
-        abort(500, description="Failed to load kick appeals")
-
-@app.route('/api/<guild_id>/kick-appeals/<appeal_id>/approve', methods=['POST'])
-@login_required
-@guild_required
-def approve_kick_appeal(guild_id, appeal_id):
-    return handle_appeal_action(guild_id, appeal_id, 'kick', 'approved')
-
-@app.route('/api/<guild_id>/kick-appeals/<appeal_id>/reject', methods=['POST'])
-@login_required
-@guild_required
-def reject_kick_appeal(guild_id, appeal_id):
-    return handle_appeal_action(guild_id, appeal_id, 'kick', 'rejected')
-
-@app.route('/api/<guild_id>/kick-appeals/<appeal_id>/delete', methods=['POST'])
-@login_required
-@guild_required
-def delete_kick_appeal(guild_id, appeal_id):
-    return handle_appeal_delete(guild_id, appeal_id, 'kick')
-
-# Timeout Appeals Routes
-@app.route('/dashboard/<guild_id>/timeout-appeals')
-@login_required
-@guild_required
-def timeout_appeals(guild_id):
-    try:
-        # Get appeal form configuration
-        form_config = db.execute_query(
-            'SELECT timeout_form_fields FROM appeal_forms WHERE guild_id = ?',
-            (guild_id,),
-            fetch='one'
-        )
-        
-        form_fields = []
-        if form_config and form_config.get('timeout_form_fields'):
-            form_fields = [field.split('(')[0].strip() 
-                         for field in json.loads(form_config['timeout_form_fields'])]
-
-        # Fetch appeals with review information
-        appeals = db.execute_query('''
-            SELECT 
-                appeal_id as id,
-                user_id,
-                submitted_at,
-                status,
-                appeal_data,
-                preview_text,
-                reviewed_by,
-                reviewed_at,
-                moderator_notes
-            FROM appeals 
-            WHERE guild_id = ? AND type = 'timeout'
-            ORDER BY submitted_at DESC
-        ''', (guild_id,), fetch='all')
-
-        processed_appeals = []
-        for appeal in appeals:
-            try:
-                appeal_data = json.loads(appeal['appeal_data']) if appeal['appeal_data'] else {}
-            except json.JSONDecodeError:
-                appeal_data = {}
-
-            processed_appeals.append({
-                'id': appeal['id'],
-                'user_id': appeal['user_id'],
-                'date': datetime.fromtimestamp(appeal['submitted_at']).strftime('%Y-%m-%d %H:%M'),
-                'preview': appeal.get('preview_text', 'No preview'),
-                'full_data': appeal_data,
-                'status': appeal.get('status', 'under_review').lower(),
-                'reviewed_by': appeal.get('reviewed_by'),
-                'reviewed_at': datetime.fromtimestamp(appeal['reviewed_at']).strftime('%Y-%m-%d %H:%M') if appeal.get('reviewed_at') else None,
-                'moderator_notes': appeal.get('moderator_notes'),
-                'questions': form_fields
-            })
-
-        guild = get_guild_or_404(guild_id)
-        return render_template('timeout_appeals.html',
-                            appeals=processed_appeals,
-                            guild_id=guild_id,
-                            guild=guild)
-
-    except Exception as e:
-        logger.error(f"Error in timeout_appeals: {traceback.format_exc()}")
-        abort(500, description="Failed to load timeout appeals")
-
-@app.route('/api/<guild_id>/timeout-appeals/<appeal_id>/approve', methods=['POST'])
-@login_required
-@guild_required
-def approve_timeout_appeal(guild_id, appeal_id):
-    return handle_appeal_action(guild_id, appeal_id, 'timeout', 'approved')
-
-@app.route('/api/<guild_id>/timeout-appeals/<appeal_id>/reject', methods=['POST'])
-@login_required
-@guild_required
-def reject_timeout_appeal(guild_id, appeal_id):
-    return handle_appeal_action(guild_id, appeal_id, 'timeout', 'rejected')
-
-@app.route('/api/<guild_id>/timeout-appeals/<appeal_id>/delete', methods=['POST'])
-@login_required
-@guild_required
-def delete_timeout_appeal(guild_id, appeal_id):
-    return handle_appeal_delete(guild_id, appeal_id, 'timeout')
-
-# Shared Appeal Handlers
-def handle_appeals_page(guild_id, appeal_type, template_name):
-    appeals = db.execute_query('''
-        SELECT * FROM appeals 
-        WHERE guild_id = ? AND appeal_type = ?
-        ORDER BY timestamp DESC
-    ''', (guild_id, appeal_type))
-    
-    processed_appeals = []
-    for appeal in appeals:
-        appeal_dict = process_appeal_data(appeal)
-        processed_appeals.append(appeal_dict)
-    
-    guild = get_guild_or_404(guild_id)
-    return render_template(template_name,
-                         appeals=processed_appeals,
-                         guild_id=guild_id,
-                         guild=guild,
-                         appeal_type=appeal_type)
-
-def handle_appeal_action(guild_id, appeal_id, appeal_type, action):
-    try:
-        appeal = db.execute_query(
-            'SELECT * FROM appeals WHERE appeal_id = ? AND guild_id = ? AND appeal_type = ?',
-            (appeal_id, guild_id, appeal_type),
-            fetch='one'
-        )
-        
-        if not appeal:
-            return jsonify({'success': False, 'error': 'Appeal not found'}), 404
-            
-        if action == 'rejected':
-            rejection_reason = request.json.get('reason', 'No reason provided')
-            db.execute_query(
-                '''UPDATE appeals 
-                   SET status = ?, 
-                       moderator_notes = ?
-                   WHERE appeal_id = ?''',
-                (action, rejection_reason, appeal_id)
-            )
-        else:
-            db.execute_query(
-                'UPDATE appeals SET status = ? WHERE appeal_id = ?',
-                (action, appeal_id)
-            )
-        
-        # Add to audit log
-        db.execute_query(
-            'INSERT INTO audit_log (guild_id, user_id, action, details) VALUES (?, ?, ?, ?)',
-            (guild_id, session['user']['id'], f'{appeal_type}_appeal_{action}', 
-             f'{action} appeal {appeal_id} for user {appeal["user_id"]}')
-        )
-        
-        return jsonify({'success': True, 'message': f'Appeal {action} successfully'})
-        
-    except Exception as e:
-        logger.error(f"Error {action} {appeal_type} appeal {appeal_id}: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-def handle_appeal_delete(guild_id, appeal_id, appeal_type):
-    try:
-        db.execute_query(
-            'DELETE FROM appeals WHERE appeal_id = ? AND guild_id = ? AND appeal_type = ?',
-            (appeal_id, guild_id, appeal_type)
+            'UPDATE custom_forms SET name = ?, description = ?, config = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND guild_id = ?',
+            (data['name'], data.get('description', ''), json.dumps(data['config']), form_id, guild_id)
         )
         return jsonify({'success': True})
+    discord_channels = get_text_channels(guild_id)
+    return render_template('form_builder.html', guild_id=guild_id, form=form, prebuilt_templates=prebuilt_templates, discord_channels=discord_channels)
+
+@app.route('/dashboard/<guild_id>/forms/<form_id>/delete', methods=['POST'])
+@login_required
+@guild_required
+def delete_custom_form(guild_id, form_id):
+    db.execute_query('DELETE FROM custom_forms WHERE id = ? AND guild_id = ?', (form_id, guild_id))
+    flash('Form deleted.', 'success')
+    return redirect(url_for('custom_forms_dashboard', guild_id=guild_id))
+
+# @app.route('/forms/import/<share_id>', methods=['GET', 'POST'])
+# @login_required
+# def import_shared_form(share_id):
+#     form = db.execute_query('SELECT * FROM custom_forms WHERE share_id = ?', (share_id,), fetch='one')
+#     if not form:
+#         abort(404)
+#     if request.method == 'POST':
+#         guild_id = request.form.get('guild_id')
+#         new_id = str(uuid.uuid4())
+#         db.execute_query(
+#             '''INSERT INTO custom_forms (id, guild_id, name, description, config, is_template, template_source, created_by)
+#                VALUES (?, ?, ?, ?, ?, 0, ?, ?)''',
+#             (new_id, guild_id, form['name'], form['description'], form['config'], form['id'], session['user']['id'])
+#         )
+#         flash('Form imported!', 'success')
+#         return redirect(url_for('custom_forms_dashboard', guild_id=guild_id))
+#     return render_template('import_form.html', form=form)
+
+@app.route('/api/forms/<form_id>/submit', methods=['POST'])
+@login_required
+def submit_custom_form(form_id):
+    try:
+        data = request.get_json(force=True)
+        user_id = session['user']['id']
+        # Fetch form config to check max submissions and embed config
+        form = db.execute_query(
+            'SELECT config, guild_id FROM custom_forms WHERE id = ?',
+            (form_id,),
+            fetch='one'
+        )
+        if not form:
+            return jsonify({'success': False, 'error': 'Form not found'}), 404
+        config = json.loads(form['config'])
+        max_submissions = int(config.get('max_submissions', 1))
+        count = db.execute_query(
+            'SELECT COUNT(*) as cnt FROM form_submissions WHERE form_id = ? AND user_id = ?',
+            (form_id, user_id),
+            fetch='one'
+        )['cnt']
+        if count >= max_submissions:
+            return jsonify({'success': False, 'error': f'Maximum submissions reached ({max_submissions})'}), 429
+
+        # Record the submission in the database
+        submission_id = str(uuid.uuid4())
+        db.execute_query(
+            '''INSERT INTO form_submissions (id, form_id, guild_id, user_id, submission_data, submitted_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''',
+            (submission_id, form_id, form['guild_id'], user_id, json.dumps(data.get("responses", {})))
+        )
+
+        # Proxy to bot API, include @user in footer if logged in
+        API_URL = os.getenv('API_URL', 'http://localhost:5003')
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {generate_jwt()}'
+        }
+        user_mention = f"<@{user_id}>"
+        resp = requests.post(
+            f"{API_URL}/api/forms/{form_id}/submit",
+            headers=headers,
+            json={
+                "form_id": form_id,
+                "guild_id": form['guild_id'],
+                "user_id": user_id,
+                "responses": data.get("responses", {}),
+                "user_mention": user_mention
+            },
+            timeout=10
+        )
+        try:
+            return (resp.content, resp.status_code, resp.headers.items())
+        except Exception:
+            logger.error(f"Bot API did not return JSON: {resp.text}")
+            return jsonify({'success': False, 'error': 'Bot API error: ' + resp.text}), 502
     except Exception as e:
-        logger.error(f"Error deleting {appeal_type} appeal {appeal_id}: {str(e)}")
+        logger.error(f"Error proxying form submission: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-def process_appeal_data(appeal):
-    appeal_dict = dict(appeal)
-    data = appeal_dict.get('data', '')
-    
-    if isinstance(data, str) and data:
-        try:
-            data = json.loads(data)
-        except json.JSONDecodeError:
-            data = {'answer': data}
-    elif not data:
-        data = {}
-        
-    if isinstance(data, dict):
-        appeal_dict['data'] = [data]
-    elif isinstance(data, list):
-        appeal_dict['data'] = data
-    else:
-        appeal_dict['data'] = [{'answer': str(data)}]
-        
-    # Get username from Discord API
-    user_id = appeal_dict['user_id']
-    try:
-        headers = {'Authorization': f'Bot {os.getenv("BOT_TOKEN")}'}
-        user_data = requests.get(
-            f'https://discord.com/api/v9/users/{user_id}',
-            headers=headers
-        ).json()
-        appeal_dict['username'] = user_data.get('username', f'Unknown ({user_id})')
-    except Exception as e:
-        appeal_dict['username'] = f'Unknown ({user_id})'
-        logger.error(f"Error fetching user {user_id}: {str(e)}")
-    
-    return appeal_dict
+@app.route('/dashboard/<guild_id>/forms/<form_id>/submissions')
+@login_required
+@guild_required
+def view_form_submissions(guild_id, form_id):
+    submissions = db.execute_query(
+        'SELECT * FROM form_submissions WHERE form_id = ? AND guild_id = ? ORDER BY submitted_at DESC',
+        (form_id, guild_id),
+        fetch='all'
+    )
+    return render_template('form_submissions.html', submissions=submissions)
 
-def get_appeal_config(guild_id: str, appeal_type: str):
-    config = db.execute_query(
-        'SELECT * FROM appeal_forms WHERE guild_id = ?',
-        (guild_id,),
+@app.route('/forms/<form_id>/fill', methods=['GET'])
+@login_required
+def public_form_fill(form_id):
+    form = db.execute_query(
+        'SELECT * FROM custom_forms WHERE id = ?',
+        (form_id,),
         fetch='one'
     )
-    
-    if not config:
-        return {'enabled': False}
+    if not form:
+        abort(404)
+    config = json.loads(form['config'])
+    return render_template('public_form_fill.html', form=form, config=config)
 
-    type_map = {
-        'ban': ('ban_enabled', 'ban_form_fields', 'ban_channel_id'),
-        'kick': ('kick_enabled', 'kick_form_fields', 'kick_channel_id'),
-        'timeout': ('timeout_enabled', 'timeout_form_fields', 'timeout_channel_id')
-    }
-    
-    enabled_key, fields_key, channel_key = type_map[appeal_type]
-    
-    return {
-        'enabled': bool(config.get(enabled_key, 0)),
-        'channel_id': config.get(channel_key),
-        'form_fields': json.loads(config.get(fields_key, '[]'))
-    }
+def random_schedule_id():
+    return ''.join(random.choices('0123456789', k=5))
 
 # Get text channels from Discord API
 def get_text_channels(guild_id):
@@ -2976,18 +2601,28 @@ def get_channel_name_filter(channel_id, channels):
 
 @app.template_filter('datetimeformat')
 def datetimeformat(value, format='%Y-%m-%d %H:%M'):
+    """
+    Jinja2 filter to format a datetime, timestamp, or ISO string for display.
+    Handles int/float (timestamp), str (ISO or timestamp), and datetime objects.
+    """
+    if not value:
+        return 'unknown'
+    # Handle relative format
     if format == 'relative':
-        # Relative time formatting
-        if not value:
-            return 'unknown'
         now = datetime.utcnow()
-        if isinstance(value, str):
+        if isinstance(value, (int, float)):
+            # If value is too large, assume it's in milliseconds
+            if value > 1e12:
+                value = value / 1000
+            value = datetime.fromtimestamp(value)
+        elif isinstance(value, str):
             try:
                 value = datetime.fromisoformat(value)
             except ValueError:
-                return value
-        elif isinstance(value, (float, int)):
-            value = datetime.fromtimestamp(value)
+                try:
+                    value = datetime.fromtimestamp(float(value))
+                except Exception:
+                    return value
         diff = now - value
         seconds = int(diff.total_seconds())
         if seconds < 60:
@@ -3002,11 +2637,19 @@ def datetimeformat(value, format='%Y-%m-%d %H:%M'):
             days = seconds // 86400
             return f"{days} day{'s' if days != 1 else ''} ago"
     # Default formatting
-    if isinstance(value, str):
+    if isinstance(value, (int, float)):
+        # If value is too large, assume it's in milliseconds
+        if value > 1e12:
+            value = value / 1000
+        value = datetime.fromtimestamp(value)
+    elif isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
-            return value
+            try:
+                value = datetime.fromtimestamp(float(value))
+            except Exception:
+                return value
     return value.strftime(format)
 
 # Error Handlers

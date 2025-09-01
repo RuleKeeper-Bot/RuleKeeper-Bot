@@ -11,6 +11,7 @@ import time
 import traceback
 import uuid
 import re
+import io
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import partial
@@ -29,14 +30,31 @@ from dotenv import load_dotenv
 from expiringdict import ExpiringDict
 import sqlite3
 import jwt
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED
+from pytz import utc, timezone, all_timezones
 
 # -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
 from database import Database
+from backups.backups import add_backup, get_backups, get_backup, init_db, get_conn
 
 # -------------------- Runtime Config -----------------
 load_dotenv()
+init_db()
+scheduler = AsyncIOScheduler(timezone=utc)
+
+# ------------------- APScheduler Stuff -------------------
+def job_listener(event):
+    if event.exception:
+        print(f"[APSCHEDULER] Job {event.job_id} raised an exception: {event.exception}")
+    elif event.code == EVENT_JOB_MISSED:
+        print(f"[APSCHEDULER] Job {event.job_id} MISSED!")
+    else:
+        print(f"[APSCHEDULER] Job {event.job_id} executed successfully.")
+
+scheduler.add_listener(job_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED)
 
 # -------------------- JWT Auth for API --------------------
 JWT_SECRET = os.getenv("JWT_SECRET")
@@ -71,6 +89,105 @@ def set_event_loop(loop):
     global _bot_loop
     with _loop_lock:
         _bot_loop = loop
+
+backup_progress_store = {}
+backup_progress_lock = threading.Lock()
+
+def set_backup_progress(guild_id, value, step_text=None):
+    with backup_progress_lock:
+        backup_progress_store[str(guild_id)] = {
+            "progress": value,
+            "step_text": step_text or ""
+        }
+
+def get_backup_progress(guild_id):
+    with backup_progress_lock:
+        return backup_progress_store.get(str(guild_id), {"progress": 0, "step_text": ""})
+
+def schedule_backup_wrapper(guild_id):
+    loop = get_event_loop()
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(scheduled_backup_job(guild_id), loop)
+    else:
+        print("No running event loop for scheduled backup!")
+
+async def scheduled_backup_job(guild_id):
+    try:
+        guild = bot_instance.get_guild(int(guild_id))
+        if guild:
+            def set_progress(val, step_text=None):
+                set_backup_progress(guild_id, val, step_text)
+            await save_guild_backup(guild, set_progress=set_progress)
+    except Exception as e:
+        print(f"Exception in scheduled_backup_job: {e}")
+
+def load_schedules():
+    with get_conn() as conn:
+        schedules = conn.execute('SELECT * FROM schedules WHERE enabled = 1').fetchall()
+        for sched in schedules:
+            start_time = sched['start_time']
+            start_date = sched['start_date']
+            tz_str = sched['timezone'] if 'timezone' in sched.keys() and sched['timezone'] else 'UTC'
+            if start_time == "24:00":
+                dt = datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=1)
+                start_date = dt.strftime("%Y-%m-%d")
+                start_time = "00:00"
+            freq_unit = str(sched['frequency_unit']).lower()
+            freq_val = int(sched['frequency_value']) if 'frequency_value' in sched.keys() else 1
+            job_id = f"backup_{sched['guild_id']}_{sched['id']}"
+
+            # Convert local time + timezone to UTC
+            try:
+                local_tz = timezone(tz_str)
+            except Exception:
+                print(f"[WARNING] Invalid timezone '{tz_str}', defaulting to UTC")
+                local_tz = utc
+            local_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+            local_dt = local_tz.localize(local_dt)
+            first_run = local_dt.astimezone(utc)
+            now = utc.localize(datetime.utcnow())
+
+            # Remove any existing job with the same ID (avoid duplicates on reload)
+            try:
+                scheduler.remove_job(job_id)
+            except Exception:
+                pass
+
+            # Determine interval and advance first_run if needed
+            interval_args = {}
+            if freq_unit == "days":
+                interval_args["days"] = freq_val
+                interval = timedelta(days=freq_val)
+            elif freq_unit == "weeks":
+                interval_args["weeks"] = freq_val
+                interval = timedelta(weeks=freq_val)
+            elif freq_unit == "months":
+                interval_args["weeks"] = freq_val * 4  # Approximate
+                interval = timedelta(weeks=freq_val * 4)
+            elif freq_unit == "years":
+                interval_args["weeks"] = freq_val * 52  # Approximate
+                interval = timedelta(weeks=freq_val * 52)
+            else:
+                print(f"[WARNING] Unknown frequency unit: {freq_unit}, defaulting to days")
+                interval_args["days"] = freq_val
+                interval = timedelta(days=freq_val)
+
+            # Advance first_run to the next valid future time if needed
+            while first_run <= now:
+                first_run += interval
+
+
+            # Schedule only the interval job (no one-off job)
+            scheduler.add_job(
+                schedule_backup_wrapper,
+                'interval',
+                start_date=first_run,
+                args=[sched['guild_id']],
+                id=job_id,
+                **interval_args
+            )
+            
+            time.sleep(1)
 
 # -------------------- Base Directory Stuff -----------------
 if getattr(sys, 'frozen', False):
@@ -325,6 +442,7 @@ def get_blocked_embed(guild_id: int) -> dict:
 
 
 # -------------------- Spam and Warning Tracking --------------------
+spam_detection_strikes = defaultdict(lambda: defaultdict(int))  # Tracks strikes per user per guild
 message_timestamps = defaultdict(list)  # Tracks timestamps of messages per user
 user_mentions = defaultdict(list)        # Tracks timestamps of mentions
 
@@ -343,11 +461,6 @@ def remove_warning(guild_id: str, user_id: str, warning_id: str):
 def update_warning(guild_id: str, user_id: str, warning_id: str, new_reason: str):
     """Update a warning's reason"""
     db.update_warning_reason(str(guild_id), str(user_id), warning_id, new_reason)
-
-WARNING_ACTIONS = {
-    2: "timeout",
-    3: "ban"
-}
 
 # -------------------- Stream and Video Stuff --------------------
 class StreamAnnouncer:
@@ -685,7 +798,6 @@ class CustomBot(commands.Bot):
                     print(f"⚠️ Invalid command format: {cmd_data}")
 
             # Group commands by guild
-            from collections import defaultdict
             guild_groups = defaultdict(list)
             for cmd in valid_commands:
                 guild_id = str(cmd['guild_id']).strip()
@@ -849,7 +961,6 @@ class CustomBot(commands.Bot):
             ) or []
 
             # Group by guild
-            from collections import defaultdict
             guild_groups = defaultdict(list)
             for cmd in raw_commands:
                 guild_groups[str(cmd['guild_id'])].append(cmd)
@@ -922,7 +1033,7 @@ bot_instance = CustomBot(
     help_command=None,
     activity=discord.Activity(
         type=discord.ActivityType.watching,
-        name="for rule breakers"
+        name="for rule breakers | /help"
     )
 )        
         
@@ -1040,46 +1151,47 @@ async def webserver():
             return response
         return middleware
 
+    async def json_error_middleware(app, handler):
+        async def middleware(request):
+            try:
+                response = await handler(request)
+                return response
+            except web.HTTPException as ex:
+                # If it's already a JSON response, return as is
+                if ex.content_type == 'application/json':
+                    raise
+                return web.json_response({'error': ex.reason}, status=ex.status)
+            except Exception as ex:
+                print("Unhandled exception in API:", traceback.format_exc())
+                return web.json_response({'error': str(ex)}, status=500)
+        return middleware
+
     # Create app with CORS middleware
-    app = web.Application(middlewares=[cors_middleware])
-    
+    app = web.Application(middlewares=[cors_middleware, json_error_middleware])
+
     # Routes
-    app.router.add_post('/leave_guild', handle_leave_guild)
-    app.router.add_post('/send_appeal_to_discord', handle_send_to_discord)
-    app.router.add_get('/health', lambda _: web.Response(text="OK"))
-    app.router.add_post('/sync', handle_command_sync)
-    app.router.add_post('/sync_warnings', handle_sync_warnings)
-    app.router.add_post('/appeal', handle_appeal_submission)
-    app.router.add_get('/get_bans', handle_get_bans)
-    app.router.add_post('/unban/{userid}', handle_unban)
-    app.router.add_post('/get_guild_invite', handle_get_guild_invite)
-    app.router.add_post('/get_guild_audit_log', handle_get_guild_audit_log)
-    app.router.add_post('/send_role_menu/{menu_id}', handle_send_role_menu)
-    app.router.add_route(hdrs.METH_OPTIONS, '/unban/{userid}', handle_options)
-    
+    app.router.add_post('/api/leave_guild', handle_leave_guild)
+    app.router.add_post('/api/start_backup', handle_start_backup)
+    app.router.add_post('/api/start_restore', handle_start_restore)
+    app.router.add_get('/api/backup_progress', handle_backup_progress)
+    app.router.add_post('/api/reload_schedules', handle_reload_schedules)
+    app.router.add_get('/api/health', lambda _: web.Response(text="OK"))
+    app.router.add_post('/api/sync', handle_command_sync)
+    app.router.add_post('/api/sync_warnings', handle_sync_warnings)
+    app.router.add_get('/api/get_bans', handle_get_bans)
+    app.router.add_post('/api/unban/{userid}', handle_unban)
+    app.router.add_post('/api/get_guild_invite', handle_get_guild_invite)
+    app.router.add_post('/api/get_guild_audit_log', handle_get_guild_audit_log)
+    app.router.add_post('/api/send_role_menu/{menu_id}', handle_send_role_menu)
+    app.router.add_post('/api/forms/{form_id}/submit', handle_custom_form_submission)
+    app.router.add_route(hdrs.METH_OPTIONS, '/api/unban/{userid}', handle_options)
+
     # Setup and start the server
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 5003)
     await site.start()
     print("Endpoints running on port 5003")
-
-async def validate_appeal_token(request):
-    data = await request.json()
-    token = data.get('token')
-    
-    appeal = db.conn.execute('''
-        SELECT * FROM appeals 
-        WHERE appeal_token = ?
-        AND expires_at > ?
-        AND status = 'pending'
-    ''', (token, int(time.time()))).fetchone()
-    
-    if not appeal:
-        return web.json_response({"error": "Invalid or expired token"}, status=400)
-    
-    request['appeal_data'] = dict(appeal)
-    return None
 
 async def handle_options(request):
     return web.Response(
@@ -1119,7 +1231,6 @@ async def handle_command_sync(request):
     except RuntimeError as e:
         return web.json_response({"error": str(e)}, status=429)
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return web.json_response({"error": str(e)}, status=500)
     
@@ -1162,74 +1273,6 @@ async def handle_get_bans(request):
         print(f"Error fetching bans: {str(e)}")
         return web.json_response({"error": str(e)}, status=500)
 
-async def handle_appeal_submission(request):
-    auth_error = await require_jwt(request)
-    if auth_error:
-        return auth_error
-    try:
-        data = await request.json()
-        appeal_type = data.get('type')
-        user_id = data.get('user_id')
-        form_data = data.get('data', [])
-        channel_id = data.get('channel_id')
-
-        if not all([appeal_type, user_id, channel_id]):
-            return web.Response(status=400, text="Missing required fields")
-
-        channel = bot_instance.get_channel(int(channel_id))
-        if not channel:
-            return web.Response(status=404, text=f"Channel {channel_id} not found")
-
-        guild_id = channel.guild.id
-        appeal_id = str(uuid.uuid4())
-
-        appeal_data = {
-            'appeal_id': appeal_id,
-            'user_id': user_id,
-            'type': appeal_type,
-            'data': json.dumps(form_data),
-            'status': 'pending',
-            'channel_id': channel_id
-        }
-
-        db.create_appeal(str(guild_id), appeal_data)
-
-        embed = discord.Embed(
-            title=f"{appeal_type.capitalize()} Appeal - {appeal_id}",
-            color=discord.Color.orange(),
-            description=(
-                f"**User ID:** {user_id}\n"
-                f"**Submitted:** <t:{int(time.time())}:R>\n"
-                f"**Appeal ID:** `{appeal_id}`"
-            )
-        )
-
-        for index, item in enumerate(form_data, 1):
-            embed.add_field(
-                name=f"{index}. {item.get('question', f'Question #{index}')}",
-                value=item.get('answer', 'No response provided') or "N/A",
-                inline=False
-            )
-
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.green,
-            label="Approve",
-            custom_id=f"approve_{appeal_type}_{appeal_id}"
-        ))
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.red,
-            label="Reject",
-            custom_id=f"reject_{appeal_type}_{appeal_id}"
-        ))
-
-        await channel.send(embed=embed, view=view)
-        return web.Response(text="Appeal processed successfully")
-
-    except Exception as e:
-        print(f"Unexpected error processing appeal: {str(e)}")
-        return web.Response(status=500, text="Internal server error")
-
 def validate_uuid(uuid_str):
     """Validate UUIDv4 format"""
     try:
@@ -1266,13 +1309,7 @@ async def handle_unban(request):
         user = await bot_instance.fetch_user(int(user_id))
         
         try:
-            await guild.unban(user, reason="Ban appeal approved")
-            db.conn.execute('''
-                UPDATE appeals 
-                SET status = 'approved' 
-                WHERE guild_id = ? AND user_id = ? AND status = 'pending'
-            ''', (guild_id, user_id))
-            db.conn.commit()
+            await guild.unban(user, reason=" User unbanned via the dashboard")
             return web.json_response({"status": "success"})
         except discord.NotFound:
             return web.json_response({"error": "User not banned"}, status=404)
@@ -1481,7 +1518,6 @@ async def handle_get_guild_audit_log(request):
             
         return web.json_response({"log": entries})
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return web.json_response({"error": str(e)}, status=500)
 
@@ -1610,6 +1646,178 @@ def build_menu_message(menu, config):
 
     return {'embed': embed}
 
+async def handle_start_backup(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Bot is not in this server"}, status=404)
+
+        def set_progress(val, step_text=None):
+            set_backup_progress(guild_id, val, step_text)
+
+        async def do_backup():
+            try:
+                set_progress(0, "Preparing backup...")
+                await save_guild_backup(guild, set_progress=set_progress)
+                set_progress(100, "Backup complete!")
+            except Exception as e:
+                set_progress(0, f"Backup failed: {e}")
+
+        # Start backup in background
+        asyncio.create_task(do_backup())
+        return web.json_response({"success": True})
+    except Exception as e:
+        logger.error(f"Error in handle_start_backup: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_start_restore(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        backup_path = data.get('backup_path')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        if not backup_path or not os.path.exists(backup_path):
+            return web.json_response({"error": "Backup file not found"}, status=404)
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Bot is not in this server"}, status=404)
+
+        def set_progress(val, step_text=None):
+            set_backup_progress(guild_id, val, step_text)
+
+        async def do_restore():
+            try:
+                # --- DM the server owner with progress ---
+                owner = guild.owner
+                dm = await owner.create_dm()
+                msg1 = await dm.send("Restoring backup... This may take a while.")
+                msg2 = await dm.send("Starting...")
+
+                last_progress = {"content": None, "time": 0}
+
+                async def progress_callback(step_text):
+                    now = time.monotonic()
+                    if step_text != last_progress["content"] and now - last_progress["time"] > 1:
+                        try:
+                            await msg2.edit(content=f"🔄 {step_text}")
+                            last_progress["content"] = step_text
+                            last_progress["time"] = now
+                            await asyncio.sleep(2.5)
+                        except Exception:
+                            pass
+
+                set_progress(0, "Preparing restore...")
+                result = await restore_guild_backup(guild, backup_path, progress_callback=progress_callback)
+                set_progress(100, "Restore complete!")
+
+                # Delete progress messages
+                for m in (msg2, msg1):
+                    if m:
+                        try:
+                            await m.delete()
+                            await asyncio.sleep(1)
+                        except Exception:
+                            pass
+                if result:
+                    await dm.send("✅ Backup restored successfully!")
+                else:
+                    await dm.send("❌ Restore failed. Check logs for details.")
+            except Exception as e:
+                set_progress(0, f"Restore failed: {e}")
+                for m in (msg2, msg1):
+                    if m:
+                        try:
+                            await m.delete()
+                            await asyncio.sleep(2)
+                        except Exception:
+                            pass
+                try:
+                    await dm.send(f"❌ Restore failed: {e}")
+                except Exception:
+                    pass
+
+        # Start restore in background
+        asyncio.create_task(do_restore())
+        return web.json_response({"success": True})
+    except Exception as e:
+        logger.error(f"Error in handle_start_restore: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_backup_progress(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    guild_id = request.query.get('guild_id')
+    if not guild_id:
+        return web.json_response({"error": "Missing guild_id"}, status=400)
+    return web.json_response(get_backup_progress(guild_id))
+
+async def handle_reload_schedules(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    load_schedules()
+    return web.json_response({"success": True})
+
+async def handle_custom_form_submission(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        form_id = data.get('form_id')
+        guild_id = data.get('guild_id')
+        user_id = data.get('user_id')
+        responses = data.get('responses', {})
+        # Fetch form config
+        form = db.execute_query('SELECT * FROM custom_forms WHERE id = ?', (form_id,), fetch='one')
+        if not form:
+            return web.json_response({'error': 'Form not found'}, status=404)
+        config = json.loads(form['config'])
+        embed_cfg = config.get('embed', {})
+        # Build embed
+        embed = discord.Embed(
+            title=embed_cfg.get('title', form['name']),
+            color=int(embed_cfg.get('color', '5865F2').lstrip('#'), 16) if isinstance(embed_cfg.get('color'), str) else embed_cfg.get('color', 0x5865F2),
+            description=embed_cfg.get('description', form.get('description', ''))
+        )
+
+        for field in config.get('fields', []):
+            val = responses.get(field['id'], 'N/A')
+            embed.add_field(name=field.get('label', field['id']), value=str(val)[:1024], inline=False)
+
+        # Add submitter at the very bottom in small italics
+        if data.get("user_id"):
+            submitter_line = f"\n\n-# Submitted by <@{data['user_id']}>"
+            if embed.description:
+                embed.description += submitter_line
+            else:
+                embed.description = submitter_line.lstrip()
+
+        # Send to configured channel
+        channel_id = embed_cfg.get('channel_id')
+        if not channel_id:
+            return web.json_response({'error': 'No channel configured for this form'}, status=400)
+        channel = bot_instance.get_channel(int(channel_id))
+        if not channel:
+            return web.json_response({'error': 'Channel not found'}, status=404)
+        await channel.send(embed=embed)
+        return web.json_response({'success': True})
+    except Exception as e:
+        logger.error(f"Custom form submission error: {e}")
+        return web.json_response({'error': str(e)}, status=500)
+
 @tasks.loop(minutes=5)
 async def cleanup():
     # Clean expired data
@@ -1618,6 +1826,9 @@ async def cleanup():
 @bot_instance.event
 async def on_ready():
     set_event_loop(bot_instance.loop)
+    load_schedules()
+    scheduler._eventloop = bot_instance.loop
+    scheduler.start()
     print("""
     +==============================================================+
     |  _____         _        _   __                               |
@@ -1675,28 +1886,6 @@ async def on_ready():
     bot_instance.loop.create_task(webserver())
     await bot_instance.role_batcher.initialize()
 
-def load_appeal_forms(guild_id: str) -> dict:
-    forms = db.get_appeal_forms(guild_id)
-    if not forms:
-        # Create default entry if none exists
-        db.update_appeal_forms(guild_id, 
-                             ban_enabled=True,
-                             ban_form_url="",
-                             kick_enabled=False,
-                             kick_form_url="",
-                             timeout_enabled=False,
-                             timeout_form_url="")
-        return {
-            "ban": {"enabled": True, "form_url": ""},
-            "kick": {"enabled": False, "form_url": ""},
-            "timeout": {"enabled": False, "form_url": ""}
-        }
-    return forms
-
-def load_appeals(guild_id: str) -> list:
-    appeals = db.conn.execute('SELECT * FROM appeals WHERE guild_id = ?', (guild_id,)).fetchall()
-    return [dict(a) for a in appeals]
-
 def reload_warnings(guild_id: str):
     global warnings
     warnings = db.conn.execute('''
@@ -1706,168 +1895,11 @@ def reload_warnings(guild_id: str):
     ''', (guild_id,)).fetchall()
     warnings = [dict(w) for w in warnings]
 
-# -------------------- Appeal Embed ------------------
-async def handle_send_to_discord(request):
-    """Handle appeal sending with full data validation"""
-    auth_error = await require_jwt(request)
-    if auth_error:
-        return auth_error
-    try:
-        data = await request.json()
-        appeal_id = data.get('appeal_id')
-        guild_id = data.get('guild_id')
-
-        if not appeal_id or not guild_id:
-            return web.Response(status=400, text="Missing appeal_id or guild_id")
-
-        # Get full appeal data from database
-        appeal = db.get_appeal(guild_id, appeal_id)
-        if not appeal:
-            return web.Response(status=404, text="Appeal not found")
-
-        # Get channel ID from appeal form config
-        form_config = db.get_appeal_forms(guild_id) or {}
-        channel_id = form_config.get(f"{appeal['type']}_channel_id")
-        if not channel_id:
-            return web.Response(status=400, text="No channel configured for this appeal type")
-
-        # Send to Discord
-        success = await send_appeal_to_discord(
-            channel_id=int(channel_id),
-            appeal_data={
-                'id': appeal['appeal_id'],
-                'user_id': appeal['user_id'],
-                'guild_id': guild_id,
-                'type': appeal['type'],
-                'data': appeal.get('appeal_data', {})
-            }
-        )
-
-        if success:
-            return web.Response(text="Appeal sent to Discord")
-        return web.Response(status=500, text="Failed to send appeal")
-
-    except Exception as e:
-        logger.error(f"Send error: {traceback.format_exc()}")
-        return web.Response(status=500, text="Internal server error")
-
-async def send_appeal_to_discord(channel_id: int, appeal_data: dict) -> bool:
-    """Final version with complete data handling"""
-    try:
-        # Validate required data
-        required_keys = ['id', 'user_id', 'guild_id', 'type', 'data']
-        if any(key not in appeal_data for key in required_keys):
-            logger.error(f"Missing keys in appeal_data: {required_keys}")
-            return False
-
-        # Get form configuration
-        form_config = db.get_appeal_forms(appeal_data['guild_id']) or {}
-        form_fields = json.loads(form_config.get(f"{appeal_data['type']}_form_fields", "[]"))
-        
-        # Create embed with questions
-        embed = discord.Embed(
-            title=f"{appeal_data['type'].title()} Appeal - {appeal_data['id'][:8]}",
-            description=(
-                f"**User ID:** {appeal_data['user_id']}\n"
-                f"**Submitted:** <t:{int(time.time())}:R>\n"
-                f"**Appeal ID:** `{appeal_data['id'][:8]}`"
-            ),
-            color=0xFFA500
-        )
-
-        # Add form fields and answers
-        for idx, question in enumerate(form_fields, 1):
-            answer = appeal_data['data'].get(f'response_{idx}', 'No response')
-            embed.add_field(
-                name=f"{idx}. {question}",
-                value=str(answer)[:1024],
-                inline=False
-            )
-            
-        embed.add_field(
-            name="Visit in Dashboard",
-            value=f"[Manage Appeal]({FRONTEND_URL}/dashboard/{appeal_data['guild_id']}/appeals/{appeal_data['id']})",
-            inline=False
-        )
-
-        # Create action buttons
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.green,
-            custom_id=f"approve_{appeal_data['type']}_{appeal_data['id']}",
-            label="Approve"
-        ))
-        view.add_item(discord.ui.Button(
-            style=discord.ButtonStyle.red,
-            custom_id=f"reject_{appeal_data['type']}_{appeal_data['id']}",
-            label="Reject"
-        ))
-
-        # Send message
-        channel = bot_instance.get_channel(channel_id)
-        await channel.send(embed=embed, view=view)
-        return True
-
-    except Exception as e:
-        logger.error(f"Send failed: {traceback.format_exc()}")
-        return False
-
 @bot_instance.event
 async def on_interaction(interaction: discord.Interaction):
     # Handle component interactions (buttons, selects, etc.)
     if interaction.type == discord.InteractionType.component:
         custom_id = interaction.data.get('custom_id', '')
-
-        # Appeals
-        if custom_id.startswith(('approve_', 'reject_')):
-            try:
-                parts = custom_id.split('_', 2)
-                if len(parts) != 3:
-                    raise ValueError("Invalid custom ID format")
-                action, appeal_type, appeal_id = parts
-                guild_id = str(interaction.guild.id)
-                appeal = db.get_appeal(guild_id, appeal_id)
-                if not appeal:
-                    await interaction.response.send_message("Appeal not found", ephemeral=True)
-                    return
-                new_status = 'approved' if action == 'approve' else 'rejected'
-                db.update_appeal(
-                    appeal_id=appeal_id,
-                    status=new_status,
-                    reviewed_by=str(interaction.user.id),
-                    reviewed_at=int(time.time())
-                )
-                user = await bot_instance.fetch_user(int(appeal['user_id']))
-                if action == 'approve':
-                    if appeal_type == 'ban':
-                        await interaction.guild.unban(user, reason=f"Appeal {appeal_id} approved")
-                    elif appeal_type == 'timeout':
-                        member = await interaction.guild.fetch_member(user.id)
-                        await member.timeout(None, reason=f"Appeal {appeal_id} approved")
-                    elif appeal_type == 'kick':
-                        invite = await interaction.channel.create_invite(max_uses=1, reason="Appeal approved")
-                        await user.send(f"Your kick appeal was approved: {invite.url}")
-                embed = interaction.message.embeds[0].copy()
-                embed.color = discord.Color.green() if action == 'approve' else discord.Color.red()
-                status_exists = any(field.name.lower() == "status" for field in embed.fields)
-                if not status_exists:
-                    embed.add_field(name="Status", value=new_status.capitalize(), inline=False)
-                view = discord.ui.View()
-                for component in interaction.message.components:
-                    if component.type == discord.ComponentType.button:
-                        btn = discord.ui.Button.from_component(component)
-                        btn.disabled = True
-                        view.add_item(btn)
-                await interaction.message.edit(embed=embed, view=view)
-                await interaction.response.send_message(f"Appeal {new_status}", ephemeral=True)
-            except discord.Forbidden:
-                await interaction.response.send_message("Missing permissions to perform this action", ephemeral=True)
-            except discord.NotFound:
-                await interaction.response.send_message("User not found", ephemeral=True)
-            except Exception as e:
-                logger.error(f"Appeal handling error: {traceback.format_exc()}")
-                await interaction.response.send_message("Error processing appeal", ephemeral=True)
-            return
 
         # Dropdown Role Menu
         if custom_id.startswith('dropdown_'):
@@ -2274,7 +2306,542 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
     except Exception as e:
         print(f"Error sending level up notification: {str(e)}")
         traceback.print_exc()
-            
+
+# -------------------- Backup System --------------------
+async def collect_guild_backup(guild, set_progress=None):
+    try:
+        backup = {
+            "roles": [],
+            "channels": [],
+            "bans": [],
+            "timeouts": [],
+            "emojis": [],
+            "stickers": [],
+            "settings": {},
+            "audit_log": [],
+            "features": list(guild.features),
+            "tags": getattr(guild, "tags", []),
+        }
+        total_steps = 7
+        step = 0
+
+        # Roles
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up roles...")
+        for role in guild.roles:
+            backup["roles"].append({
+                "id": role.id,
+                "name": role.name,
+                "color": role.color.value,
+                "position": role.position,
+                "permissions": role.permissions.value,
+                "mentionable": role.mentionable,
+                "hoist": role.hoist,
+                "managed": role.managed,
+                "members": [m.id for m in role.members]
+            })
+        step += 1
+
+        # Channels & Categories
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up channels...")
+        for channel in guild.channels:
+            overwrites = {}
+            for target, overwrite in channel.overwrites.items():
+                overwrites[str(target.id)] = {
+                    "allow": overwrite.pair()[0].value,
+                    "deny": overwrite.pair()[1].value,
+                    "type": "role" if hasattr(target, "members") else "member"
+                }
+            backup["channels"].append({
+                "id": channel.id,
+                "name": channel.name,
+                "type": str(channel.type),
+                "position": channel.position,
+                "category": channel.category_id if hasattr(channel, "category_id") else None,
+                "overwrites": overwrites,
+                "topic": getattr(channel, "topic", None),
+                "nsfw": getattr(channel, "nsfw", False),
+                "slowmode_delay": getattr(channel, "slowmode_delay", 0),
+                "bitrate": getattr(channel, "bitrate", None),
+                "user_limit": getattr(channel, "user_limit", None),
+            })
+        step += 1
+
+        # Bans
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up bans...")
+        try:
+            async for entry in guild.bans():
+                backup["bans"].append({
+                    "user_id": entry.user.id,
+                    "username": str(entry.user),
+                    "reason": entry.reason
+                })
+        except Exception as e:
+            print(f"Error backing up bans: {e}")
+        step += 1
+
+        # Timed out users
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up timed out users...")
+        for member in guild.members:
+            if member.timed_out_until:
+                backup["timeouts"].append({
+                    "user_id": member.id,
+                    "until": member.timed_out_until.isoformat(),
+                    "reason": getattr(member, "timeout_reason", None)
+                })
+        step += 1
+
+        # Emojis
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up emojis...")
+        for emoji in guild.emojis:
+            backup["emojis"].append({
+                "id": emoji.id,
+                "name": emoji.name,
+                "url": str(emoji.url),
+                "animated": emoji.animated
+            })
+        step += 1
+
+        # Stickers
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up stickers...")
+        for sticker in getattr(guild, "stickers", []):
+            backup["stickers"].append({
+                "id": sticker.id,
+                "name": sticker.name,
+                "url": str(sticker.url) if hasattr(sticker, "url") else None
+            })
+        step += 1
+
+        # Settings & Audit log
+        if set_progress: set_progress(int(step / total_steps * 100), "Backing up server settings...")
+        backup["settings"] = {
+            "name": guild.name,
+            "icon_url": str(guild.icon.url) if guild.icon else None,
+            "banner_url": str(guild.banner.url) if guild.banner else None,
+            "description": guild.description,
+            "verification_level": guild.verification_level.value,
+            "default_notifications": guild.default_notifications.value,
+            "explicit_content_filter": guild.explicit_content_filter.value,
+            "afk_channel_id": guild.afk_channel.id if guild.afk_channel else None,
+            "afk_timeout": guild.afk_timeout,
+            "system_channel_id": guild.system_channel.id if guild.system_channel else None,
+            "rules_channel_id": guild.rules_channel.id if guild.rules_channel else None,
+            "public_updates_channel_id": guild.public_updates_channel.id if guild.public_updates_channel else None,
+            "preferred_locale": guild.preferred_locale,
+            "mfa_level": getattr(guild, "mfa_level", None),
+            "max_members": getattr(guild, "max_members", None),
+            "max_presences": getattr(guild, "max_presences", None),
+        }
+        try:
+            async for entry in guild.audit_logs(limit=50):
+                backup["audit_log"].append({
+                    "action": str(entry.action),
+                    "user": str(entry.user) if entry.user else None,
+                    "target": str(entry.target) if entry.target else None,
+                    "reason": entry.reason,
+                    "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                    "changes": str(getattr(entry, "changes", "")),
+                })
+        except Exception as e:
+            print(f"Error backing up audit log: {e}")
+        step += 1
+
+        if set_progress: set_progress(100, "Backup complete!")
+        return backup
+    except Exception as e:
+        print(f"Error during collect_guild_backup: {e}\n{traceback.format_exc()}")
+        if set_progress:
+            set_progress(0, "Backup failed.")
+        raise
+
+async def save_guild_backup(guild, set_progress=None):
+    try:
+        if set_progress:
+            set_progress(0, "Preparing backup...")
+        backup_data = await collect_guild_backup(guild, set_progress=set_progress)
+        if set_progress:
+            set_progress(99, "Saving backup file...")
+        backup_dir = os.path.join(os.path.dirname(__file__), '..', 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        filename = f"{guild.id}_{int(time.time())}.json"
+        file_path = os.path.join(backup_dir, filename)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(backup_data, f, indent=2)
+        add_backup(str(guild.id), file_path)
+        if set_progress:
+            set_progress(100, "Backup complete!")
+        return file_path
+    except Exception as e:
+        print(f"Error during save_guild_backup: {e}\n{traceback.format_exc()}")
+        if set_progress:
+            set_progress(0, f"Backup failed: {e}")
+        raise
+
+async def restore_guild_backup(guild, file_path, progress_callback=None):
+    """
+    Restore a guild from a backup file.
+    WARNING: This is destructive and should only be used with full admin consent.
+    """
+
+    def progress(step):
+        if progress_callback:
+            coro = progress_callback(step)
+            if asyncio.iscoroutine(coro):
+                asyncio.create_task(coro)
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        backup = json.load(f)
+
+    # --- Restore Roles ---
+    try:
+        progress("Deleting roles...")
+        rulekeeper_role = discord.utils.get(guild.roles, name="RuleKeeper")
+        rulekeeper_id = rulekeeper_role.id if rulekeeper_role else None
+
+        for role in reversed(guild.roles):
+            if role.is_default() or (rulekeeper_id and role.id == rulekeeper_id):
+                continue
+            try:
+                await role.delete(reason="Restoring from backup")
+                await asyncio.sleep(2.5)
+            except Exception as e:
+                print(f"Failed to delete role {role.name}: {e}")
+
+        progress("Restoring roles...")
+        role_map = {}
+        for role_data in sorted(backup["roles"], key=lambda r: r["position"]):
+            if role_data["name"] in ("@everyone", "RuleKeeper"):
+                continue
+            try:
+                new_role = await guild.create_role(
+                    name=role_data["name"],
+                    color=discord.Color(role_data["color"]),
+                    permissions=discord.Permissions(role_data["permissions"]),
+                    hoist=role_data.get("hoist", False),
+                    mentionable=role_data.get("mentionable", False),
+                    reason="Restoring from backup"
+                )
+                role_map[role_data["id"]] = new_role
+                await asyncio.sleep(2.5)
+            except Exception as e:
+                print(f"Error creating role {role_data['name']}: {e}")
+
+        role_map[next(r.id for r in guild.roles if r.is_default())] = guild.default_role
+        if rulekeeper_role:
+            rk_backup = next((r for r in backup["roles"] if r["name"] == "RuleKeeper"), None)
+            if rk_backup:
+                role_map[rk_backup["id"]] = rulekeeper_role
+
+        roles_in_order = []
+        for role_data in sorted(backup["roles"], key=lambda r: r["position"]):
+            if role_data["name"] == "@everyone":
+                continue
+            if role_data["name"] == "RuleKeeper" and rulekeeper_role:
+                roles_in_order.append(rulekeeper_role)
+            elif role_data["id"] in role_map:
+                roles_in_order.append(role_map[role_data["id"]])
+        try:
+            await guild.edit_role_positions(positions={role: i+1 for i, role in enumerate(roles_in_order)})
+        except Exception as e:
+            print(f"Error reordering roles: {e}")
+
+    except Exception as e:
+        print(f"Error restoring roles: {e}")
+
+    # --- Restore Role Assignments ---
+    try:
+        progress("Restoring role assignments...")
+        user_roles = {}
+        for role_data in backup.get("roles", []):
+            role_id = role_data["id"]
+            if role_id not in role_map or role_map[role_id].is_default():
+                continue
+            member_ids = role_data.get("members", [])
+            for user_id in member_ids:
+                user_roles.setdefault(user_id, set()).add(role_id)
+        for user_id, role_ids in user_roles.items():
+            member = guild.get_member(int(user_id))
+            if member:
+                # Do not assign RuleKeeper role
+                roles_to_assign = [
+                    role_map[rid]
+                    for rid in role_ids
+                    if rid in role_map and role_map[rid].name != "RuleKeeper"
+                ]
+                if roles_to_assign:
+                    try:
+                        await member.add_roles(*roles_to_assign, reason="Restoring roles from backup")
+                        await asyncio.sleep(2.5)
+                    except Exception as e:
+                        print(f"Failed to assign roles to {member}: {e}")
+            else:
+                print(f"Member {user_id} not found in guild for role assignment")
+    except Exception as e:
+        print(f"Error restoring role assignments: {e}")
+
+    # --- Restore Channels and Categories ---
+    try:
+        progress("Deleting channels and categories...")
+        required_channel_ids = set()
+        required_channels = []
+        for attr in ("rules_channel", "public_updates_channel", "safety_alerts_channel", "community_updates_channel"):
+            ch = getattr(guild, attr, None)
+            if ch:
+                required_channel_ids.add(ch.id)
+                required_channels.append(ch)
+
+        for channel in guild.channels:
+            if channel.id in required_channel_ids:
+                continue
+            try:
+                await channel.delete(reason="Restoring from backup")
+                await asyncio.sleep(2.5)
+            except Exception as e:
+                print(f"Failed to delete channel {channel.name}: {e}")
+
+        progress("Restoring channels and categories...")
+        category_map = {}
+        for ch in backup["channels"]:
+            ch_type = ch["type"].lower().replace("channeltype.", "")
+            if ch_type == "category":
+                try:
+                    new_cat = await guild.create_category(
+                        name=ch["name"],
+                        position=ch["position"],
+                        reason="Restoring from backup"
+                    )
+                    category_map[ch["id"]] = new_cat
+                    await asyncio.sleep(2.5)
+                except Exception as e:
+                    print(f"Error creating category {ch['name']}: {e}")
+
+        created_channel_map = {}
+        for ch in backup["channels"]:
+            ch_type = ch["type"].lower().replace("channeltype.", "")
+            if ch_type == "category":
+                continue
+            if ch.get("id") in required_channel_ids:
+                continue
+            kwargs = {
+                "name": ch["name"],
+                "position": ch["position"],
+                "reason": "Restoring from backup"
+            }
+            if ch.get("category"):
+                parent = category_map.get(ch["category"])
+                if parent:
+                    kwargs["category"] = parent
+            overwrites = {}
+            for target_id, ow in ch.get("overwrites", {}).items():
+                target_role = role_map.get(int(target_id))
+                if not target_role:
+                    continue
+                allow = discord.Permissions(ow["allow"])
+                deny = discord.Permissions(ow["deny"])
+                overwrites[target_role] = discord.PermissionOverwrite.from_pair(allow, deny)
+            if overwrites:
+                kwargs["overwrites"] = overwrites
+            try:
+                if ch_type == "text":
+                    kwargs["topic"] = ch.get("topic")
+                    kwargs["nsfw"] = ch.get("nsfw", False)
+                    kwargs["slowmode_delay"] = ch.get("slowmode_delay", 0)
+                    new_ch = await guild.create_text_channel(**{k: v for k, v in kwargs.items() if v is not None})
+                elif ch_type in ("news", "announcement"):
+                    kwargs["topic"] = ch.get("topic")
+                    kwargs["nsfw"] = ch.get("nsfw", False)
+                    kwargs["slowmode_delay"] = ch.get("slowmode_delay", 0)
+                    new_ch = await guild.create_text_channel(**{k: v for k, v in kwargs.items() if v is not None}, news=True)
+                elif ch_type == "voice":
+                    kwargs["bitrate"] = ch.get("bitrate")
+                    kwargs["user_limit"] = ch.get("user_limit")
+                    new_ch = await guild.create_voice_channel(**{k: v for k, v in kwargs.items() if v is not None})
+                elif ch_type == "forum":
+                    kwargs["topic"] = ch.get("topic")
+                    kwargs["nsfw"] = ch.get("nsfw", False)
+                    new_ch = await guild.create_forum_channel(**{k: v for k, v in kwargs.items() if v is not None})
+                elif ch_type == "rules":
+                    kwargs["topic"] = ch.get("topic")
+                    new_ch = await guild.create_text_channel(**{k: v for k, v in kwargs.items() if v is not None})
+                else:
+                    print(f"Skipping unknown channel type: {ch['type']}")
+                    continue
+                created_channel_map[ch["id"]] = new_ch
+                await asyncio.sleep(2.5)
+            except discord.HTTPException as e:
+                print(f"Error creating channel {ch['name']}: {e}")
+            except Exception as e:
+                print(f"Error creating channel {ch['name']}: {e}")
+
+        backup_required_channels = {ch["id"]: ch for ch in backup["channels"] if ch.get("id") in required_channel_ids}
+        for req_ch in required_channels:
+            backup_ch = backup_required_channels.get(req_ch.id)
+            if not backup_ch:
+                print(f"No backup data for required channel {req_ch.name} ({req_ch.id}), skipping move.")
+                continue
+            parent = None
+            if backup_ch.get("category"):
+                parent = category_map.get(backup_ch["category"])
+            try:
+                await req_ch.edit(category=parent, position=backup_ch["position"], reason="Restoring from backup")
+            except Exception as e:
+                print(f"Failed to move required channel {req_ch.name}: {e}")
+
+    except Exception as e:
+        print(f"Error restoring channels: {e}")
+
+    # --- Restore Bans ---
+    try:
+        progress("Unbanning users...")
+        bans = []
+        async for entry in guild.bans():
+            bans.append(entry)
+        for entry in bans:
+            try:
+                await guild.unban(entry.user, reason="Restoring from backup")
+                await asyncio.sleep(2.5)
+            except Exception as e:
+                print(f"Failed to unban {entry.user}: {e}")
+
+        progress("Restoring bans...")
+        for ban in backup.get("bans", []):
+            try:
+                user = discord.Object(id=ban["user_id"])
+                await guild.ban(user, reason=ban.get("reason", "Restored from backup"))
+                await asyncio.sleep(2.5)
+            except Exception as e:
+                print(f"Failed to ban user {ban['user_id']}: {e}")
+    except Exception as e:
+        print(f"Error restoring bans: {e}")
+
+    # --- Restore Timed Out Users ---
+    try:
+        progress("Restoring timed out users...")
+        for timeout in backup.get("timeouts", []):
+            user_id = timeout.get("user_id")
+            until = timeout.get("until")
+            reason = timeout.get("reason", "Restored timeout from backup")
+            if not user_id or not until:
+                continue
+            member = guild.get_member(user_id)
+            if member:
+                try:
+                    until_dt = datetime.fromisoformat(until)
+                    if until_dt > datetime.utcnow():
+                        await member.timeout(until_dt, reason=reason)
+                        await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"Error restoring timeout for user {user_id}: {e}")
+            else:
+                print(f"Member {user_id} not found for timeout")
+    except Exception as e:
+        print(f"Error restoring timed out users: {e}")
+
+    # --- Restore Emojis ---
+    try:
+        progress("Deleting emojis...")
+        for emoji in guild.emojis:
+            try:
+                await emoji.delete(reason="Restoring from backup")
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Failed to delete emoji {emoji.name}: {e}")
+
+        progress("Restoring emojis...")
+        async with aiohttp.ClientSession() as session:
+            for emoji_data in backup.get("emojis", []):
+                try:
+                    async with session.get(emoji_data["url"]) as resp:
+                        img = await resp.read()
+                    await guild.create_custom_emoji(
+                        name=emoji_data["name"],
+                        image=img,
+                        reason="Restoring from backup"
+                    )
+                    await asyncio.sleep(2.5)
+                except Exception as e:
+                    print(f"Failed to create emoji {emoji_data['name']}: {e}")
+    except Exception as e:
+        print(f"Error restoring emojis: {e}")
+
+    # --- Restore Stickers ---
+    try:
+        progress("Deleting stickers...")
+        for sticker in getattr(guild, "stickers", []):
+            try:
+                await sticker.delete(reason="Restoring from backup")
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Failed to delete sticker {sticker.name}: {e}")
+        
+        progress("Restoring stickers...")
+        async with aiohttp.ClientSession() as session:
+            for sticker_data in backup.get("stickers", []):
+                try:
+                    if not sticker_data.get("url"):
+                        continue
+                    async with session.get(sticker_data["url"]) as resp:
+                        img = await resp.read()
+                    await guild.create_sticker(
+                        name=sticker_data["name"][:30],
+                        description=sticker_data.get("description", "")[:100] or "Restored sticker",
+                        emoji="😀",
+                        file=discord.File(fp=io.BytesIO(img), filename=f"{sticker_data['name']}.png"),
+                        reason="Restoring from backup"
+                    )
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"Failed to create sticker {sticker_data.get('name')}: {e}")
+    except Exception as e:
+        print(f"Error restoring stickers: {e}")
+
+    # --- Restore Server Settings ---
+    try:
+        progress("Restoring server settings...")
+        settings = backup.get("settings", {})
+        icon_bytes = None
+        banner_bytes = None
+
+        icon_url = settings.get("icon_url")
+        if icon_url:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(icon_url) as resp:
+                    if resp.status == 200:
+                        icon_bytes = await resp.read()
+
+        banner_url = settings.get("banner_url")
+        if banner_url:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(banner_url) as resp:
+                    if resp.status == 200:
+                        banner_bytes = await resp.read()
+
+        edit_kwargs = {
+            "name": settings.get("name", guild.name),
+            "description": settings.get("description", guild.description),
+            "reason": "Restoring from backup"
+        }
+        if icon_bytes:
+            edit_kwargs["icon"] = icon_bytes
+        if banner_bytes:
+            edit_kwargs["banner"] = banner_bytes
+        try:
+            await guild.edit(**edit_kwargs)
+        except discord.Forbidden:
+            print("Error restoring settings: Missing Permissions (Manage Server required)")
+        except discord.HTTPException as e:
+            print(f"Error restoring settings: {e}")
+        except Exception as e:
+            print(f"Unexpected error restoring settings: {e}")
+    except Exception as e:
+        print(f"Error restoring settings: {e}")
+
+    progress("Restore complete!")
+
+    # --- Restore Audit Log, Features, Tags ---
+    # These are not restorable via Discord API currently.
+
+    return True
+
 # -------------------- Message Processing --------------------
 @bot_instance.event
 async def on_message(message):
@@ -2282,9 +2849,12 @@ async def on_message(message):
         return await bot_instance.process_commands(message)
 
     try:
+        guild = message.guild
         guild_id = str(message.guild.id)
         user_id = str(message.author.id)
         current_time = time.time()
+        spam_key = f"{guild_id}:{user_id}"
+        mention_key = f"{guild_id}:{user_id}"
 
         # ===== LEVEL SYSTEM PROCESSING =====
         level_config = get_level_config(guild_id)
@@ -2382,9 +2952,6 @@ async def on_message(message):
         )
 
         if not is_excluded:
-            # Spam detection
-            spam_key = f"{guild_id}:{user_id}"
-
             # Initialize timestamp list if needed
             if spam_key not in message_timestamps:
                 message_timestamps[spam_key] = []
@@ -2419,8 +2986,73 @@ async def on_message(message):
                     )
                     # Reset after handling spam
                     message_timestamps[spam_key] = []
+
+                    # Increment spam detection strikes
+                    strikes_needed = spam_config.get("spam_strikes_before_warning", 1)
+                    spam_detection_strikes[guild_id][user_id] += 1
+                    if spam_detection_strikes[guild_id][user_id] >= strikes_needed:
+                        # Issue a warning
+                        warning_id = add_warning(guild_id, user_id, "Spam detected by automated system.")
+                        spam_detection_strikes[guild_id][user_id] = 0  # Reset after warning
+                        try:
+                            await message.channel.send(
+                                embed=discord.Embed(
+                                    title="User Warned",
+                                    description=f"{message.author.mention} has been warned for repeated spam.",
+                                    color=discord.Color.orange()
+                                )
+                            )
+                        except Exception:
+                            pass
+
+                        # --- NEW: Check for warning actions and apply them ---
+                        db_warning_actions = db.get_warning_actions(guild_id)
+                        user_warnings = db.get_warnings(guild_id, user_id)
+                        warning_count = len(user_warnings)
+                        action_row = next((a for a in db_warning_actions if int(a['warning_count']) == warning_count), None)
+                        if action_row:
+                            action_type = action_row['action']
+                            duration_seconds = action_row.get('duration_seconds')
+                            member = message.guild.get_member(int(user_id))
+                            action_text = None
+                            if member:
+                                if action_type == "timeout":
+                                    if hasattr(member, "timeout"):
+                                        try:
+                                            until = discord.utils.utcnow() + timedelta(seconds=duration_seconds or 3600)
+                                            await member.timeout(until, reason=f"Reached {warning_count} warnings (spam)")
+                                            action_text = f"User timed out for {duration_seconds//60 if duration_seconds else 60} minutes."
+                                        except Exception as e:
+                                            print(f"Failed to timeout user: {e}")
+                                elif action_type == "kick":
+                                    try:
+                                        await member.kick(reason=f"Reached {warning_count} warnings (spam)")
+                                        action_text = "User kicked."
+                                    except Exception as e:
+                                        print(f"Failed to kick user: {e}")
+                                elif action_type == "ban":
+                                    try:
+                                        await member.ban(reason=f"Reached {warning_count} warnings (spam)")
+                                        action_text = "User banned."
+                                    except Exception as e:
+                                        print(f"Failed to ban user: {e}")
+                                # Add more actions here if needed
+
+                            # Optionally, notify the channel about the action
+                            if action_text:
+                                try:
+                                    await message.channel.send(
+                                        embed=discord.Embed(
+                                            title="Moderation Action",
+                                            description=f"{message.author.mention} has also been {action_text.lower()}",
+                                            color=discord.Color.red()
+                                        )
+                                    )
+                                except Exception:
+                                    pass
                 except Exception as e:
                     print(f"Spam handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
+
         user_data = get_level_data(guild_id, user_id)
         total_xp = user_data['xp']
         new_level = calculate_level(total_xp)
@@ -2552,7 +3184,25 @@ def replace_placeholders(text, replacements):
     for placeholder, value in replacements.items():
         text = text.replace(placeholder, value)
     return text
-    
+
+async def send_custom_form_dm(user, guild, event_type):
+    # Find a form for this guild with dm_on[event_type] enabled
+    forms = db.execute_query(
+        'SELECT * FROM custom_forms WHERE guild_id = ?', (str(guild.id),), fetch='all'
+    )
+    for form in forms:
+        config = json.loads(form['config'])
+        dm_on = config.get('dm_on', {})
+        if dm_on.get(event_type):
+            # Build DM message
+            msg = dm_on.get('message') or "Please fill out this form:"
+            form_url = f"{FRONTEND_URL}/forms/{form['id']}/fill"
+            try:
+                await user.send(f"{msg}\n{form_url}")
+            except Exception as e:
+                print(f"Failed to DM user {user}: {e}")
+            break  # Only send one form per event
+
 @bot_instance.event
 async def on_member_remove(member):
     try:
@@ -2591,6 +3241,15 @@ async def on_member_remove(member):
 
     except Exception as e:
         print(f"Goodbye message error: {str(e)}")
+
+    try:
+        audit_logs = await member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick).flatten()
+        if audit_logs:
+            entry = audit_logs[0]
+            if entry.target.id == member.id and (datetime.utcnow() - entry.created_at).total_seconds() < 10:
+                await send_custom_form_dm(member, member.guild, "kick")
+    except Exception as e:
+        print(f"Error checking for kick: {e}")
 
 @bot_instance.event
 async def on_member_update(before, after):
@@ -2684,8 +3343,7 @@ async def on_guild_remove(guild):
             'level_rewards',
             'user_levels',
             'warnings',
-            'appeal_forms',
-            'appeals',
+            'warning_actions',
             'welcome_config',
             'goodbye_config',
             'spam_detection_config',
@@ -2707,7 +3365,6 @@ async def on_guild_remove(guild):
 
     except Exception as e:
         print(f"❌ Error handling guild removal: {str(e)}")
-        import traceback
         traceback.print_exc()
 
 @bot_instance.event
@@ -2770,6 +3427,7 @@ async def on_member_ban(guild, user):
     if config.get("member_ban", True):
         description = f"**Member:** {user.mention} has been banned."
         await log_event(guild, "member_ban", "Member Banned", description, color=discord.Color.dark_red())
+    await send_custom_form_dm(user, guild, "ban")
 
 @bot_instance.event
 async def on_guild_role_create(role):

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Spam Detection Configuration</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+	<link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .channel-list, .role-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        .form-section {
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>Spam & Mention Detection - {{ guild.name }}</h2>
+            <a href="{{ url_for('guild_dashboard', guild_id=guild_id) }}" class="btn btn-secondary">
+                <i class="bi bi-arrow-left"></i> Back
+            </a>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST" action="{{ url_for('spam_config', guild_id=guild_id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <!-- Enable/Disable Toggle -->
+            <div class="form-section">
+                <h4 class="mb-3"><i class="bi bi-toggle-on"></i> Enable Spam Detection</h4>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="enabled" name="enabled"
+                        {% if config.enabled %}checked{% endif %}>
+                    <label class="form-check-label" for="enabled">
+                        Spam & Mention Detection is <strong>{% if config.enabled %}Enabled{% else %}Disabled{% endif %}</strong>
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <h4 class="mb-3"><i class="bi bi-flag"></i> Spam Strikes Before Warning</h4>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Spam Detections Needed for a Warning</label>
+                        <input type="number" class="form-control" name="spam_strikes_before_warning"
+                            value="{{ config.spam_strikes_before_warning or 1 }}" min="1" required>
+                        <small class="text-muted">How many spam detections before a warning is issued</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Spam Settings -->
+            <div class="form-section">
+                <h4 class="mb-3"><i class="bi bi-megaphone"></i> Spam Detection</h4>
+                
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Message Threshold</label>
+                        <input type="number" class="form-control" name="spam_threshold"
+                               value="{{ config.spam_threshold }}" min="1" required>
+                        <small class="text-muted">Number of messages considered spam</small>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <label class="form-label">Time Window (seconds)</label>
+                        <input type="number" class="form-control" name="spam_time_window" 
+                               value="{{ config.spam_time_window }}" min="1" required>
+                        <small class="text-muted">Time period to count messages</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mention Settings -->
+            <div class="form-section">
+                <h4 class="mb-3"><i class="bi bi-at"></i> Mention Detection</h4>
+                
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Mention Threshold</label>
+                        <input type="number" class="form-control" name="mention_threshold"
+                               value="{{ config.mention_threshold }}" min="1" required>
+                        <small class="text-muted">Max mentions allowed per message</small>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <label class="form-label">Time Window (seconds)</label>
+                        <input type="number" class="form-control" name="mention_time_window"
+                               value="{{ config.mention_time_window }}" min="1" required>
+                        <small class="text-muted">Tracking period for mentions</small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Exclusions -->
+            <div class="form-section">
+                <h4 class="mb-3"><i class="bi bi-slash-circle"></i> Exclusions</h4>
+                
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Excluded Channels</label>
+                        <div class="channel-list">
+                            {% for channel in channels %}
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" 
+                                       name="excluded_channels" value="{{ channel.id }}"
+                                       {% if channel.id in config.excluded_channels %}checked{% endif %}>
+                                <label class="form-check-label">
+                                    #{{ channel.name }}
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <label class="form-label">Excluded Roles</label>
+                        <div class="role-list">
+                            {% for role in roles if role.id != guild_id %}
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox"
+                                       name="excluded_roles" value="{{ role.id }}"
+                                       {% if role.id in config.excluded_roles %}checked{% endif %}>
+                                <label class="form-check-label">
+                                    {{ role.name }}
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-grid gap-2 mt-4">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-save"></i> Save Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

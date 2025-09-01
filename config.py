@@ -33,11 +33,6 @@ class Config:
         'warning': 0xffa500,
         'info': 0x0099ff
     }
-    
-    # Feature Toggles
-    ENABLE_LEVELING = os.getenv('ENABLE_LEVELING', 'true').lower() == 'true'
-    ENABLE_MODERATION = os.getenv('ENABLE_MODERATION', 'true').lower() == 'true'
-    ENABLE_APPEALS = os.getenv('ENABLE_APPEALS', 'true').lower() == 'true'
 
     def __init__(self):
         # Initialize dynamic properties

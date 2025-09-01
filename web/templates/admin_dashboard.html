@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .dashboard-card {
+            transition: transform 0.2s;
+            min-height: 150px;
+        }
+        .dashboard-card:hover {
+            transform: translateY(-5px);
+        }
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+        }
+		.audit-log-table {
+            font-size: 0.9rem;
+        }
+        
+        .audit-log-table thead th {
+            background-color: #2c3e50;
+            color: white;
+            position: sticky;
+            top: 0;
+        }
+        
+        .audit-log-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .changes-badge {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .changes-badge:hover {
+            transform: scale(1.1);
+        }
+        
+        .user-id {
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .timestamp-col {
+            width: 160px;
+        }
+        
+        .action-col {
+            width: 150px;
+        }
+        
+        .popover {
+            max-width: 500px;
+            box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+        }
+        
+        .popover-header {
+            background-color: #2c3e50;
+            color: white;
+            border-bottom: none;
+        }
+        
+        .popover-body {
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <nav class="col-md-2 d-none d-md-block bg-light sidebar">
+                <div class="sidebar-sticky pt-3">
+                    <h6 class="sidebar-heading d-flex justify-content-between align-items-center px-3 mb-3 text-muted">
+                        <span>Admin Panel</span>
+                    </h6>
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link active" href="{{ url_for('admin_dashboard') }}">
+                                <i class="bi bi-speedometer2 me-2"></i>
+                                Dashboard
+                            </a>
+                        </li>
+                        {% if is_head_admin() %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_bot_admins') }}">
+                                <i class="bi bi-people-fill me-2"></i>
+                                Manage Bot Admins
+                            </a>
+                        </li>
+                        {% endif %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_guilds') }}">
+                                <i class="bi bi-discord me-2"></i>
+                                Managed Guilds
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <!-- Main Content -->
+            <main role="main" class="col-md-9 ml-sm-auto col-lg-10 px-4 py-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+					<h1 class="h2">Admin Dashboard</h1>
+					<div class="btn-toolbar mb-2 mb-md-0">
+						<div class="btn-group mr-2">
+							<span class="btn btn-sm btn-outline-secondary">
+								Logged in as: <strong>{{ 'Head Admin' if is_head_admin() else 'Bot Admin' }}</strong>
+							</span>
+						</div>
+						<div class="btn-group">
+							<a href="{{ url_for('logout_admin') }}" class="btn btn-danger btn-sm">
+								<i class="bi bi-box-arrow-right"></i> Logout
+							</a>
+						</div>
+					</div>
+				</div>
+
+                <!-- Stats Cards -->
+                <div class="row row-cols-1 row-cols-md-3 g-4 mb-4">
+                    <div class="col">
+                        <div class="card dashboard-card">
+                            <div class="card-body">
+                                <h5 class="card-title text-muted">Total Guilds</h5>
+                                <div class="stat-number text-primary">{{ guild_count }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="card dashboard-card">
+                            <div class="card-body">
+                                <h5 class="card-title text-muted">Bot Admins</h5>
+                                <div class="stat-number text-success">{{ admin_count }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="card dashboard-card">
+                            <div class="card-body">
+                                <h5 class="card-title text-muted">Custom Form Submissions</h5>
+                                <div class="stat-number text-warning">{{ submission_count }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+				<!-- Audit Log Section -->
+				<div class="card mt-4 shadow-sm">
+					<div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+						<h5 class="mb-0"><i class="bi bi-clipboard2-data me-2"></i>Audit Log</h5>
+						<small>Latest events</small>
+					</div>
+					<div class="card-body p-0">
+						<div class="table-responsive">
+							<table class="table audit-log-table mb-0">
+								<thead>
+									<tr>
+										<th class="timestamp-col">Timestamp</th>
+										<th class="action-col">Action</th>
+										<th>Details</th>
+										<th style="width: 50px;">Changes</th>
+										<th class="user-id">Performed By</th>
+									</tr>
+								</thead>
+								<tbody>
+									{% for log in recent_logs %}
+									<tr>
+										<td class="text-muted timestamp-col">
+											<span data-bs-toggle="tooltip" title="{{ log.timestamp|datetimeformat('%Y-%m-%d %H:%M:%S') }}">
+												{{ log.timestamp|datetimeformat('%b %d %H:%M') }}
+											</span>
+										</td>
+										<td>
+											<span class="badge bg-{% if log.action == 'BOT_ADMIN_DELETED' %}danger{% elif log.action == 'PRIVILEGES_UPDATED' %}primary{% elif log.action == 'CONFIG_CHANGE' %}success{% else %}warning{% endif %}">
+												{{ log.action|replace('_', ' ')|title }}
+											</span>
+										</td>
+										<td class="text-truncate" style="max-width: 300px;">
+											{{ log.details }}
+										</td>
+										<td>
+											{% if log.changes %}
+											<span class="changes-badge text-primary" 
+												  data-bs-toggle="popover" 
+												  data-bs-title="Change Details"
+												  data-bs-content="{{ log.changes }}">
+												<i class="bi bi-file-diff fs-5"></i>
+											</span>
+											{% endif %}
+										</td>
+										<td class="user-id" data-bs-toggle="tooltip" title="{{ log.user_id }}">
+											{% if 'HEAD-ADMIN:' in log.user_id %}
+											<span class="badge bg-danger">
+												<i class="bi bi-shield-fill"></i>
+												{{ log.user_id|replace('HEAD-ADMIN:', '') }}
+											</span>
+											{% elif 'BOT-ADMIN:' in log.user_id %}
+											<span class="badge bg-primary">
+												<i class="bi bi-person-fill-gear"></i>
+												{{ log.user_id|replace('BOT-ADMIN:', '') }}
+											</span>
+											{% else %}
+											<span class="text-muted">{{ log.user_id }}</span>
+											{% endif %}
+										</td>
+									</tr>
+									{% else %}
+									<tr>
+										<td colspan="5" class="text-center text-muted py-4">
+											No audit events found
+										</td>
+									</tr>
+									{% endfor %}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				</div>
+				
+	<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+		<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+	  </p>
+	</footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Initialize popovers and tooltips
+    document.addEventListener('DOMContentLoaded', function() {
+        // Popovers for change details
+        const popovers = document.querySelectorAll('[data-bs-toggle="popover"]')
+        popovers.forEach(popover => {
+            new bootstrap.Popover(popover, {
+                trigger: 'hover',
+                html: true,
+                customClass: 'audit-popover',
+                placement: 'left'
+            })
+        })
+
+        // Tooltips for timestamp and user IDs
+        const tooltips = document.querySelectorAll('[data-bs-toggle="tooltip"]')
+        tooltips.forEach(tooltip => {
+            new bootstrap.Tooltip(tooltip)
+        })
+    })
+    </script>
+</body>
+</html>

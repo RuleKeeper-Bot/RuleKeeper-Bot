@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Schedule Backup</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="../../../static/images/favicon.ico">
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <style>
+        body {
+            background: #f7f9fb;
+        }
+        .schedule-card {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            padding: 2rem 2.5rem;
+            margin-top: 2rem;
+        }
+        .schedule-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 1.5rem;
+        }
+        .schedule-header i {
+            font-size: 2rem;
+            color: #0d6efd;
+        }
+        .form-text {
+            font-size: 0.95em;
+        }
+        .existing-schedules-list {
+            margin-top: 1.5rem;
+        }
+        .existing-schedules-list li {
+            margin-bottom: 1.2em;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 1em 1.2em;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+        }
+        .no-schedules {
+            text-align: center;
+            color: #888;
+            font-style: italic;
+        }
+        .select2-container--default .select2-selection--single {
+            height: 38px !important;
+            padding: 6px 12px;
+            border: 1px solid #ced4da;
+            border-radius: 0.375rem;
+            font-size: 1rem;
+            background-color: #fff;
+            box-shadow: none;
+            display: flex;
+            align-items: center;
+        }
+        .select2-container--default .select2-selection--single .select2-selection__rendered {
+            line-height: 24px;
+        }
+        .select2-container--default .select2-selection--single .select2-selection__arrow {
+            height: 36px !important;
+            right: 10px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="schedule-card">
+        <div class="schedule-header">
+            <i class="bi bi-calendar-plus"></i>
+            <h2 class="mb-0">Schedule a Backup</h2>
+        </div>
+        <form method="POST" class="mb-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <a href="{{ url_for('guild_backups', guild_id=guild_id) }}" class="btn btn-outline-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Backups
+            </a>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label for="start_date" class="form-label">Start Date</label>
+                    <input type="date" class="form-control" id="start_date" name="start_date" required>
+                </div>
+                <div class="col-md-4">
+                    <label for="start_time" class="form-label">Start Time</label>
+                    <input type="time" class="form-control" id="start_time" name="start_time" required>
+                </div>
+                <div class="col-md-4">
+                    <label for="timezone" class="form-label">Timezone</label>
+                    <select class="form-control" id="timezone" name="timezone" required>
+                        {% for tz in all_timezones %}
+                            <option value="{{ tz }}" {% if tz == 'UTC' %}selected{% endif %}>{{ tz }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="mb-3 mt-3">
+                <label class="form-label">How Often?</label>
+                <div class="d-flex gap-2 align-items-center">
+                    <input type="number" min="1" class="form-control" style="max-width:120px;" id="frequency_value" name="frequency_value" required placeholder="e.g. 3">
+                    <select class="form-select" id="frequency_unit" name="frequency_unit" style="max-width:160px;" required>
+                        <option value="days">Day(s)</option>
+                        <option value="weeks">Week(s)</option>
+                        <option value="months">Month(s)</option>
+                        <option value="years">Year(s)</option>
+                    </select>
+                </div>
+                <div class="form-text">Example: Every <b>3</b> <b>weeks</b></div>
+                <div class="form-text">Note: Monthly and yearly backups are approximate and may not align perfectly with the selected schedule.</div>
+            </div>
+            <div class="mb-3 form-check">
+                <input type="checkbox" class="form-check-input" id="enabled" name="enabled" checked>
+                <label class="form-check-label" for="enabled">Enabled</label>
+            </div>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i> Save Schedule
+                </button>
+            </div>
+        </form>
+        <hr>
+        <h4 class="mb-3"><i class="bi bi-clock-history me-1"></i> Existing Schedules</h4>
+        <ul class="existing-schedules-list list-unstyled">
+            {% for sched in schedules %}
+                <li>
+                    <div>
+                        <strong>{{ sched.start_date }} {{ sched.start_time }}</strong>,
+                        <em>
+                            Every {{ sched.frequency_value }} {{ sched.frequency_unit }}
+                        </em>
+                        - {% if sched.enabled %}
+                            <span class="badge bg-success">Enabled</span>
+                        {% else %}
+                            <span class="badge bg-secondary">Disabled</span>
+                        {% endif %}
+                    </div>
+                    <div class="mt-1 text-muted">
+                        <i class="bi bi-calendar-event"></i>
+                        Next backup:
+                        <b>
+                            {{ sched.next_backup_local.strftime('%Y-%m-%d %I:%M %p') }}
+                            ({{ sched.timezone }})
+                        </b>
+                        <span class="ms-2 text-secondary">
+                            [{{ sched.next_backup_utc.strftime('%Y-%m-%d %H:%M') }} UTC]
+                        </span>
+                        <span class="ms-2">
+                            (in 
+                            {% set seconds = sched.seconds_until %}
+                            {% if seconds < 60 %}
+                                {{ seconds }} seconds
+                            {% elif seconds < 3600 %}
+                                {{ (seconds // 60) }} minutes
+                            {% elif seconds < 86400 %}
+                                {{ (seconds // 3600) }} hours {{ ((seconds % 3600) // 60) }} minutes
+                            {% else %}
+                                {{ (seconds // 86400) }} days {{ ((seconds % 86400) // 3600) }} hours
+                            {% endif %}
+                            )
+                        </span>
+                    </div>
+                    <form method="POST" action="{{ url_for('delete_schedule', guild_id=guild_id, schedule_id=sched.id) }}" style="display:inline;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-danger btn-sm ms-2" type="submit" onclick="return confirm('Delete this schedule? This cannot be undone!')">
+                            <i class="bi bi-trash"></i> Delete
+                        </button>
+                    </form>
+                    <form method="POST" action="{{ url_for('toggle_schedule', guild_id=guild_id, schedule_id=sched.id) }}" style="display:inline;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        {% if sched.enabled %}
+                            <button class="btn btn-warning btn-sm ms-2" type="submit">
+                                <i class="bi bi-pause-circle"></i> Disable
+                            </button>
+                        {% else %}
+                            <button class="btn btn-success btn-sm ms-2" type="submit">
+                                <i class="bi bi-play-circle"></i> Enable
+                            </button>
+                        {% endif %}
+                    </form>
+                </li>
+            {% else %}
+                <li class="no-schedules">No schedules set.</li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+<footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+    <p>
+        &copy; 2025 RuleKeeper. All rights reserved. |
+        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+    </p>
+</footer>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+$(document).ready(function() {
+    $('#timezone').select2({
+        width: '100%',
+        placeholder: 'Select a timezone'
+    });
+});
+
+function toLocalTimeString(utcString) {
+    // Parse as UTC
+    const date = new Date(utcString);
+    // Format as local string (customize as needed)
+    return date.toLocaleString(undefined, {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+    });
+}
+</script>
+</body>
+</html>

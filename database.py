@@ -233,42 +233,15 @@ class Database:
                 )''')
 
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS appeal_forms (
-                    guild_id TEXT PRIMARY KEY,
-                    ban_enabled BOOLEAN DEFAULT 0,
-                    ban_form_fields TEXT DEFAULT '[]',
-                    ban_form_description TEXT,
-                    ban_channel_id TEXT,
-                    kick_enabled BOOLEAN DEFAULT 0,
-                    kick_form_fields TEXT DEFAULT '[]',
-                    kick_form_description TEXT,
-                    kick_channel_id TEXT,
-                    timeout_enabled BOOLEAN DEFAULT 0,
-                    timeout_form_fields TEXT DEFAULT '[]',
-                    timeout_form_description TEXT,
-                    timeout_channel_id TEXT,
+                CREATE TABLE IF NOT EXISTS warning_actions (
+                    guild_id TEXT,
+                    warning_count INTEGER,
+                    action TEXT NOT NULL,
+                    duration_seconds INTEGER DEFAULT NULL,
+                    PRIMARY KEY (guild_id, warning_count),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS appeals (
-                    appeal_id TEXT PRIMARY KEY,
-                    guild_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    appeal_data TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    appeal_token TEXT UNIQUE NOT NULL,
-                    expires_at INTEGER NOT NULL,
-                    moderator_id TEXT NOT NULL,
-                    submitted_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
-                    preview_text TEXT,
-                    reviewed_by TEXT,
-                    reviewed_at INTEGER,
-                    moderator_notes TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
-                )''')
+                )
+            ''')
                 
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS welcome_config (
@@ -309,6 +282,8 @@ class Database:
                     mention_time_window INTEGER DEFAULT 30,
                     excluded_channels TEXT DEFAULT '[]',
                     excluded_roles TEXT DEFAULT '[]',
+                    enabled BOOLEAN DEFAULT 1,
+                    spam_strikes_before_warning INTEGER DEFAULT 1,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 )
             ''')
@@ -392,6 +367,36 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS custom_forms (
+                    id TEXT PRIMARY KEY,
+                    guild_id TEXT,
+                    name TEXT,
+                    description TEXT,
+                    config TEXT,
+                    is_template BOOLEAN DEFAULT 0,
+                    template_source TEXT,
+                    share_id TEXT UNIQUE,
+                    created_by TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS form_submissions (
+                    id TEXT PRIMARY KEY,
+                    form_id TEXT,
+                    guild_id TEXT,
+                    user_id TEXT,
+                    submission_data TEXT,
+                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(form_id) REFERENCES custom_forms(id) ON DELETE CASCADE,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                )
+            ''')
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS pending_role_changes (
@@ -403,19 +408,6 @@ class Database:
                     PRIMARY KEY (user_id, guild_id),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 )''')
-            
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_appeals_token 
-                ON appeals(appeal_token)''')
-
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_appeals_user 
-                ON appeals(user_id, guild_id)''')
-            
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_appeals_status 
-                ON appeals(status, expires_at)
-            ''')
                 
             self.conn.commit()
             logger.info("Database initialized successfully")
@@ -930,6 +922,30 @@ class Database:
             WHERE guild_id = ? AND user_id = ? AND warning_id = ?''',
             (new_reason, guild_id, user_id, warning_id)
         )
+
+    # Warning Actions Config
+    def get_warning_actions(self, guild_id: str) -> list:
+        """Returns a list of dicts sorted by warning_count ascending."""
+        actions = self.execute_query(
+            '''SELECT * FROM warning_actions WHERE guild_id = ? ORDER BY warning_count ASC''',
+            (guild_id,),
+            fetch='all'
+        )
+        return [dict(a) for a in actions] if actions else []
+
+    def set_warning_action(self, guild_id: str, warning_count: int, action: str, duration_seconds: int = None):
+        """Upsert a warning action rule."""
+        self.execute_query(
+            '''INSERT OR REPLACE INTO warning_actions (guild_id, warning_count, action, duration_seconds)
+               VALUES (?, ?, ?, ?)''',
+            (guild_id, warning_count, action, duration_seconds)
+        )
+
+    def remove_warning_action(self, guild_id: str, warning_count: int):
+        self.execute_query(
+            '''DELETE FROM warning_actions WHERE guild_id = ? AND warning_count = ?''',
+            (guild_id, warning_count)
+        )
         
     # Spam config methods
     def get_spam_config(self, guild_id: str) -> dict:
@@ -939,7 +955,9 @@ class Database:
             "mention_threshold": 3,
             "mention_time_window": 30,
             "excluded_channels": [],
-            "excluded_roles": []
+            "excluded_roles": [],
+            "enabled": True,
+            "spam_strikes_before_warning": 1
         }
         config = self.execute_query(
             'SELECT * FROM spam_detection_config WHERE guild_id = ?',
@@ -962,13 +980,17 @@ class Database:
             "mention_time_window": 30,
             "excluded_channels": [],
             "excluded_roles": [],
+            "enabled": True,
+            "spam_strikes_before_warning": 1,
             **kwargs
         }
         
         # Convert list fields to JSON strings
         full_data["excluded_channels"] = json.dumps(full_data["excluded_channels"])
         full_data["excluded_roles"] = json.dumps(full_data["excluded_roles"])
-        
+        # Convert enabled to int for SQLite
+        full_data["enabled"] = int(full_data.get("enabled", True))
+
         columns = list(full_data.keys())
         values = list(full_data.values())
         
@@ -980,112 +1002,6 @@ class Database:
                 ''' + ', '.join([f"{col} = excluded.{col}" for col in columns]),
             [guild_id] + values,
             many=False
-        )
-
-    # Appeal Methods
-    def get_appeal_forms(self, guild_id: str) -> dict:
-        return self.execute_query(
-            'SELECT * FROM appeal_forms WHERE guild_id = ?',
-            (guild_id,),
-            fetch='one'
-        )
-
-    def update_appeal_forms(self, guild_id: str, **kwargs):
-        existing = self.get_appeal_forms(guild_id) or {}
-        merged = {**existing, **kwargs}
-        
-        # Convert boolean values to integers for SQLite
-        for key in ['ban_enabled', 'kick_enabled', 'timeout_enabled']:
-            merged[key] = int(bool(merged.get(key, 0)))
-
-        columns = ', '.join(f"{k} = ?" for k in merged)
-        values = list(merged.values()) + [guild_id]
-        
-        self.execute_query(f'''
-            INSERT INTO appeal_forms 
-            (guild_id, {', '.join(merged.keys())})
-            VALUES (?{', ?' * len(merged)})
-            ON CONFLICT(guild_id) DO UPDATE SET 
-            {columns}
-        ''', [guild_id] + list(merged.values()) + list(merged.values()))
-    
-    def create_appeal(self, guild_id: str, appeal_data: dict) -> str:
-        appeal_id = str(uuid.uuid4())
-        self.execute_query(
-            '''INSERT INTO appeals 
-            (appeal_id, guild_id, user_id, type, appeal_data,
-             status, appeal_token, expires_at, moderator_id, preview_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (
-                appeal_id,
-                str(guild_id),
-                str(appeal_data['user_id']),
-                appeal_data['type'],
-                json.dumps(appeal_data.get('data', {})),
-                'pending',  # Initial status
-                appeal_data['appeal_token'],
-                int(appeal_data['expires_at']),
-                str(appeal_data['moderator_id']),
-                appeal_data.get('preview_text', '')
-            )
-        )
-        return appeal_id
-
-    def get_appeal(self, guild_id: str, appeal_id: str) -> Optional[dict]:
-        result = self.execute_query(
-            'SELECT * FROM appeals WHERE guild_id = ? AND appeal_id = ?',
-            (str(guild_id), appeal_id),
-            fetch='one'
-        )
-        if result:
-            result = dict(result)
-            result['appeal_data'] = json.loads(result['appeal_data'])
-            return result
-        return None
-
-    def update_appeal_status(self, guild_id: str, appeal_id: str, status: str):
-        valid_statuses = ['pending', 'under_review', 'approved', 'rejected']
-        if status not in valid_statuses:
-            raise ValueError(f"Invalid status: {status}")
-        
-        self.execute_query(
-            '''UPDATE appeals 
-            SET status = ? 
-            WHERE guild_id = ? AND appeal_id = ?''',
-            (status, str(guild_id), appeal_id)
-        )
-        
-    def get_appeal_by_token(self, appeal_token: str) -> Optional[dict]:
-        result = self.execute_query(
-            'SELECT * FROM appeals WHERE appeal_token = ?',
-            (appeal_token,),
-            fetch='one'
-        )
-        if result:
-            result = dict(result)
-            try:
-                result['appeal_data'] = json.loads(result['appeal_data'])
-            except (json.JSONDecodeError, TypeError):
-                result['appeal_data'] = {}
-            return result
-        return None
-
-    def update_appeal(self, appeal_id: str, **kwargs):
-        if 'appeal_data' in kwargs:
-            kwargs['appeal_data'] = json.dumps(kwargs['appeal_data'])
-        
-        # Convert reviewed_by to string if present
-        if 'reviewed_by' in kwargs and kwargs['reviewed_by'] is not None:
-            kwargs['reviewed_by'] = str(kwargs['reviewed_by'])
-            
-        set_clause = ', '.join(f"{k} = ?" for k in kwargs)
-        values = list(kwargs.values()) + [appeal_id]
-        
-        self.execute_query(
-            f'''UPDATE appeals 
-            SET {set_clause} 
-            WHERE appeal_id = ?''',
-            tuple(values)
         )
         
     # Auto Roles on Game Play Time
@@ -1164,8 +1080,6 @@ class Database:
     # Database Validation
     def validate_schema(self):
         required_tables = {
-            'appeals': ['appeal_id', 'guild_id', 'user_id', 'type',
-                       'appeal_token', 'expires_at', 'status'],
             'warnings': ['guild_id', 'user_id', 'warning_id', 'reason']
         }
         

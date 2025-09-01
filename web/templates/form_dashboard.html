@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Custom Forms Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="icon" type="image/x-icon" href="../../../static/images/favicon.ico">
+    <style>
+        .form-card { min-width: 300px; margin-bottom: 1.5rem; }
+        .template-badge { font-size: 0.8em; background: #5865F2; color: #fff; border-radius: 4px; padding: 2px 8px; }
+        .actions { margin-top: 0.5em; }
+    </style>
+</head>
+<body>
+<div class="container py-4">
+    <h2>Custom Forms for {{ guild.name }}</h2>
+    <div class="mb-3">
+        <a href="{{ url_for('create_custom_form', guild_id=guild_id) }}" class="btn btn-primary">+ New Form</a>
+    </div>
+    <div class="row">
+        {% for form in forms %}
+        <div class="col-md-4">
+            <div class="card form-card">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        {{ form.name }}
+                        {% if form.is_template %}
+                            <span class="template-badge">Template</span>
+                        {% endif %}
+                    </h5>
+                    <p class="card-text">{{ form.description or "No description" }}</p>
+                    <div class="actions">
+                        {% if not form.is_template %}
+                        <a href="{{ url_for('edit_custom_form', guild_id=guild_id, form_id=form.id) }}" class="btn btn-sm btn-outline-primary">Edit</a>
+                        <form action="{{ url_for('delete_custom_form', guild_id=guild_id, form_id=form.id) }}" method="post" style="display:inline" onsubmit="return confirm('Delete this form?');">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                        </form>
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                onclick="copyFormLink('{{ form.id }}', '{{ guild_id }}', '{{ form.name|e }}')">
+                            Share
+                        </button>
+                        <a href="{{ url_for('view_form_submissions', guild_id=guild_id, form_id=form.id) }}" class="btn btn-sm btn-outline-success">Submissions</a>
+                        {% else %}
+                        <form action="{{ url_for('import_shared_form', share_id=form.share_id) }}" method="post" style="display:inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="guild_id" value="{{ guild_id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-primary">Use Template</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card-footer text-muted">
+                    Created: {{ form.created_at|datetimeformat }}<br>
+                    Updated: {{ form.updated_at|datetimeformat }}
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <div class="col-12">
+            <div class="alert alert-info">No forms found. Create one!</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+<script>
+const FRONTEND_URL = "{{ FRONTEND_URL }}";
+function copyFormLink(formId, guildId, formName) {
+    const url = `${FRONTEND_URL}/forms/${formId}/fill`;
+    navigator.clipboard.writeText(url).then(function() {
+        alert(`Link copied to clipboard:\n${url}`);
+    }, function(err) {
+        alert('Failed to copy link: ' + err);
+    });
+}
+</script>
+</body>
+</html>

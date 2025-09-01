@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RuleKeeper Bot</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons/font/bootstrap-icons.css" rel="stylesheet">
+  <link rel="icon" type="image/x-icon" href="../static/images/favicon.ico">
+</head>
+<body class="bg-gray-900 text-white font-sans leading-relaxed">
+
+  <header class="bg-gray-800 p-6 shadow-md">
+    <div class="container mx-auto text-center">
+      <h1 class="text-4xl font-bold text-teal-400 flex justify-center items-center gap-3">
+        <img src="../static/images/icon.png" alt="RuleKeeper Icon" class="w-10 h-10 inline-block"> RuleKeeper
+      </h1>
+      <p class="text-gray-300 mt-2 text-lg">The All-Purpose Discord Bot for Moderation, Automation & More</p>
+    </div>
+  </header>
+
+  <main class="container mx-auto px-4 py-10 space-y-12">
+  
+    <!-- Important links -->
+    <section class="text-center space-y-4">
+      <h2 class="text-3xl font-semibold text-teal-300">🌐 Dashboard Access</h2>
+      <p class="text-gray-300">Manage everything easily with our web dashboard!</p>
+      <div class="space-x-4">
+        <a href="/guilds" class="bi bi-door-open-fill bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded"> Open Dashboard</a>
+        <a href="https://discord.com/oauth2/authorize?client_id=1343769718170976327&permissions=1443528535191&response_type=code&redirect_uri=https%3A%2F%2Frulekeeper.cc%2Fcallback&scope=bot+identify+messages.read+guilds+applications.commands" class="bi bi-discord bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded"> Invite RuleKeeper</a>
+      </div>
+      <div class="space-x-4">
+        <a href="https://github.com/RuleKeeper-Bot/RuleKeeper-Bot" target="_blank" class="bi bi-github bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded"> Source Code</a>
+        <a href="https://docs.rulekeeper.cc/" target="_blank" class="bi bi-file-earmark-fill bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded"> Installation Instructions</a>
+        <a href="https://status.rulekeeper.cc/" target="_blank" class="bi bi-clipboard2-pulse-fill bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded"> Status Page</a>
+      </div>
+    </section>
+
+    <!-- Features Section -->
+    <section>
+      <h2 class="text-3xl font-semibold text-teal-300 mb-6">🚀 Bot Features</h2>
+      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
+        <ul class="list-disc ml-5 text-gray-300 space-y-2">
+          <li><strong>Custom Commands:</strong>
+            <ul class="list-disc ml-6">
+              <li>Add, edit, and remove commands directly from Discord or through the dashboard.</li>
+            </ul>
+          </li>
+          <li><strong>Moderation:</strong>
+            <ul class="list-disc ml-6">
+              <li>Ban, kick, deafen, timeout, and softban users.</li>
+              <li>Unban, undeafen, and untimeout users.</li>
+              <li>Warn users and track their warnings.</li>
+              <li>Remove warnings.</li>
+              <li>Automatically timeout or ban users who accumulate too many warnings.</li>
+              <li>Purge messages.</li>
+            </ul>
+          </li>
+          <li><strong>Auto Moderation:</strong>
+            <ul class="list-disc ml-6">
+              <li>Detects and mitigates spam (message and mention spam detection).</li>
+              <li>Blocks words that you can set and DM users when they say a blocked word.</li>
+            </ul>
+          </li>
+          <li><strong>Logging:</strong>
+            <ul class="list-disc ml-6">
+              <li>Tracks various server events.</li>
+            </ul>
+          </li>
+          <li><strong>Leveling:</strong>
+            <ul class="list-disc ml-6">
+              <li>Role rewards.</li>
+              <li>XP boosting for certain roles.</li>
+              <li>Custom XP ranges.</li>
+              <li>Custom cooldown.</li>
+            </ul>
+          </li>
+          <li><strong>Custom message on an event:</strong>
+            <ul class="list-disc ml-6">
+              <li>Send an embed or text message when a user joins the server.</li>
+              <li>Send an embed or text message when a user leaves the server.</li>
+            </ul>
+          </li>
+          <li><strong>Give user a role when they join:</strong>
+            <ul class="list-disc ml-6">
+              <li>Give every user a role when they join your server.</li>
+            </ul>
+          </li>
+          <li><strong>Give a user a role when they play a game:</strong>
+            <ul class="list-disc ml-6">
+              <li>Give a role to a user if they play a game for a certain amount of time.</li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="text-3xl font-semibold text-teal-300 mb-6">💻 Dashboard Features</h2>
+      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
+        <ul class="list-disc ml-5 text-gray-300 space-y-2">
+          <li><strong>Login Using Discord OAuth:</strong>
+            <ul class="list-disc ml-6">
+              <li>View all servers you have access to edit.</li>
+            </ul>
+          </li>
+          <li><strong>Head Bot Admin Dashboard:</strong>
+            <ul class="list-disc ml-6">
+              <li>Login as a Head Bot Admin using the variables set in <code>.env</code>.</li>
+              <li>Add and delete Bot Admins, who can edit or remove any server that the bot is in.</li>
+              <li>Head Bot Admins can do the same things as Bot Admins while controlling what privileges Bot Admins have.</li>
+            </ul>
+          </li>
+          <li><strong>Custom Commands:</strong>
+            <ul class="list-disc ml-6">
+              <li>Add, edit, and remove custom commands.</li>
+            </ul>
+          </li>
+          <li><strong>Command Syncing:</strong>
+            <ul class="list-disc ml-6">
+              <li>Update bot commands instantly.</li>
+            </ul>
+          </li>
+          <li><strong>Logging Control:</strong>
+            <ul class="list-disc ml-6">
+              <li>Enable or disable individual logging options.</li>
+            </ul>
+          </li>
+          <li><strong>Manage Blocked Words:</strong>
+            <ul class="list-disc ml-6">
+              <li>Add, edit, and remove blocked words.</li>
+              <li>Edit the embed that gets sent to the user when they say a blocked word.</li>
+            </ul>
+          </li>
+          <li><strong>Manage Leveling:</strong>
+            <ul class="list-disc ml-6">
+              <li>Customize XP ranges, boosts, and level embed.</li>
+            </ul>
+          </li>
+          <li><strong>Leaderboard:</strong>
+            <ul class="list-disc ml-6">
+              <li>View a server leaderboard.</li>
+            </ul>
+          </li>
+          <li><strong>Banned Users:</strong>
+            <ul class="list-disc ml-6">
+              <li>View a list of banned users.</li>
+              <li>Unban users.</li>
+            </ul>
+          </li>
+          <li><strong>Warned Users:</strong>
+            <ul class="list-disc ml-6">
+              <li>View, edit, and delete warnings from a user.</li>
+            </ul>
+          </li>
+          <li><strong>Welcome and goodbye messages:</strong>
+            <ul class="list-disc ml-6">
+              <li>Customize what the message says.</li>
+              <li>Choose if it will be a normal text or an embed.</li>
+            </ul>
+          </li>
+          <li><strong>Spam and Mention Detection:</strong>
+            <ul class="list-disc ml-6">
+              <li>Choose what roles and channels are excluded from spam detection.</li>
+              <li>Choose the amount of messages allowed and the frequency that it checks.</li>
+            </ul>
+          </li>
+          <li><strong>Automatic roles on user join:</strong>
+            <ul class="list-disc ml-6">
+              <li>Choose if a user gets a role when they join the server.</li>
+            </ul>
+          </li>
+          <li><strong>Automatic roles on game play:</strong>
+            <ul class="list-disc ml-6">
+              <li>Give a role to a user if they play a game.</li>
+              <li>Choose how long the user need to play for before getting the role.</li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Support & Permissions -->
+    <section>
+      <h2 class="text-3xl font-semibold text-teal-300 mb-4">💬 Support & Permissions</h2>
+      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
+        <p>Need help or want to suggest something? Join our support Discord server:</p>
+        <a href="https://discord.gg/kcu7dJZKy9" class="inline-block bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 px-4 rounded">Join Support Server</a>
+
+        <h3 class="text-xl font-bold mt-6">Required Permissions (a role with these permissions will automatically be created)</h3>
+        <ul class="list-disc ml-5 text-gray-300">
+          <li>View Audit Log</li>
+          <li>Manage Roles</li>
+          <li>Manage Channels</li>
+          <li>Kick, Approve, and Reject Members</li>
+          <li>Ban Members</li>
+          <li>Create Instant Invite</li>
+          <li>Manage Nicknames</li>
+          <li>View Channels</li>
+          <li>Moderate Members</li>
+          <li>Send Messages</li>
+          <li>Create Private Threads</li>
+          <li>Send Messages in Threads</li>
+          <li>Manage Messages</li>
+          <li>Embed Links</li>
+          <li>Read Message History</li>
+          <li>Move Members</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Delete Data -->
+    <section>
+      <h2 class="text-3xl font-semibold text-teal-300 mb-4">🗑️ Delete My Data</h2>
+      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4 text-center">
+        <p>If you want to delete your data from our database, click the button below. This will remove all your data from all servers.</p>
+        <a href="{{ url_for('delete_my_data') }}" class="inline-block">
+          <button type="submit" class="w-full max-w-xs mx-auto mt-6 bg-red-600 hover:bg-red-700 text-white text-xl font-bold py-4 px-8 rounded-lg shadow-lg transition-colors duration-200">
+            Delete My Data
+          </button>
+        </a>
+      </div>
+    </section>
+
+    <!-- Coming Soon -->
+    <section>
+      <a href="https://trello.com/b/rVCkIgc5/rulekeeper-features" class="text-3xl font-semibold text-teal-300 mb-4 block">Check the Trello board for features that are coming soon.</a>
+    </section>
+
+  </main>
+
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+		<a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+	  </p>
+	</footer>
+
+</body>
+</html>

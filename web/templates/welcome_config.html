@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome Message Configuration</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+	<link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 20px;
+            background-color: #2f3136;
+            border-radius: 8px;
+            color: #dcddde;
+        }
+		.form-text {
+			color: red;
+		}
+        .form-control {
+            background-color: #40444b;
+            border-color: #040405;
+            color: #dcddde;
+        }
+        .form-control:focus {
+            background-color: #484c52;
+            border-color: #7289da;
+            color: #dcddde;
+        }
+        .form-check-input:checked {
+            background-color: #7289da;
+            border-color: #7289da;
+        }
+        .btn-primary {
+            background-color: #7289da;
+            border-color: #7289da;
+        }
+        .btn-primary:hover {
+            background-color: #677bc4;
+            border-color: #677bc4;
+        }
+		.discord-embed-preview {
+			max-width: 520px;
+			font-family: 'Whitney', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+			background: #2f3136;
+			border-radius: 4px;
+			display: flex;
+			margin: 8px 0;
+		}
+		.embed-color-bar {
+			width: 4px !important;
+			height: 100px !important; /* Set minimum visible height */
+			border-radius: 4px 0 0 4px;
+			display: block !important; /* Force display */
+		}
+		.embed-content {
+			display: flex;
+			align-items: flex-start;
+		}
+		.embed-main {
+			padding: 4px 16px 8px 12px;
+			flex-grow: 1;
+		}
+		.embed-title {
+			color: #fff;
+			font-weight: 600;
+			font-size: 16px;
+			margin-bottom: 4px;
+			margin-top: 7px;
+		}
+		.embed-description {
+			color: #dcddde;
+			font-size: 14px;
+			white-space: pre-line;
+			line-height: 3.4;
+		}
+		.embed-thumbnail img {
+			max-width: 80px;
+			max-height: 80px;
+			border-radius: 4px;
+			margin-top: 8px;
+		}
+		.preview-server-icon {
+			width: 64px;
+			height: 64px;
+			border-radius: 50%;
+			margin-top: 10px;
+			display: none;
+		}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2 class="mb-4">Welcome Message Configuration</h2>
+		
+		<div>
+            <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+        
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            
+            <div class="form-group mb-4">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="enabled" name="enabled"
+                        {{ 'checked' if config.enabled }}>
+                    <label class="form-check-label" for="enabled">Enable Welcome Messages</label>
+                </div>
+            </div>
+
+            <div class="form-group mb-4">
+				<label for="channel_id" class="form-label">Channel</label>
+				<select class="form-control" id="channel_id" name="channel_id">
+					<option value="">Select a channel...</option>
+					{% if channels %}
+						{% for channel in channels %}
+						<option value="{{ channel.id }}" 
+							{% if config.channel_id == channel.id %}selected{% endif %}>
+							#{{ channel.name }}
+						</option>
+						{% endfor %}
+					{% else %}
+						<option value="" disabled>
+							{% if discord_guild %}No text channels found{% else %}Bot not in server{% endif %}
+						</option>
+					{% endif %}
+				</select>
+			</div>
+
+            <div class="form-group mb-4">
+                <label class="form-label">Message Type</label>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="message_type" value="text"
+                        {{ 'checked' if config.message_type == 'text' }}>
+                    <label class="form-check-label">Text Message</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="message_type" value="embed"
+                        {{ 'checked' if config.message_type == 'embed' }}>
+                    <label class="form-check-label">Embed Message</label>
+                </div>
+            </div>
+
+            <!-- Text Message Content -->
+			<div class="form-group mb-4 text-message">
+				<label for="message_content" class="form-label">Message Content</label>
+				<textarea class="form-control" id="message_content" name="message_content" rows="4"
+					placeholder="Welcome {user} to {server}!">{{ config.message_content or '' }}</textarea>
+				<div class="form-text mt-2">
+					<strong>Important:</strong> Place {user} here for proper mentions!
+				</div>
+			</div>
+
+            <!-- Embed Configuration -->
+            <div class="embed-config" style="{{ 'display: none;' if config.message_type != 'embed' }}">
+                <!-- Embed Title Section -->
+				<div class="form-group mb-4">
+					<label for="embed_title" class="form-label">Embed Title</label>
+					<input type="text" class="form-control" id="embed_title" name="embed_title"
+						value="{{ config.embed_title or 'Welcome!' }}">
+					<div class="form-text">
+						Avoid mentions here - they won't work properly in embeds
+					</div>
+				</div>
+
+                <!-- Embed Description Section -->
+				<div class="form-group mb-4">
+					<label for="embed_description" class="form-label">Embed Description</label>
+					<textarea class="form-control" id="embed_description" name="embed_description" rows="3"
+						>{{ config.embed_description or 'Welcome to {server}!' }}</textarea>
+				</div>
+
+                <div class="form-group mb-4">
+                    <label for="embed_color" class="form-label">Embed Color</label>
+                    <input type="color" class="form-control-color" id="embed_color" name="embed_color"
+                        value="#{{ '%06x' % config.embed_color if config.embed_color else '00ff00' }}">
+                </div>
+
+                <div class="form-check mb-4">
+                    <input class="form-check-input" type="checkbox" id="embed_thumbnail" name="embed_thumbnail"
+                        {{ 'checked' if config.embed_thumbnail }}>
+                    <label class="form-check-label" for="embed_thumbnail">Show User Avatar Thumbnail</label>
+                </div>
+				<div class="form-check mb-4">
+					<input class="form-check-input" type="checkbox" id="show_server_icon" name="show_server_icon"
+						{{ 'checked' if config.show_server_icon }}>
+					<label class="form-check-label" for="show_server_icon">Show Server Icon</label>
+				</div>
+            </div>
+			
+			<!-- Variables section -->
+			<div class="form-group mt-4">
+				<div class="alert alert-info">
+					<strong>Variable Guide:</strong>
+					<ul class="mt-2">
+						<li><code>{user}</code> - Mentions the new member (Must be in <em>Message Content</em> for proper mentions).</li>
+						<li><code>{server}</code> - Server name (Works in both text and embeds).</li>
+						<li><code>{member_count}</code> - New server member count (Works in both text and embeds).</li>
+					</ul>
+				</div>
+			</div>
+			
+			<div class="mt-4" id="preview-section" style="display: none;">
+				<h5>Embed Preview</h5>
+				<div class="discord-embed-preview">
+					<div class="embed-content">
+						<div class="embed-color-bar" style="background-color: {% if config.embed_color %}#{{ '%06x' % config.embed_color }}{% else %}#00FF00{% endif %};"></div>
+						<div class="embed-main">
+							<div class="embed-title" id="preview-title"></div>
+							<div class="embed-description" id="preview-description"></div>
+							<div class="embed-thumbnail" id="preview-thumbnail">
+								<img src="https://cdn.discordapp.com/embed/avatars/0.png" 
+									 style="display: none;"
+									 class="img-thumbnail">
+							</div>
+							<div class="preview-server-icon-container">
+								<img src="" class="preview-server-icon" id="preview-server-icon" 
+									 alt="Server Icon Preview" style="display: none;">
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+            <div class="d-grid gap-2">
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </div>
+        </form>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+	document.addEventListener('DOMContentLoaded', function() {
+		// DOM Elements
+		const messageTypeRadios = document.querySelectorAll('input[name="message_type"]');
+		const textMessageSection = document.querySelector('.text-message');
+		const embedConfigSection = document.querySelector('.embed-config');
+		const previewSection = document.getElementById('preview-section');
+		
+		// Form Elements
+		const embedColorInput = document.getElementById('embed_color');
+		const embedTitleInput = document.getElementById('embed_title');
+		const embedDescInput = document.getElementById('embed_description');
+		const thumbnailCheckbox = document.getElementById('embed_thumbnail');
+		const serverIconCheckbox = document.getElementById('show_server_icon');
+		
+		// Preview Elements
+		const colorBar = document.querySelector('.embed-color-bar');
+		const previewTitle = document.getElementById('preview-title');
+		const previewDescription = document.getElementById('preview-description');
+		const previewThumbnail = document.querySelector('#preview-thumbnail img');
+		const previewServerIcon = document.getElementById('preview-server-icon');
+
+		// Initial Setup
+		initializeForm();
+		setupEventListeners();
+		updatePreview();
+
+		function initializeForm() {
+			// Check initial message type
+			const initialMessageType = document.querySelector('input[name="message_type"]:checked').value;
+			const isEmbedInitially = initialMessageType === 'embed';
+
+			// Set initial visibility
+			embedConfigSection.style.display = isEmbedInitially ? 'block' : 'none';
+			previewSection.style.display = isEmbedInitially ? 'block' : 'none';
+
+			// Initialize color
+			const serverColor = "{{ '%06x' % config.embed_color if config.embed_color else '00FF00' }}";
+			let hexColor = `#${serverColor}`.replace('##', '#');
+			if (hexColor.length === 4) {
+				hexColor = '#' + hexColor.slice(1).split('').map(c => c + c).join('');
+			}
+			embedColorInput.value = hexColor.toUpperCase();
+			colorBar.style.backgroundColor = hexColor;
+
+			// Initialize checkboxes
+			updateThumbnailPreview();
+			updateServerIconPreview();
+		}
+
+		function setupEventListeners() {
+			// Message type toggle
+			messageTypeRadios.forEach(radio => {
+				radio.addEventListener('change', () => {
+					const isEmbed = document.querySelector('input[name="message_type"]:checked').value === 'embed';
+					embedConfigSection.style.display = isEmbed ? 'block' : 'none';
+					previewSection.style.display = isEmbed ? 'block' : 'none';
+					updatePreview();
+				});
+			});
+
+			// Input listeners
+			embedColorInput.addEventListener('input', updatePreview);
+			embedTitleInput.addEventListener('input', updatePreview);
+			embedDescInput.addEventListener('input', updatePreview);
+			thumbnailCheckbox.addEventListener('change', updateThumbnailPreview);
+			serverIconCheckbox.addEventListener('change', updateServerIconPreview);
+		}
+
+		function updatePreview() {
+			const isEmbed = document.querySelector('input[name="message_type"]:checked').value === 'embed';
+			
+			// Update color preview
+			let colorValue = embedColorInput.value.replace(/#/g, '');
+			if (colorValue.length === 3) {
+				colorValue = colorValue.split('').map(c => c + c).join('');
+			}
+			colorValue = `#${colorValue.padEnd(6, '0').substring(0, 6)}`;
+			colorBar.style.backgroundColor = colorValue;
+			embedColorInput.value = colorValue.toUpperCase();
+
+			// Update embed preview text
+			if (isEmbed) {
+				previewTitle.textContent = embedTitleInput.value || 'Welcome!';
+				previewDescription.textContent = embedDescInput.value.replace(/\n/g, '\n') || 'Welcome to our server!';
+			}
+		}
+
+		function updateThumbnailPreview() {
+			previewThumbnail.style.display = thumbnailCheckbox.checked ? 'block' : 'none';
+		}
+
+		function updateServerIconPreview() {
+			previewServerIcon.style.display = serverIconCheckbox.checked ? 'block' : 'none';
+			if (serverIconCheckbox.checked) {
+				// Get server icon from Flask template variables
+				const serverIcon = "{{ guild.icon if guild.icon else url_for('static', filename='images/default_server.png') }}";
+				previewServerIcon.src = serverIcon;
+				previewServerIcon.alt = "{{ guild.name }} Server Icon";
+				previewServerIcon.onerror = function() {
+					// Fallback if the server icon URL is invalid
+					this.src = "{{ url_for('static', filename='images/default_server.png') }}";
+				};
+			}
+		}
+	});
+	</script>
+</body>
+</html>
