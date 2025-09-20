@@ -18,9 +18,13 @@
     </style>
 </head>
 <body>
+    <div id="successMessage" class="alert alert-success mt-3 d-none" role="alert">
+        Configuration updated successfully!
+    </div>
+    
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2>Logging Configuration - {{ guild_id }}</h2>
+        <h2>Logging Configuration - {{ guild.name }}</h2>
         <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary">
             Back to Dashboard
         </a>
@@ -28,10 +32,11 @@
 
     <div class="config-section">
         <form id="logConfigForm" method="POST" action="/dashboard/{{ guild_id }}/log-config">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="mb-4">
                 <h4>Event Types</h4>
                 <div class="row">
-                    {% for key in config if key not in ['guild_id', 'log_channel_id'] %}
+                    {% for key in config if key not in ['guild_id', 'log_channel_id', 'excluded_users', 'excluded_roles', 'excluded_channels', 'log_bots', 'log_self'] %}
                     <div class="col-md-4 mb-3">
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" 
@@ -43,6 +48,77 @@
                         </div>
                     </div>
                     {% endfor %}
+                </div>
+            </div>
+            <div class="mb-4">
+                <h4>Other Logging Options</h4>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="log_bots" id="log_bots" {% if config.log_bots %}checked{% endif %}>
+                            <label class="form-check-label" for="log_bots">Log Bots</label>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="log_self" id="log_self" {% if config.log_self %}checked{% endif %}>
+                            <label class="form-check-label" for="log_self">Log RuleKeeper</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <h4>Exclusions</h4>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Users Not Logged</label>
+                        <div class="border rounded p-2" style="max-height: 200px; overflow-y: auto; background: #fff;">
+                            {% if guild_users %}
+                                {% for user in guild_users %}
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="excluded_users" id="excluded_user_{{ user.id }}" value="{{ user.id }}" {% if config.excluded_users and user.id in config.excluded_users %}checked{% endif %}>
+                                    <label class="form-check-label" for="excluded_user_{{ user.id }}">{{ user.username }}#{{ user.discriminator }}</label>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-muted">No users found.</span>
+                            {% endif %}
+                        </div>
+                        <small class="form-text text-muted">Select users to exclude from logging.</small>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Roles Not Logged</label>
+                        <div class="border rounded p-2" style="max-height: 200px; overflow-y: auto; background: #fff;">
+                            {% if roles %}
+                                {% for role in roles %}
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="excluded_roles" id="excluded_role_{{ role.id }}" value="{{ role.id }}" {% if config.excluded_roles and role.id in config.excluded_roles %}checked{% endif %}>
+                                    <label class="form-check-label" for="excluded_role_{{ role.id }}">{{ role.name }}</label>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-muted">No roles found.</span>
+                            {% endif %}
+                        </div>
+                        <small class="form-text text-muted">Select roles to exclude from logging.</small>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Channels Not Logged</label>
+                        <div class="border rounded p-2" style="max-height: 200px; overflow-y: auto; background: #fff;">
+                            {% if channels %}
+                                {% for channel in channels %}
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="excluded_channels" id="excluded_channel_{{ channel.id }}" value="{{ channel.id }}" {% if config.excluded_channels and channel.id in config.excluded_channels %}checked{% endif %}>
+                                    <label class="form-check-label" for="excluded_channel_{{ channel.id }}">#{{ channel.name }}</label>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-muted">No channels found.</span>
+                            {% endif %}
+                        </div>
+                        <small class="form-text text-muted">Select channels to exclude from logging.</small>
+                    </div>
                 </div>
             </div>
 
@@ -74,10 +150,6 @@
             </button>
         </form>
     </div>
-
-    <div id="successMessage" class="alert alert-success mt-3 d-none" role="alert">
-        Configuration updated successfully! Redirecting back to dashboard...
-    </div>
 </div>
 
 <script>
@@ -105,9 +177,6 @@ document.getElementById('logConfigForm').addEventListener('submit', function(e) 
     })
     .then(() => {
         successMessage.classList.remove('d-none');
-        setTimeout(() => {
-            window.location.href = `/dashboard/{{ guild_id }}`;
-        }, 1500);
     })
     .catch(error => {
         alert('Error updating configuration: ' + error.message);

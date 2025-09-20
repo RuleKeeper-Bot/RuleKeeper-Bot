@@ -33,6 +33,7 @@ import jwt
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from pytz import utc, timezone, all_timezones
+import xml.etree.ElementTree as ETree
 
 # -------------------- Local Imports -----------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -40,23 +41,40 @@ from config import Config
 from database import Database
 from backups.backups import add_backup, get_backups, get_backup, init_db, get_conn
 
+
 # -------------------- Runtime Config -----------------
 load_dotenv()
 init_db()
 scheduler = AsyncIOScheduler(timezone=utc)
 
+
+# -------------------- Debug Mode --------------------
+DEBUG_MODE = os.getenv("DEBUG_MODE", "none").lower()  # 'none', 'some', 'all'
+def debug_print(*args, level="some", **kwargs):
+    """
+    Print debug output based on DEBUG_MODE:
+    - 'none': no debug output
+    - 'some': prints all debug_prints except those with level='all'
+    - 'all': prints all debug_prints
+    """
+    if DEBUG_MODE == "none":
+        return
+    if DEBUG_MODE == "some" and level == "all":
+        return
+    print("[DEBUG]", *args, **kwargs)
+
 # ------------------- APScheduler Stuff -------------------
 def job_listener(event):
     if event.exception:
-        print(f"[APSCHEDULER] Job {event.job_id} raised an exception: {event.exception}")
+        debug_print(f"[APSCHEDULER] Job {event.job_id} raised an exception: {event.exception}")
     elif event.code == EVENT_JOB_MISSED:
-        print(f"[APSCHEDULER] Job {event.job_id} MISSED!")
+        debug_print(f"[APSCHEDULER] Job {event.job_id} MISSED!")
     else:
-        print(f"[APSCHEDULER] Job {event.job_id} executed successfully.")
+        debug_print(f"[APSCHEDULER] Job {event.job_id} executed successfully.")
 
 scheduler.add_listener(job_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED)
 
-# -------------------- JWT Auth for API --------------------
+# -------------------- JWT Authentication for Bot API --------------------
 JWT_SECRET = os.getenv("JWT_SECRET")
 JWT_ALGORITHM = "HS256"
 
@@ -90,6 +108,7 @@ def set_event_loop(loop):
     with _loop_lock:
         _bot_loop = loop
 
+# -------------------- Backup Stuff --------------------
 backup_progress_store = {}
 backup_progress_lock = threading.Lock()
 
@@ -109,7 +128,7 @@ def schedule_backup_wrapper(guild_id):
     if loop and loop.is_running():
         asyncio.run_coroutine_threadsafe(scheduled_backup_job(guild_id), loop)
     else:
-        print("No running event loop for scheduled backup!")
+        debug_print("No running event loop for scheduled backup!")
 
 async def scheduled_backup_job(guild_id):
     try:
@@ -119,7 +138,7 @@ async def scheduled_backup_job(guild_id):
                 set_backup_progress(guild_id, val, step_text)
             await save_guild_backup(guild, set_progress=set_progress)
     except Exception as e:
-        print(f"Exception in scheduled_backup_job: {e}")
+        debug_print(f"Exception in scheduled_backup_job: {e}")
 
 def load_schedules():
     with get_conn() as conn:
@@ -140,7 +159,7 @@ def load_schedules():
             try:
                 local_tz = timezone(tz_str)
             except Exception:
-                print(f"[WARNING] Invalid timezone '{tz_str}', defaulting to UTC")
+                debug_print(f"[WARNING] Invalid timezone '{tz_str}', defaulting to UTC")
                 local_tz = utc
             local_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
             local_dt = local_tz.localize(local_dt)
@@ -168,7 +187,7 @@ def load_schedules():
                 interval_args["weeks"] = freq_val * 52  # Approximate
                 interval = timedelta(weeks=freq_val * 52)
             else:
-                print(f"[WARNING] Unknown frequency unit: {freq_unit}, defaulting to days")
+                debug_print(f"[WARNING] Unknown frequency unit: {freq_unit}, defaulting to days")
                 interval_args["days"] = freq_val
                 interval = timedelta(days=freq_val)
 
@@ -204,9 +223,9 @@ db = Database(str(Config.DATABASE_PATH))
 db.initialize_db()
 try:
     db.validate_schema()
-    print("✅ Database schema validation passed")
+    debug_print("✅ Database schema validation passed")
 except RuntimeError as e:
-    print(f"❌ Database schema validation failed: {str(e)}")
+    debug_print(f"❌ Database schema validation failed: {str(e)}")
     raise
 
 # -------------------- API and Frontend URLs -----------------
@@ -219,9 +238,6 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 # -------------------- Caching --------------------
 level_config_cache = TTLCache(maxsize=100, ttl=300)  # 10 minutes
 logger = logging.getLogger(__name__)
-
-
-YOUTUBE_QUOTA_EXCEEDED = False
 # -------------------- Log Config --------------------
 
 def load_log_config(guild_id):
@@ -248,7 +264,19 @@ def load_log_config(guild_id):
         "channel_update": True,
         "emoji_create": True,
         "emoji_name_change": True,
-        "emoji_delete": True
+        "emoji_delete": True,
+        "backup_created": True,
+        "backup_failed": True,
+        "backup_deleted": True,
+        "backup_restored": True,
+        "backup_restore_failed": True,
+        "backup_schedule_created": True,
+        "backup_schedule_deleted": True,
+        "excluded_users": [],
+        "excluded_roles": [],
+        "excluded_channels": [],
+        "log_bots": True,
+        "log_self": False
     }
 
     # Check if guild exists before inserting log_config
@@ -272,18 +300,33 @@ def load_log_config(guild_id):
     converted_config = {}
     for key in default_config:
         value = config.get(key)
-        
-        if isinstance(default_config[key], bool):
-            # Convert SQLite integer (0/1) to boolean
-            converted_config[key] = bool(value) if value is not None else default_config[key]
+        if key in ["excluded_users", "excluded_roles", "excluded_channels"]:
+            # Stored as JSON/text, convert to list
+            if value is None or value == "":
+                converted_config[key] = []
+            elif isinstance(value, list):
+                converted_config[key] = value
+            else:
+                try:
+                    converted_config[key] = json.loads(value)
+                except Exception:
+                    converted_config[key] = []
+        elif isinstance(default_config[key], bool):
+            converted_config[key] = bool(int(value)) if value is not None else default_config[key]
         else:
             converted_config[key] = value if value is not None else default_config[key]
-    
     return converted_config
 
 def save_log_config(guild_id, config):
-    # Convert boolean values to integers for SQLite storage
-    db_config = {k: int(v) if isinstance(v, bool) else v for k, v in config.items()}
+    # Convert boolean values to integers for SQLite storage, lists to JSON
+    db_config = {}
+    for k, v in config.items():
+        if isinstance(v, bool):
+            db_config[k] = int(v)
+        elif k in ["excluded_users", "excluded_roles", "excluded_channels"]:
+            db_config[k] = json.dumps(v) if isinstance(v, (list, dict)) else v
+        else:
+            db_config[k] = v
     db.update_log_config(str(guild_id), **db_config)
 
 processed_messages = ExpiringDict(max_len=1000, max_age_seconds=300)
@@ -411,7 +454,7 @@ def get_blocked_words(guild_id: int) -> list:
     try:
         return db.get_blocked_words(str(guild_id))
     except Exception as e:
-        print(f"Error getting blocked words: {str(e)}")
+        debug_print(f"Error getting blocked words: {str(e)}")
         return []
 
 def get_blocked_embed(guild_id: int) -> dict:
@@ -433,7 +476,7 @@ def get_blocked_embed(guild_id: int) -> dict:
             db.conn.commit()
         return embed
     except Exception as e:
-        print(f"Error getting blocked embed: {str(e)}")
+        debug_print(f"Error getting blocked embed: {str(e)}")
         return {
             "title": "Blocked Word Detected!",
             "description": "You have used a word that is not allowed.",
@@ -463,281 +506,514 @@ def update_warning(guild_id: str, user_id: str, warning_id: str, new_reason: str
     db.update_warning_reason(str(guild_id), str(user_id), warning_id, new_reason)
 
 # -------------------- Stream and Video Stuff --------------------
-class StreamAnnouncer:
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+
+class PingAnnouncer:
     def __init__(self, bot):
         self.bot = bot
-        self.twitch_token = None
-        self.twitch_expiry = 0
-        self.youtube_cache = {}
-        self.check_loop.start()
-        
-    @tasks.loop(minutes=3)
+        self.last_youtube_video = {}    # {announcement_id: video_id}
+        self.last_youtube_live = {}     # {announcement_id: bool}
+        asyncio.create_task(self._initialize_twitch_status())
+        asyncio.create_task(self._initialize_youtube_live_status())
+        self.check_loop.start()         # Twitch and YouTube live stream polling
+        if YOUTUBE_API_KEY:
+            asyncio.create_task(self.unsubscribe_all_pubsub_channels()) # Unsubscribe from all channels
+            self.check_youtube_uploads_api.start()  # Use API polling for uploads
+        else:
+            self.pubsub_renew_subscriptions.start() # Use PubSubHubbub for uploads
+
+    @tasks.loop(minutes=2)
     async def check_loop(self):
+        debug_print("[PingAnnouncer] Running check_loop")
         await self.bot.wait_until_ready()
-        
-        # Process live streams
         await self.check_twitch_streams()
-        await self.check_youtube_streams()
-        
-        # Process videos
-        await self.check_youtube_videos()
-    
-    async def get_twitch_token(self):
-        if time.time() < self.twitch_expiry - 60:
-            return self.twitch_token
-            
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                'https://id.twitch.tv/oauth2/token',
-                params={
-                    'client_id': os.getenv('TWITCH_CLIENT_ID'),
-                    'client_secret': os.getenv('TWITCH_CLIENT_SECRET'),
-                    'grant_type': 'client_credentials'
-                }
-            ) as resp:
-                data = await resp.json()
-                self.twitch_token = data['access_token']
-                self.twitch_expiry = time.time() + data['expires_in']
-                return self.twitch_token
-    
-    async def check_twitch_streams(self):
+        await self.check_youtube_live()
+
+    async def fetch_recent_video_ids(self, channel_id):
+        playlist_id = f"UU{channel_id[2:]}" if channel_id.startswith("UC") else None
+        if not playlist_id:
+            return []
+        api_url = (
+            f"https://www.googleapis.com/youtube/v3/playlistItems"
+            f"?key={YOUTUBE_API_KEY}"
+            f"&playlistId={playlist_id}"
+            f"&part=snippet"
+            f"&maxResults=10"
+        )
         try:
-            # Get all Twitch stream announcements
-            announcements = self.bot.db.execute_query(
-                'SELECT * FROM stream_announcements WHERE platform = "twitch" AND enabled = 1',
-                fetch='all'
-            )
-            
-            if not announcements:
-                return
-                
-            token = await self.get_twitch_token()
-            headers = {
-                'Client-ID': os.getenv('TWITCH_CLIENT_ID'),
-                'Authorization': f'Bearer {token}'
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url, timeout=10) as resp:
+                    if resp.status != 200:
+                        debug_print(f"[YouTubeAPI] playlistItems.list failed for {channel_id}: {resp.status}")
+                        return []
+                    data = await resp.json()
+            items = data.get("items", [])
+            return [item["snippet"]["resourceId"]["videoId"] for item in items if "snippet" in item and "resourceId" in item["snippet"]]
+        except Exception as e:
+            debug_print(f"[YouTubeAPI] Error fetching recent video IDs for {channel_id}: {e}")
+            return []
+
+    async def pubsub_subscribe(self, channel_id):
+        hub_url = "https://pubsubhubbub.appspot.com/subscribe"
+        topic_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        callback_url = f"{API_URL}/youtube/callback"
+        async with aiohttp.ClientSession() as session:
+            data = {
+                "hub.mode": "subscribe",
+                "hub.topic": topic_url,
+                "hub.callback": callback_url,
+                "hub.verify": "async"
             }
-            
-            # Group by streamer to minimize API calls
-            streamer_map = defaultdict(list)
-            for ann in announcements:
-                streamer_map[ann['streamer_id']].append(ann)
-            
-            # Check all unique streamers
-            async with aiohttp.ClientSession() as session:
-                for streamer_id, ann_list in streamer_map.items():
-                    # Get user ID from username
-                    async with session.get(
-                        f'https://api.twitch.tv/helix/users?login={streamer_id}',
-                        headers=headers
-                    ) as resp:
-                        user_data = await resp.json()
-                        if not user_data.get('data'):
-                            continue
-                        user_id = user_data['data'][0]['id']
-                    
-                    # Check stream status
-                    async with session.get(
-                        f'https://api.twitch.tv/helix/streams?user_id={user_id}',
-                        headers=headers
-                    ) as resp:
-                        stream_data = await resp.json()
-                        is_live = bool(stream_data.get('data'))
-                        stream = stream_data['data'][0] if is_live else None
-                    
-                    # Process announcements
-                    for ann in ann_list:
-                        if is_live:
-                            # Check if we already announced this stream
-                            last_announced = datetime.fromisoformat(ann['last_announced']) if ann['last_announced'] else None
-                            if last_announced and (datetime.utcnow() - last_announced).total_seconds() < 3600:
-                                continue
-                                
-                            # Send announcement
-                            await self.send_stream_announcement(ann, stream)
-                        else:
-                            # Mark as offline in DB
-                            self.bot.db.execute_query(
-                                'UPDATE stream_announcements SET last_announced = NULL WHERE id = ?',
-                                (ann['id'],)
-                            )
-                            
+            async with session.post(hub_url, data=data) as resp:
+                if resp.status == 202:
+                    debug_print(f"[PubSub] Subscription request sent for channel {channel_id}")
+                else:
+                    debug_print(f"[PubSub] Failed to subscribe {channel_id}: {resp.status}")
+                    debug_print(await resp.text())
+
+    async def pubsub_unsubscribe(self, channel_id):
+        hub_url = "https://pubsubhubbub.appspot.com/subscribe"
+        topic_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        callback_url = f"{API_URL}/youtube/callback"
+        async with aiohttp.ClientSession() as session:
+            data = {
+                "hub.mode": "unsubscribe",
+                "hub.topic": topic_url,
+                "hub.callback": callback_url,
+                "hub.verify": "async"
+            }
+            async with session.post(hub_url, data=data) as resp:
+                if resp.status == 202:
+                    debug_print(f"[PubSub] Unsubscribe request sent for channel {channel_id}")
+                else:
+                    debug_print(f"[PubSub] Failed to unsubscribe {channel_id}: {resp.status}")
+                    debug_print(await resp.text())
+
+    async def unsubscribe_all_pubsub_channels(self):
+        # Unsubscribe from all channels
+        video_anns = self.bot.db.execute_query(
+            'SELECT DISTINCT channel_id FROM youtube_announcements WHERE live_stream = 0 AND enabled = 1',
+            fetch='all'
+        ) or []
+        for ann in video_anns:
+            channel_id = ann['channel_id']
+            if channel_id:
+                await self.pubsub_unsubscribe(channel_id)
+
+    @tasks.loop(seconds=60 * 60 * 24 * 4)
+    async def pubsub_renew_subscriptions(self):
+        debug_print("[PubSub] Renewing subscriptions...")
+        video_anns = self.bot.db.execute_query(
+            'SELECT DISTINCT channel_id FROM youtube_announcements WHERE live_stream = 0 AND enabled = 1',
+            fetch='all'
+        ) or []
+        for ann in video_anns:
+            channel_id = ann['channel_id']
+            if channel_id:
+                await self.pubsub_subscribe(channel_id)
+
+    async def handle_pubsub_verify(self, request):
+        hub_challenge = request.query.get("hub.challenge")
+        hub_mode = request.query.get("hub.mode")
+        hub_lease_seconds = request.query.get("hub.lease_seconds")
+        if hub_mode == "subscribe" and hub_challenge:
+            debug_print(f"[PubSub] Verified subscription! Lease: {hub_lease_seconds}s")
+            return web.Response(text=hub_challenge)
+        return web.Response(text="Invalid verification", status=400)
+
+    async def handle_pubsub_callback(self, request):
+        body = await request.text()
+        debug_print("[PubSub] Notification received!")
+        try:
+            root = ETree.fromstring(body)
+            for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+                video_id = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId").text
+                title = entry.find("{http://www.w3.org/2005/Atom}title").text
+                channel_id = entry.find("{http://www.youtube.com/xml/schemas/2015}channelId").text
+                url = f"https://www.youtube.com/watch?v={video_id}"
+                # Find all announcement configs for this channel
+                video_anns = self.bot.db.execute_query(
+                    'SELECT * FROM youtube_announcements WHERE live_stream = 0 AND enabled = 1 AND channel_id = ?',
+                    (channel_id,),
+                    fetch='all'
+                ) or []
+                for ann in video_anns:
+                    # Bootstrap recent_video_ids if empty
+                    recent_ids_raw = ann.get('recent_video_ids', '[]')
+                    try:
+                        recent_ids = json.loads(recent_ids_raw)
+                        if not isinstance(recent_ids, list):
+                            recent_ids = []
+                    except Exception:
+                        recent_ids = []
+                    if not recent_ids:
+                        # Bootstrap: fetch 5 most recent, store, do not announce
+                        recent_ids = await self.fetch_recent_video_ids(channel_id)
+                        self.bot.db.execute_query(
+                            'UPDATE youtube_announcements SET recent_video_ids = ? WHERE id = ?',
+                            (json.dumps(recent_ids), ann['id'])
+                        )
+                        debug_print(f"[YouTubeAPI] Bootstrapped recent_video_ids for {channel_id}: {recent_ids}")
+                        continue  # Do not announce on bootstrap
+                    if video_id in recent_ids:
+                        continue  # Already announced
+
+                    await self.send_youtube_announcement(ann, {
+                        "title": title,
+                        "url": url,
+                        "id": video_id,
+                        "channel": channel_id,
+                        "streamer": ann.get('streamer_id', '')
+                    })
+                    # Update recent_video_ids in DB
+                    recent_ids = [video_id] + [vid for vid in recent_ids if vid != video_id]
+                    recent_ids = recent_ids[:10]
+                    self.bot.db.execute_query(
+                        'UPDATE youtube_announcements SET last_video_id = ?, recent_video_ids = ? WHERE id = ?',
+                        (video_id, json.dumps(recent_ids), ann['id'])
+                    )
+                    self.last_youtube_video[ann['id']] = video_id
         except Exception as e:
-            logger.error(f"Twitch check error: {str(e)}")
-    
-    async def check_youtube_streams(self):
+            debug_print(f"[PubSub] Error parsing notification: {e}")
+        return web.Response(text="OK")
+
+    @tasks.loop(minutes=10)
+    async def check_youtube_uploads_api(self):
+        debug_print("[YouTubeAPI] Checking YouTube uploads via Data API v3")
+        try:
+            video_anns = self.bot.db.execute_query(
+                'SELECT * FROM youtube_announcements WHERE live_stream = 0 AND enabled = 1',
+                fetch='all'
+            ) or []
+            for ann in video_anns:
+                yt_channel_id = ann['channel_id']
+                playlist_id = f"UU{yt_channel_id[2:]}" if yt_channel_id.startswith("UC") else None
+                if not playlist_id:
+                    debug_print(f"[YouTubeAPI] Invalid channel_id: {yt_channel_id}")
+                    continue
+                api_url = (
+                    f"https://www.googleapis.com/youtube/v3/playlistItems"
+                    f"?key={YOUTUBE_API_KEY}"
+                    f"&playlistId={playlist_id}"
+                    f"&part=snippet"
+                    f"&maxResults=1"
+                )
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(api_url, timeout=10) as resp:
+                            if resp.status != 200:
+                                debug_print(f"[YouTubeAPI] playlistItems.list failed for {yt_channel_id}: {resp.status}")
+                                continue
+                            data = await resp.json()
+                    items = data.get("items", [])
+                    if not items:
+                        continue
+                    video = items[0]
+                    video_id = video["snippet"]["resourceId"]["videoId"]
+                    title = video["snippet"]["title"]
+                    url = f"https://www.youtube.com/watch?v={video_id}"
+
+                    # Check if this is a live stream or regular upload
+                    video_api_url = (
+                        f"https://www.googleapis.com/youtube/v3/videos"
+                        f"?key={YOUTUBE_API_KEY}"
+                        f"&id={video_id}"
+                        f"&part=snippet"
+                    )
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(video_api_url, timeout=10) as resp:
+                            if resp.status != 200:
+                                debug_print(f"[YouTubeAPI] videos.list failed for {video_id}: {resp.status}")
+                                continue
+                            video_data = await resp.json()
+                    video_items = video_data.get("items", [])
+                    if not video_items:
+                        continue
+                    live_broadcast_content = video_items[0]["snippet"].get("liveBroadcastContent", "none")
+                    if live_broadcast_content != "none":
+                        debug_print(f"[YouTubeAPI] Skipping live stream video {video_id} for upload-only announcement.")
+                        continue
+
+                    # Bootstrap recent_video_ids if empty
+                    recent_ids_raw = ann.get('recent_video_ids', '[]')
+                    try:
+                        recent_ids = json.loads(recent_ids_raw)
+                        if not isinstance(recent_ids, list):
+                            recent_ids = []
+                    except Exception:
+                        recent_ids = []
+                    if not recent_ids:
+                        # Bootstrap: fetch 5 most recent, store, do not announce
+                        recent_ids = await self.fetch_recent_video_ids(yt_channel_id)
+                        self.bot.db.execute_query(
+                            'UPDATE youtube_announcements SET recent_video_ids = ? WHERE id = ?',
+                            (json.dumps(recent_ids), ann['id'])
+                        )
+                        debug_print(f"[YouTubeAPI] Bootstrapped recent_video_ids for {yt_channel_id}: {recent_ids}")
+                        continue  # Do not announce on bootstrap
+                    if video_id in recent_ids:
+                        continue
+
+                    debug_print(f"[YouTubeAPI] New upload detected for {yt_channel_id}: {title} ({video_id})")
+                    await self.send_youtube_announcement(ann, {
+                        "title": title,
+                        "url": url,
+                        "id": video_id,
+                        "channel": yt_channel_id,
+                        "streamer": ann.get('streamer_id', '')
+                    })
+                    # Update recent_video_ids in DB
+                    recent_ids = [video_id] + [vid for vid in recent_ids if vid != video_id]
+                    recent_ids = recent_ids[:10]
+                    self.bot.db.execute_query(
+                        'UPDATE youtube_announcements SET last_video_id = ?, recent_video_ids = ? WHERE id = ?',
+                        (video_id, json.dumps(recent_ids), ann['id'])
+                    )
+                except Exception as e:
+                    debug_print(f"[YouTubeAPI] Error checking uploads for {yt_channel_id}: {e}")
+        except Exception as e:
+            debug_print(f"[YouTubeAPI] YouTube upload check error: {e}")
+
+    async def check_twitch_streams(self):
+        debug_print("[PingAnnouncer] Checking Twitch streams")
         try:
             announcements = self.bot.db.execute_query(
-                'SELECT * FROM stream_announcements WHERE platform = "youtube" AND enabled = 1',
+                'SELECT * FROM twitch_announcements WHERE enabled = 1',
                 fetch='all'
             )
-            
+            debug_print(f"[PingAnnouncer] Twitch announcements found: {len(announcements) if announcements else 0}")
             if not announcements:
                 return
-                
-            API_KEY = os.getenv('YOUTUBE_API_KEY')
-            if not API_KEY:
-                return
-                
-            # Group by channel ID
-            channel_map = defaultdict(list)
-            for ann in announcements:
-                channel_map[ann['streamer_id']].append(ann)
-            
-            async with aiohttp.ClientSession() as session:
-                for channel_id, ann_list in channel_map.items():
-                    # Check for live streams
-                    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={channel_id}&eventType=live&type=video&key={API_KEY}"
-                    async with session.get(url) as resp:
-                        data = await resp.json()
-                        is_live = bool(data.get('items'))
-                        stream = data['items'][0] if is_live else None
-                    
-                    # Process announcements
-                    for ann in ann_list:
-                        if is_live:
-                            # Check if we already announced
-                            last_announced = datetime.fromisoformat(ann['last_announced']) if ann['last_announced'] else None
-                            if last_announced and (datetime.utcnow() - last_announced).total_seconds() < 3600:
-                                continue
-                                
-                            # Send announcement
-                            await self.send_stream_announcement(ann, {
-                                'title': stream['snippet']['title'],
-                                'url': f"https://youtu.be/{stream['id']['videoId']}"
-                            })
-                        else:
-                            # Mark as offline
-                            self.bot.db.execute_query(
-                                'UPDATE stream_announcements SET last_announced = NULL WHERE id = ?',
-                                (ann['id'],)
-                            )
-                            
-        except Exception as e:
-            logger.error(f"YouTube live check error: {str(e)}")
-    
-    async def check_youtube_videos(self):
-        """Check for new YouTube videos using the uploads playlist"""
-        if not self.bot.youtube_api_key:
-            return
-
-        async with aiohttp.ClientSession() as session:
-            # Get all video announcements
-            announcements = self.bot.db.execute_query(
-                'SELECT * FROM video_announcements WHERE platform = ? AND enabled = 1',
-                ('youtube',),
-                fetch='all'
-            )
 
             for ann in announcements:
+                debug_print(f"[PingAnnouncer] Processing Twitch announcement: {ann}")
+                channel_username = ann['streamer_id']
+                url = f"https://decapi.me/twitch/uptime/{channel_username}"
+                ann_id = ann['id']
                 try:
-                    # Get channel uploads playlist ID
-                    channel_id = ann['channel_id']
-                    async with session.get(
-                        f'https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id={channel_id}&key={self.bot.youtube_api_key}'
-                    ) as resp:
-                        channel_data = await resp.json()
-                        if not channel_data.get('items'):
-                            continue
-                        uploads_playlist = channel_data['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-
-                    # Get last processed video info
-                    last_video_id = ann.get('last_video_id')
-                    last_video_time = ann.get('last_video_time')
-
-                    # Fetch up to 50 recent videos from the uploads playlist
-                    async with session.get(
-                        f'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId={uploads_playlist}&maxResults=50&key={self.bot.youtube_api_key}'
-                    ) as resp:
-                        playlist_data = await resp.json()
-                        items = playlist_data.get('items', [])
-
-                    # Process videos in upload order (oldest first)
-                    videos_to_announce = []
-                    for item in reversed(items):
-                        snippet = item['snippet']
-                        video_id = snippet['resourceId']['videoId']
-                        published_at = snippet['publishedAt']
-
-                        # Stop if we reach the last processed video
-                        if last_video_id and video_id == last_video_id:
-                            break
-
-                        # Only process videos published after the last processed time
-                        if last_video_time and published_at <= last_video_time:
-                            continue
-
-                        # Skip if live stream
-                        async with session.get(
-                            f'https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id={video_id}&key={self.bot.youtube_api_key}'
-                        ) as vresp:
-                            video_data = await vresp.json()
-                            if 'liveStreamingDetails' in video_data.get('items', [{}])[0]:
-                                continue
-
-                        videos_to_announce.append({
-                            'video_id': video_id,
-                            'title': snippet['title'],
-                            'url': f'https://youtu.be/{video_id}',
-                            'published_at': published_at
-                        })
-
-                    # Announce videos in order
-                    for video in videos_to_announce:
-                        await self.send_video_announcement(ann, {
-                            'title': video['title'],
-                            'url': video['url']
-                        })
-                        # Update last_video_id and last_video_time after each announcement
-                        self.bot.db.update_last_video_info(
-                            ann['guild_id'],
-                            ann['channel_id'],
-                            video['video_id'],
-                            video['published_at']
-                        )
-
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, timeout=10) as resp:
+                            text = await resp.text()
+                            debug_print(f"[PingAnnouncer] decapi.me response for {channel_username}: {text}")
+                            is_live = not ("offline" in text.lower() or "not live" in text.lower())
                 except Exception as e:
-                    print(f"Error checking YouTube videos for channel {ann['channel_id']}: {e}")
+                    debug_print(f"[PingAnnouncer] Twitch uptime check failed for {channel_username}: {e}")
                     continue
-    
+
+                was_live = self.bot.db.get_twitch_live_status(ann_id)
+                debug_print(f"[PingAnnouncer] Twitch live status for {channel_username}: was_live={was_live}, is_live={is_live}")
+                if is_live and not was_live:
+                    debug_print(f"[PingAnnouncer] Sending Twitch live announcement for {channel_username}")
+                    await self.send_stream_announcement(ann, {
+                        "title": f"{channel_username} is live!",
+                        "url": f"https://twitch.tv/{channel_username}"
+                    })
+                self.bot.db.set_twitch_live_status(ann_id, is_live)
+
+        except Exception as e:
+            debug_print(f"[PingAnnouncer] Twitch check error: {str(e)}")
+
+    async def _initialize_twitch_status(self):
+        """Set last_live_status for all enabled announcements on startup to avoid duplicate announcements."""
+        await self.bot.wait_until_ready()
+        announcements = self.bot.db.execute_query(
+            'SELECT * FROM twitch_announcements WHERE enabled = 1',
+            fetch='all'
+        ) or []
+        for ann in announcements:
+            channel_username = ann['streamer_id']
+            ann_id = ann['id']
+            url = f"https://decapi.me/twitch/uptime/{channel_username}"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=10) as resp:
+                        text = await resp.text()
+                        is_live = not ("offline" in text.lower() or "not live" in text.lower())
+                        self.bot.db.set_twitch_live_status(ann_id, is_live)
+                        debug_print(f"[PingAnnouncer] Startup: {channel_username} is_live={is_live}")
+            except Exception as e:
+                debug_print(f"[PingAnnouncer] Error initializing status for {channel_username}: {e}")
+                self.bot.db.set_twitch_live_status(ann_id, False)
+
+    async def _initialize_youtube_live_status(self):
+        """Set last_youtube_live for all enabled live announcements on startup to avoid duplicate announcements."""
+        await self.bot.wait_until_ready()
+        announcements = self.bot.db.execute_query(
+            'SELECT * FROM youtube_announcements WHERE live_stream = 1 AND enabled = 1',
+            fetch='all'
+        ) or []
+        for ann in announcements:
+            yt_channel_id = ann.get('channel_id') or ann.get('streamer_id')
+            ann_id = ann.get('id')
+            live_url = f"https://www.youtube.com/channel/{yt_channel_id}/live"
+            is_live = False
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(live_url, allow_redirects=True, timeout=15) as resp:
+                        final_url = str(resp.url)
+                        html = await resp.text()
+                        # 1. Check redirect
+                        match = re.search(r"youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})", final_url)
+                        if match:
+                            is_live = True
+                        else:
+                            # 2. Check canonical link
+                            canon = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"', html)
+                            if canon:
+                                is_live = True
+                            else:
+                                # 3. Check ytInitialPlayerResponse for videoId
+                                player_response = re.search(r'ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
+                                if player_response:
+                                    try:
+                                        data = json.loads(player_response.group(1))
+                                        video_id = data.get("videoDetails", {}).get("videoId")
+                                        if video_id:
+                                            is_live = True
+                                    except Exception:
+                                        pass
+                self.last_youtube_live[ann_id] = is_live
+                debug_print(f"[PingAnnouncer] Startup: YouTube {yt_channel_id} is_live={is_live}")
+            except Exception as e:
+                debug_print(f"[PingAnnouncer] Error initializing YouTube live status for {yt_channel_id}: {e}")
+                self.last_youtube_live[ann_id] = False
+
+    async def check_youtube_live(self):
+        debug_print("[PingAnnouncer] Checking YouTube live streams via scraping")
+        try:
+            stream_anns = self.bot.db.execute_query(
+                'SELECT * FROM youtube_announcements WHERE live_stream = 1 AND enabled = 1',
+                fetch='all'
+            ) or []
+
+            for ann in stream_anns:
+                yt_channel_id = ann.get('channel_id') or ann.get('streamer_id')
+                live_url = f"https://www.youtube.com/channel/{yt_channel_id}/live"
+                is_live = False
+                live_video_url = None
+                live_title = None
+
+                debug_print(f"[PingAnnouncer] Scraping live status for channel: {yt_channel_id}")
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(live_url, allow_redirects=True, timeout=15) as resp:
+                            final_url = str(resp.url)
+                            html = await resp.text()
+                            # 1. Check redirect
+                            match = re.search(r"youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})", final_url)
+                            if match:
+                                is_live = True
+                                live_video_id = match.group(1)
+                            else:
+                                # 2. Check canonical link
+                                canon = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})"', html)
+                                if canon:
+                                    is_live = True
+                                    live_video_id = canon.group(1)
+                                else:
+                                    # 3. Check ytInitialPlayerResponse for videoId
+                                    player_response = re.search(r'ytInitialPlayerResponse\s*=\s*({.*?});', html, re.DOTALL)
+                                    if player_response:
+                                        try:
+                                            import json
+                                            data = json.loads(player_response.group(1))
+                                            video_id = data.get("videoDetails", {}).get("videoId")
+                                            if video_id:
+                                                is_live = True
+                                                live_video_id = video_id
+                                        except Exception:
+                                            pass
+                            if is_live:
+                                live_video_url = f"https://www.youtube.com/watch?v={live_video_id}"
+                                # Try to get the title from the HTML
+                                title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+                                if title_match:
+                                    live_title = title_match.group(1).replace("- YouTube", "").strip()
+                                else:
+                                    live_title = "🔴 Live Now!"
+                except Exception as e:
+                    debug_print(f"[PingAnnouncer] Error scraping YouTube live status for {yt_channel_id}: {e}")
+
+                ann_id = ann.get('id')
+                was_live = self.last_youtube_live.get(ann_id, None)
+                debug_print(f"[PingAnnouncer] YouTube live status for {yt_channel_id}: was_live={was_live}, is_live={is_live}")
+                if is_live and (was_live is False or was_live is None):
+                    debug_print(f"[PingAnnouncer] Sending YouTube live announcement for channel {yt_channel_id}")
+                    await self.send_youtube_announcement(ann, {
+                        "title": live_title or "🔴 Live Now!",
+                        "url": live_video_url or live_url,
+                        "streamer": live_title or yt_channel_id
+                    })
+                self.last_youtube_live[ann_id] = is_live
+
+        except Exception as e:
+            debug_print(f"[PingAnnouncer] YouTube live scrape announcement error: {str(e)}")
+
     async def send_stream_announcement(self, announcement, stream_data):
+        debug_print(f"[PingAnnouncer] send_stream_announcement called with: {announcement}, {stream_data}")
         try:
             channel = self.bot.get_channel(int(announcement['channel_id']))
+            debug_print(f"[PingAnnouncer] Discord channel resolved: {channel}")
             if not channel:
                 return
-                
+            role_id = announcement.get('role_id')
+            if role_id == "@everyone":
+                role_mention = "@everyone"
+            elif role_id:
+                role_mention = f"<@&{role_id}>"
+            else:
+                role_mention = ""
             message = announcement['message'].format(
                 streamer=announcement['streamer_id'],
-                title=stream_data['title'],
-                url=stream_data['url']
+                title=stream_data.get('title', ''),
+                url=stream_data.get('url', ''),
+                role=role_mention,
+                game=stream_data.get('game', '')
             )
-            
+            debug_print(f"[PingAnnouncer] Sending message: {message}")
             await channel.send(message)
-            
-            # Update last announced time
             self.bot.db.execute_query(
-                'UPDATE stream_announcements SET last_announced = CURRENT_TIMESTAMP WHERE id = ?',
+                'UPDATE twitch_announcements SET last_announced = CURRENT_TIMESTAMP WHERE id = ?',
                 (announcement['id'],)
             )
-            
+            debug_print("[PingAnnouncer] Updated last_announced in DB")
         except Exception as e:
-            logger.error(f"Stream announcement error: {str(e)}")
-    
-    async def send_video_announcement(self, announcement, video_data):
+            debug_print(f"[PingAnnouncer] Stream announcement error: {str(e)}")
+
+    async def send_youtube_announcement(self, announcement, video_data):
+        debug_print(f"[PingAnnouncer] send_youtube_announcement called with: {announcement}, {video_data}")
         try:
-            channel = self.bot.get_channel(int(announcement['channel_id']))
+            channel_id = announcement.get('announce_channel_id') or announcement.get('channel_id')
+            channel = self.bot.get_channel(int(channel_id))
+            debug_print(f"[PingAnnouncer] Discord channel resolved: {channel}")
             if not channel:
                 return
-                
+            # Add role mention if role_id is set
+            role_id = announcement.get('role_id')
+            if role_id == "@everyone":
+                role_mention = "@everyone"
+            elif role_id:
+                role_mention = f"<@&{role_id}>"
+            else:
+                role_mention = ""
             message = announcement['message'].format(
-                streamer=announcement['channel_id'],  # For videos, channel_id is the identifier
-                title=video_data['title'],
-                url=video_data['url']
+                streamer=video_data.get('streamer', ''),
+                channel=video_data.get('channel', ''),
+                title=video_data.get('title', ''),
+                url=video_data.get('url', ''),
+                role=role_mention,
+                game=video_data.get('game', '')
             )
-            
+            debug_print(f"[PingAnnouncer] Sending message: {message}")
             await channel.send(message)
-            
+            if 'id' in announcement and 'id' in video_data:
+                debug_print(f"[PingAnnouncer] Updating last_video_id in DB for announcement {announcement['id']}")
+                self.bot.db.execute_query(
+                    'UPDATE youtube_announcements SET last_video_id = ? WHERE id = ?',
+                    (video_data['id'], announcement['id'])
+                )
         except Exception as e:
-            logger.error(f"Video announcement error: {str(e)}")
+            debug_print(f"[PingAnnouncer] YouTube announcement error: {str(e)}")
 
 # -------------------- Bot Setup --------------------
 intents = discord.Intents.default()
@@ -772,6 +1048,7 @@ class CustomBot(commands.Bot):
         await self.load_extension("cogs.utilities")
         await self.load_extension("cogs.debug")
         await self.load_extension("cogs.music")
+        await self.load_extension("cogs.backup")
         
         if self._command_initialized:
             return
@@ -795,7 +1072,7 @@ class CustomBot(commands.Bot):
                 if all(key in cmd_data for key in required_keys):
                     valid_commands.append(cmd_data)
                 else:
-                    print(f"⚠️ Invalid command format: {cmd_data}")
+                    debug_print(f"⚠️ Invalid command format: {cmd_data}")
 
             # Group commands by guild
             guild_groups = defaultdict(list)
@@ -815,7 +1092,7 @@ class CustomBot(commands.Bot):
                     cmd_data['content'] = str(cmd_data.get('content', ''))
                     # Discord command name rules
                     if not (1 <= len(cmd_data['command_name']) <= 32) or not cmd_data['command_name'].replace('_', '').isalnum():
-                        print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                        debug_print(f"Skipping invalid command name: {cmd_data['command_name']}")
                         continue
                     callback = self._create_command_callback(cmd_data)
                     cmd = app_commands.Command(
@@ -825,7 +1102,7 @@ class CustomBot(commands.Bot):
                     )
                     self.tree.add_command(cmd)
                 except Exception as e:
-                    print(f"  🚨 Global command error: {str(e)}")
+                    debug_print(f"  🚨 Global command error: {str(e)}")
 
             # Process guild-specific commands
             for guild_id_str, cmds in guild_groups.items():
@@ -835,7 +1112,7 @@ class CustomBot(commands.Bot):
                 try:
                     guild = await self.fetch_guild(int(guild_id_str))
                 except (discord.NotFound, discord.Forbidden):
-                    print(f"  🚫 Guild {guild_id_str} not accessible")
+                    debug_print(f"  🚫 Guild {guild_id_str} not accessible")
                     continue
 
                 self.tree.clear_commands(guild=guild)
@@ -849,7 +1126,7 @@ class CustomBot(commands.Bot):
                             cmd_data['description'] = 'Custom command'
                         cmd_data['content'] = str(cmd_data.get('content', ''))
                         if not (1 <= len(cmd_data['command_name']) <= 32) or not cmd_data['command_name'].replace('_', '').isalnum():
-                            print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                            debug_print(f"Skipping invalid command name: {cmd_data['command_name']}")
                             continue
                         callback = self._create_command_callback(cmd_data)
                         cmd = app_commands.Command(
@@ -859,7 +1136,7 @@ class CustomBot(commands.Bot):
                         )
                         self.tree.add_command(cmd, guild=guild)
                     except Exception as e:
-                        print(f"    🚨 Command error: {str(e)}")
+                        debug_print(f"    🚨 Command error: {str(e)}")
 
                 # Sync guild commands with retry
                 await self.safe_sync(guild=guild)
@@ -872,7 +1149,7 @@ class CustomBot(commands.Bot):
             self._command_initialized = True
 
         except Exception as e:
-            print(f"❌ Critical initialization error: {str(e)}")
+            debug_print(f"❌ Critical initialization error: {str(e)}")
             traceback.print_exc()
             sys.exit(1)
             
@@ -888,13 +1165,13 @@ class CustomBot(commands.Bot):
             except discord.HTTPException as e:
                 if e.status == 429:
                     delay = e.retry_after or 5 * (attempt + 1)
-                    print(f"  ⏳ Rate limited. Retrying in {delay:.1f}s")
+                    debug_print(f"  ⏳ Rate limited. Retrying in {delay:.1f}s")
                     await asyncio.sleep(delay)
                 else:
-                    print(f"  ❌ Sync failed: {e.status} {e.text}")
+                    debug_print(f"  ❌ Sync failed: {e.status} {e.text}")
                     return False
             except Exception as e:
-                print(f"  ❌ Unexpected sync error: {str(e)}")
+                debug_print(f"  ❌ Unexpected sync error: {str(e)}")
                 traceback.print_exc()
                 return False
         return False
@@ -931,7 +1208,7 @@ class CustomBot(commands.Bot):
                     
         except Exception as e:
             error_msg = f"❌ Command error: {str(e)}"
-            print(f"Command execution failed: {traceback.format_exc()}")
+            debug_print(f"Command execution failed: {traceback.format_exc()}")
             try:
                 if interaction.response.is_done():
                     await interaction.followup.send(error_msg, ephemeral=True)
@@ -976,9 +1253,9 @@ class CustomBot(commands.Bot):
                     cmd_data['content'] = str(cmd_data.get('content', '') or '')
                     # Discord command name rules
                     if not re.fullmatch(r'[a-z0-9_\-]{1,32}', cmd_data['command_name']):
-                        print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                        debug_print(f"Skipping invalid command name: {cmd_data['command_name']}")
                         continue
-                    print(f"Adding command: {cmd_data}")
+                    debug_print(f"Adding command: {cmd_data}")
                     callback = self._create_command_callback(cmd_data)
                     cmd = app_commands.Command(
                         name=cmd_data['command_name'],
@@ -987,7 +1264,7 @@ class CustomBot(commands.Bot):
                     )
                     self.tree.add_command(cmd)
                 except Exception as e:
-                    print(f"Global command error: {cmd_data} | {str(e)}")
+                    debug_print(f"Global command error: {cmd_data} | {str(e)}")
                     traceback.print_exc()
 
             for guild in self.guilds:
@@ -1001,10 +1278,10 @@ class CustomBot(commands.Bot):
                         cmd_data['description'] = cmd_data['description'][:100]
                         cmd_data['content'] = str(cmd_data.get('content', '') or '')
                         if not re.fullmatch(r'[a-z0-9_\-]{1,32}', cmd_data['command_name']):
-                            print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                            debug_print(f"Skipping invalid command name: {cmd_data['command_name']}")
                             continue
                         if not (1 <= len(cmd_data['command_name']) <= 32) or not cmd_data['command_name'].replace('_', '').isalnum():
-                            print(f"Skipping invalid command name: {cmd_data['command_name']}")
+                            debug_print(f"Skipping invalid command name: {cmd_data['command_name']}")
                             continue
                         callback = self._create_command_callback(cmd_data)
                         cmd = app_commands.Command(
@@ -1014,11 +1291,11 @@ class CustomBot(commands.Bot):
                         )
                         self.tree.add_command(cmd, guild=guild)
                     except Exception as e:
-                        print(f"Guild command error: {cmd_data} | {str(e)}")
+                        debug_print(f"Guild command error: {cmd_data} | {str(e)}")
                         traceback.print_exc()
 
         except Exception as e:
-            print("Exception in reload_and_resync_commands")
+            debug_print("Exception in reload_and_resync_commands")
             traceback.print_exc()
             raise
 
@@ -1034,13 +1311,17 @@ bot_instance = CustomBot(
     activity=discord.Activity(
         type=discord.ActivityType.watching,
         name="for rule breakers | /help"
-    )
-)        
-        
+    ),
+    max_messages=5000
+)
+
 # -------------------- Logging Helper --------------------
 async def log_event(guild, event_key, title=None, description=None, color=discord.Color.blue(), extra_fields=None, embed=None):
+    debug_print("[LOG EVENT]: ENTER log_event for event_key=", event_key, "guild=", getattr(guild, 'id', None), level="all")
+    debug_print("[LOG EVENT] guild=", guild.name if guild else 'None', "event_key=", event_key, "title=", title, "description=", description, "color=", color, "extra_fields=", extra_fields, "embed_provided=", embed is not None, level="all")
     # Get guild-specific log configuration from database
     log_config = db.get_log_config(str(guild.id))
+    debug_print(f"[LOG EVENT]: loaded log_config: {log_config}", level="all")
 
     # Create default config if not exists
     if not log_config:
@@ -1050,19 +1331,69 @@ async def log_event(guild, event_key, title=None, description=None, color=discor
         )
         db.conn.commit()
         log_config = db.get_log_config(str(guild.id))
+        debug_print(f"[LOG EVENT]: created default log_config: {log_config}", level="all")
 
     # Check if logging for this event is enabled
     if not log_config.get(event_key, True):
+        debug_print(f"[LOG EVENT]: skipping log because event_key {event_key} is disabled in config", level="all")
         return
 
     # Get channel ID from config
     channel_id = log_config.get('log_channel_id')
+    debug_print(f"[LOG EVENT]: channel_id from config: {channel_id}", level="all")
     if not channel_id:
+        debug_print(f"[LOG EVENT]: skipping log because no log_channel_id configured", level="all")
         return  # No log channel configured
 
-    channel = guild.get_channel(int(channel_id))
+    try:
+        channel = guild.get_channel(int(channel_id))
+    except Exception as e:
+        debug_print(f"[LOG EVENT]: Exception converting channel_id to int or getting channel: {e}", level="all")
+        return
+    debug_print(f"[LOG EVENT]: resolved channel: {channel}", level="all")
     if channel is None:
-        print(f"Log channel not found in guild: {guild.name} (ID: {channel_id})")
+        debug_print(f"[LOG EVENT]: Log channel not found in guild: {guild.name} (ID: {channel_id})", level="all")
+        return
+
+    # --- Exclusion logic ---
+    # If a message/user/role/channel is provided in extra_fields, check exclusions
+    # This expects extra_fields to contain 'user_id', 'role_ids', 'channel_id', 'log_bot', 'log_self' if available
+    user_id = None
+    role_ids = []
+    channel_id_event = None
+    log_bot = False
+    log_self = False
+    if extra_fields:
+        user_id = extra_fields.get('user_id')
+        role_ids = extra_fields.get('role_ids', [])
+        channel_id_event = extra_fields.get('channel_id')
+        log_bot = extra_fields.get('log_bot', False)
+        log_self = extra_fields.get('log_self', False)
+
+    # Exclude if user is in excluded_users
+    if user_id and str(user_id) in log_config.get('excluded_users', []):
+        return
+
+    # Exclude if any role is in excluded_roles
+    if role_ids:
+        excluded_roles = set(log_config.get('excluded_roles', []))
+        if excluded_roles.intersection(set(str(r) for r in role_ids)):
+            return
+
+    # Exclude if channel is in excluded_channels
+    if channel_id_event and str(channel_id_event) in log_config.get('excluded_channels', []):
+        return
+
+    # Exclude self if log_self is False
+    debug_print(f"[LOG EVENT]: log_self={log_self}, log_bot={log_bot}, log_self={log_config.get('log_self', False)}, log_bots={log_config.get('log_bots', True)}, user_id={user_id}, role_ids={role_ids}, channel_id_event={channel_id_event}", level="all")
+    debug_print(f"[LOG EVENT]: PASSED EXCLUSION LOGIC for event_key={event_key}, guild={getattr(guild, 'id', None)}", level="all")
+    if log_self:
+        if not log_config.get('log_self', False):
+            debug_print("[LOG EVENT]: skipping log because log_self and log_self is False", level="all")
+            return
+        # If self, always log if log_self is True, regardless of log_bots (do not check log_bots)
+    elif log_bot and not log_config.get('log_bots', True):
+        debug_print("[LOG EVENT]: skipping log because log_bot and log_bots is False", level="all")
         return
 
     # Create embed only if not passed
@@ -1075,14 +1406,17 @@ async def log_event(guild, event_key, title=None, description=None, color=discor
         )
         # Add extra fields if provided
         if extra_fields:
-            for name, value in extra_fields.items():
-                embed.add_field(name=name, value=value, inline=False)
+            for k, v in extra_fields.items():
+                if k not in ('user_id', 'role_ids', 'channel_id', 'log_bot', 'log_self'):
+                    embed.add_field(name=k, value=str(v), inline=False)
 
     # Send to log channel
     try:
+        debug_print(f"[LOG EVENT]: sending embed to channel {channel} (id={getattr(channel, 'id', None)})", level="all")
         await channel.send(embed=embed)
+        debug_print(f"[LOG EVENT]: embed sent successfully", level="all")
     except Exception as e:
-        print(f"Failed to send log message in {guild.name}: {str(e)}")
+        debug_print(f"[LOG EVENT]: Failed to send log message in {guild.name}: {str(e)}", level="all")
 
 # -------------------- Custom Commands Storage --------------------
 def load_commands(guild_id):
@@ -1162,7 +1496,7 @@ async def webserver():
                     raise
                 return web.json_response({'error': ex.reason}, status=ex.status)
             except Exception as ex:
-                print("Unhandled exception in API:", traceback.format_exc())
+                debug_print("Unhandled exception in API:", traceback.format_exc())
                 return web.json_response({'error': str(ex)}, status=500)
         return middleware
 
@@ -1170,6 +1504,9 @@ async def webserver():
     app = web.Application(middlewares=[cors_middleware, json_error_middleware])
 
     # Routes
+    global ping_announcer
+    app.router.add_get('/youtube/callback', ping_announcer.handle_pubsub_verify)
+    app.router.add_post('/youtube/callback', ping_announcer.handle_pubsub_callback)
     app.router.add_post('/api/leave_guild', handle_leave_guild)
     app.router.add_post('/api/start_backup', handle_start_backup)
     app.router.add_post('/api/start_restore', handle_start_restore)
@@ -1180,6 +1517,8 @@ async def webserver():
     app.router.add_post('/api/sync_warnings', handle_sync_warnings)
     app.router.add_get('/api/get_bans', handle_get_bans)
     app.router.add_post('/api/unban/{userid}', handle_unban)
+    app.router.add_post('/api/get_guild_users', handle_get_guild_users)
+    app.router.add_post('/api/get_guild_commands', handle_get_guild_commands)
     app.router.add_post('/api/get_guild_invite', handle_get_guild_invite)
     app.router.add_post('/api/get_guild_audit_log', handle_get_guild_audit_log)
     app.router.add_post('/api/send_role_menu/{menu_id}', handle_send_role_menu)
@@ -1191,7 +1530,7 @@ async def webserver():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 5003)
     await site.start()
-    print("Endpoints running on port 5003")
+    debug_print("Endpoints running on port 5003")
 
 async def handle_options(request):
     return web.Response(
@@ -1246,7 +1585,7 @@ async def handle_get_bans(request):
     if auth_error:
         return auth_error
     try:
-        print("Fetching bans...")
+        debug_print("Fetching bans...")
         data = await request.json()
         guild_id = data.get('guild_id')
         
@@ -1266,11 +1605,11 @@ async def handle_get_bans(request):
                 "date": datetime.now().isoformat()
             })
         
-        print(f"Total bans fetched: {len(bans)}")
+        debug_print(f"Total bans fetched: {len(bans)}")
         return web.json_response(bans)
         
     except Exception as e:
-        print(f"Error fetching bans: {str(e)}")
+        debug_print(f"Error fetching bans: {str(e)}")
         return web.json_response({"error": str(e)}, status=500)
 
 def validate_uuid(uuid_str):
@@ -1287,7 +1626,7 @@ def get_guild_id_from_channel(channel_id):
         channel = bot_instance.get_channel(int(channel_id))
         return str(channel.guild.id) if channel else None
     except Exception as e:
-        print(f"⚠️ Channel resolution error: {str(e)}")
+        debug_print(f"⚠️ Channel resolution error: {str(e)}")
         return None
 
 async def handle_unban(request):
@@ -1315,7 +1654,65 @@ async def handle_unban(request):
             return web.json_response({"error": "User not banned"}, status=404)
             
     except Exception as e:
-        print(f"Unban error: {str(e)}")
+        debug_print(f"Unban error: {str(e)}")
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_get_guild_users(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=404)
+        users = []
+        for member in guild.members:
+            users.append({
+                "id": str(member.id),
+                "username": member.name,
+                "display_name": member.display_name,
+                "avatar_url": str(member.display_avatar.url) if hasattr(member, "display_avatar") else None
+            })
+        return web.json_response(users)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_get_guild_commands(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+        guild_id = data.get('guild_id')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=404)
+        # Get custom command names for this guild
+        custom_names = set(
+            cmd['command_name']
+            for cmd in bot_instance.db.get_guild_commands_list(guild_id)
+        )
+        # Get both global and guild commands
+        commands = []
+        seen = set()
+        # Global commands
+        for cmd in bot_instance.tree.get_commands():
+            if cmd.name not in custom_names and cmd.name not in seen:
+                commands.append({"name": cmd.name, "description": cmd.description})
+                seen.add(cmd.name)
+        # Guild-specific commands
+        for cmd in bot_instance.tree.get_commands(guild=guild):
+            if cmd.name not in custom_names and cmd.name not in seen:
+                commands.append({"name": cmd.name, "description": cmd.description})
+                seen.add(cmd.name)
+        return web.json_response(commands)
+    except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
 async def handle_get_guild_invite(request):
@@ -1556,7 +1953,7 @@ async def handle_send_role_menu(request):
                     try:
                         await sent_message.add_reaction(emoji_val)
                     except Exception as e:
-                        print(f"Failed to add reaction {emoji_val}: {e}")
+                        debug_print(f"Failed to add reaction {emoji_val}: {e}")
             db.execute_query(
                 'UPDATE role_menus SET message_id = ? WHERE id = ?',
                 (str(sent_message.id), menu_id)
@@ -1844,20 +2241,17 @@ async def on_ready():
     
     print(f'Logged in as {bot_instance.user}')
     if not bot_instance.guilds:
-        print("⚠️ Bot not in any guilds, skipping command sync")
-        return  
-    
-    # Temporary guild verification
-    for guild in bot_instance.guilds:
-        cmds = bot_instance.db.conn.execute(
-            'SELECT command_name FROM commands WHERE guild_id = ?',
-            (str(guild.id),)
-        ).fetchall()
+        debug_print("⚠️ Bot not in any guilds, skipping command sync")
+        return
         
     cleanup.start()
     # Get current guild IDs as strings
     current_guild_ids = {str(g.id) for g in bot_instance.guilds}
     
+    # Instantiate PingAnnouncer here, when the loop is running
+    global ping_announcer
+    ping_announcer = PingAnnouncer(bot_instance)
+
     # Get database guild IDs
     db_guilds = db.get_all_guilds()
     db_guild_ids = {g['id'] for g in db_guilds}
@@ -1874,15 +2268,7 @@ async def on_ready():
     for db_guild_id in db_guild_ids - current_guild_ids:
         db.remove_guild(db_guild_id)
         removed += 1
-    
-    # Final verification
-    new_count = len(db.get_all_guilds())
-    
-    try:
-        test_uuid = uuid.uuid4()
-    except NameError:
-        print("❌ UUID MODULE NOT LOADED - CHECK IMPORTS")
-        raise
+
     bot_instance.loop.create_task(webserver())
     await bot_instance.role_batcher.initialize()
 
@@ -1897,8 +2283,17 @@ def reload_warnings(guild_id: str):
 
 @bot_instance.event
 async def on_interaction(interaction: discord.Interaction):
+
     # Handle component interactions (buttons, selects, etc.)
     if interaction.type == discord.InteractionType.component:
+        # Ensure interaction.user is a Member for role checks
+        user = interaction.user
+        if not isinstance(user, discord.Member) and interaction.guild is not None:
+            try:
+                user = await interaction.guild.fetch_member(user.id)
+            except Exception:
+                pass  # fallback to User if not found
+
         custom_id = interaction.data.get('custom_id', '')
 
         # Dropdown Role Menu
@@ -1919,8 +2314,8 @@ async def on_interaction(interaction: discord.Interaction):
                 removed_any = False
                 for opt in config.get('options', []):
                     role = interaction.guild.get_role(int(opt.get('role')))
-                    if role and role in interaction.user.roles:
-                        await interaction.user.remove_roles(role)
+                    if role and role in user.roles:
+                        await user.remove_roles(role)
                         messages.append(opt.get('remove_message', f"Role {role.mention} removed!"))
                         removed_any = True
                 if removed_any:
@@ -1937,22 +2332,22 @@ async def on_interaction(interaction: discord.Interaction):
                 if opt.get('role') in selected_roles:
                     # Should have this role
                     if method == 'grant':
-                        if role not in interaction.user.roles:
-                            await interaction.user.add_roles(role)
+                        if role not in user.roles:
+                            await user.add_roles(role)
                             messages.append(opt.get('grant_message', f"Role {role.mention} granted!"))
                     elif method == 'remove':
-                        if role in interaction.user.roles:
-                            await interaction.user.remove_roles(role)
+                        if role in user.roles:
+                            await user.remove_roles(role)
                             messages.append(opt.get('remove_message', f"Role {role.mention} removed!"))
                     elif method == 'grant_remove':
-                        if role not in interaction.user.roles:
-                            await interaction.user.add_roles(role)
+                        if role not in user.roles:
+                            await user.add_roles(role)
                             messages.append(opt.get('grant_message', f"Role {role.mention} granted!"))
                 else:
                     # Should NOT have this role
                     if method in ('grant_remove', 'remove'):
-                        if role in interaction.user.roles:
-                            await interaction.user.remove_roles(role)
+                        if role in user.roles:
+                            await user.remove_roles(role)
                             messages.append(opt.get('remove_message', f"Role {role.mention} removed!"))
 
             # --- Always send a non-empty message ---
@@ -1978,7 +2373,7 @@ async def on_interaction(interaction: discord.Interaction):
                 if opt.get('emoji') == emoji:
                     role = interaction.guild.get_role(int(opt.get('role')))
                     if role:
-                        await interaction.user.add_roles(role)
+                        await user.add_roles(role)
                         await interaction.response.send_message(f"Role {role.mention} granted!", ephemeral=True)
                     else:
                         await interaction.response.send_message("Role not found.", ephemeral=True)
@@ -2005,11 +2400,11 @@ async def on_interaction(interaction: discord.Interaction):
                 await interaction.response.send_message("Option not found.", ephemeral=True)
                 return
             role = interaction.guild.get_role(int(opt.get('role')))
-            if role in interaction.user.roles:
-                await interaction.user.remove_roles(role)
+            if role in user.roles:
+                await user.remove_roles(role)
                 msg = opt.get('remove_message', f"Role {role.mention} removed.")
             else:
-                await interaction.user.add_roles(role)
+                await user.add_roles(role)
                 msg = opt.get('grant_message', f"Role {role.mention} granted.")
             await interaction.response.send_message(msg, ephemeral=True)
             return
@@ -2084,7 +2479,7 @@ def get_level_data(guild_id, user_id):
             }
         return data
     except Exception as e:
-        print(f"Error getting level data: {str(e)}")
+        debug_print(f"Error getting level data: {str(e)}")
         traceback.print_exc()
         return None
 
@@ -2104,7 +2499,9 @@ def get_level_config(guild_id: str) -> dict:
         'xp_boost_roles': {},
         'embed_title': '🎉 Level Up!',
         'embed_description': '{user} has reached level **{level}**!',
-        'embed_color': 0xffd700
+        'embed_color': 0xffd700,
+        'give_xp_to_bots': False,
+        'give_xp_to_self': False
     }
 
     try:
@@ -2147,6 +2544,8 @@ def get_level_config(guild_id: str) -> dict:
             'announce_level_up', 
             default_config['announce_level_up']
         ))
+        validated['give_xp_to_bots'] = bool(config.get('give_xp_to_bots', default_config['give_xp_to_bots']))
+        validated['give_xp_to_self'] = bool(config.get('give_xp_to_self', default_config['give_xp_to_self']))
 
         # Validate JSON fields
         json_fields = {
@@ -2247,9 +2646,9 @@ async def handle_level_up(user, guild, channel, old_level=None, new_level=None):
                 try:
                     await user.add_roles(*roles_to_add, reason=f"Level {new_level} rewards")
                 except discord.Forbidden:
-                    print(f"Missing permissions to assign roles in {guild.name}")
+                    debug_print(f"Missing permissions to assign roles in {guild.name}")
                 except Exception as e:
-                    print(f"Error assigning roles: {str(e)}")
+                    debug_print(f"Error assigning roles: {str(e)}")
 
             config = get_level_config(guild_id)
             announce_level_up = bool(config.get('announce_level_up', True))
@@ -2257,7 +2656,7 @@ async def handle_level_up(user, guild, channel, old_level=None, new_level=None):
                 await send_level_up_notification(user, guild, channel, new_level, config)
 
     except Exception as e:
-        print(f"Error handling level up: {str(e)}")
+        debug_print(f"Error handling level up: {str(e)}")
         traceback.print_exc()
 
 async def send_level_up_notification(user, guild, channel, new_level, config):
@@ -2265,11 +2664,12 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
         # Use the configured channel if set, otherwise fallback to the current channel
         target_channel = None
         level_channel_id = config.get('level_channel')
-        if level_channel_id:
+        # Only try to convert if not None and not the string 'None'
+        if level_channel_id not in (None, 'None', ''):
             try:
                 target_channel = guild.get_channel(int(level_channel_id))
             except Exception as ex:
-                print(f"Error: Failed to resolve level_channel {level_channel_id}: {ex}")
+                debug_print(f"Error: Failed to resolve level_channel {level_channel_id}: {ex}")
                 target_channel = None
         if not target_channel:
             target_channel = channel
@@ -2283,7 +2683,7 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
                 else:
                     embed_color = int(embed_color)
             except Exception as ex:
-                print(f"Error: Failed to parse embed_color '{embed_color}': {ex}")
+                debug_print(f"Error: Failed to parse embed_color '{embed_color}': {ex}")
                 embed_color = 0xffd700
 
         # Create the embed
@@ -2298,13 +2698,13 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
         try:
             embed.set_thumbnail(url=user.display_avatar.url)
         except Exception as ex:
-            print(f"Failed to set embed thumbnail: {ex}")
+            debug_print(f"Failed to set embed thumbnail: {ex}")
 
         # Send the embed
         await target_channel.send(embed=embed)
 
     except Exception as e:
-        print(f"Error sending level up notification: {str(e)}")
+        debug_print(f"Error sending level up notification: {str(e)}")
         traceback.print_exc()
 
 # -------------------- Backup System --------------------
@@ -2376,7 +2776,7 @@ async def collect_guild_backup(guild, set_progress=None):
                     "reason": entry.reason
                 })
         except Exception as e:
-            print(f"Error backing up bans: {e}")
+            debug_print(f"Error backing up bans: {e}")
         step += 1
 
         # Timed out users
@@ -2442,13 +2842,13 @@ async def collect_guild_backup(guild, set_progress=None):
                     "changes": str(getattr(entry, "changes", "")),
                 })
         except Exception as e:
-            print(f"Error backing up audit log: {e}")
+            debug_print(f"Error backing up audit log: {e}")
         step += 1
 
         if set_progress: set_progress(100, "Backup complete!")
         return backup
     except Exception as e:
-        print(f"Error during collect_guild_backup: {e}\n{traceback.format_exc()}")
+        debug_print(f"Error during collect_guild_backup: {e}\n{traceback.format_exc()}")
         if set_progress:
             set_progress(0, "Backup failed.")
         raise
@@ -2471,7 +2871,7 @@ async def save_guild_backup(guild, set_progress=None):
             set_progress(100, "Backup complete!")
         return file_path
     except Exception as e:
-        print(f"Error during save_guild_backup: {e}\n{traceback.format_exc()}")
+        debug_print(f"Error during save_guild_backup: {e}\n{traceback.format_exc()}")
         if set_progress:
             set_progress(0, f"Backup failed: {e}")
         raise
@@ -2494,6 +2894,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
     # --- Restore Roles ---
     try:
         progress("Deleting roles...")
+        debug_print("Deleting existing roles...")
         rulekeeper_role = discord.utils.get(guild.roles, name="RuleKeeper")
         rulekeeper_id = rulekeeper_role.id if rulekeeper_role else None
 
@@ -2504,9 +2905,10 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await role.delete(reason="Restoring from backup")
                 await asyncio.sleep(2.5)
             except Exception as e:
-                print(f"Failed to delete role {role.name}: {e}")
+                debug_print(f"Failed to delete role {role.name}: {e}")
 
         progress("Restoring roles...")
+        debug_print("Restoring roles...")
         role_map = {}
         for role_data in sorted(backup["roles"], key=lambda r: r["position"]):
             if role_data["name"] in ("@everyone", "RuleKeeper"):
@@ -2523,7 +2925,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 role_map[role_data["id"]] = new_role
                 await asyncio.sleep(2.5)
             except Exception as e:
-                print(f"Error creating role {role_data['name']}: {e}")
+                debug_print(f"Error creating role {role_data['name']}: {e}")
 
         role_map[next(r.id for r in guild.roles if r.is_default())] = guild.default_role
         if rulekeeper_role:
@@ -2542,14 +2944,15 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
         try:
             await guild.edit_role_positions(positions={role: i+1 for i, role in enumerate(roles_in_order)})
         except Exception as e:
-            print(f"Error reordering roles: {e}")
+            debug_print(f"Error reordering roles: {e}")
 
     except Exception as e:
-        print(f"Error restoring roles: {e}")
+        debug_print(f"Error restoring roles: {e}")
 
     # --- Restore Role Assignments ---
     try:
         progress("Restoring role assignments...")
+        debug_print("Restoring role assignments...")
         user_roles = {}
         for role_data in backup.get("roles", []):
             role_id = role_data["id"]
@@ -2558,29 +2961,41 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
             member_ids = role_data.get("members", [])
             for user_id in member_ids:
                 user_roles.setdefault(user_id, set()).add(role_id)
+        # Get RuleKeeper role and its position
+        rulekeeper_role = discord.utils.get(guild.roles, name="RuleKeeper")
+        rulekeeper_pos = rulekeeper_role.position if rulekeeper_role else None
+
         for user_id, role_ids in user_roles.items():
             member = guild.get_member(int(user_id))
             if member:
-                # Do not assign RuleKeeper role
-                roles_to_assign = [
-                    role_map[rid]
-                    for rid in role_ids
-                    if rid in role_map and role_map[rid].name != "RuleKeeper"
-                ]
+                roles_to_assign = []
+                for rid in role_ids:
+                    role = role_map.get(rid)
+                    if not role or role.name == "RuleKeeper":
+                        continue
+                    # If RuleKeeper exists and this role would be above RuleKeeper, skip or move below
+                    if rulekeeper_role and rulekeeper_pos is not None:
+                        if role.position >= rulekeeper_pos:
+                            # Place below RuleKeeper by not assigning now
+                            debug_print(f"Role {role.name} (pos {role.position}) would be above RuleKeeper (pos {rulekeeper_pos}), skipping for {member}.")
+                            continue
+                    roles_to_assign.append(role)
+                # Assign roles in one go if any
                 if roles_to_assign:
                     try:
                         await member.add_roles(*roles_to_assign, reason="Restoring roles from backup")
                         await asyncio.sleep(2.5)
                     except Exception as e:
-                        print(f"Failed to assign roles to {member}: {e}")
+                        debug_print(f"Failed to assign roles to {member}: {e}")
             else:
-                print(f"Member {user_id} not found in guild for role assignment")
+                debug_print(f"Member {user_id} not found in guild for role assignment")
     except Exception as e:
-        print(f"Error restoring role assignments: {e}")
+        debug_print(f"Error restoring role assignments: {e}")
 
     # --- Restore Channels and Categories ---
     try:
         progress("Deleting channels and categories...")
+        debug_print("Deleting existing channels and categories...")
         required_channel_ids = set()
         required_channels = []
         for attr in ("rules_channel", "public_updates_channel", "safety_alerts_channel", "community_updates_channel"):
@@ -2596,9 +3011,10 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await channel.delete(reason="Restoring from backup")
                 await asyncio.sleep(2.5)
             except Exception as e:
-                print(f"Failed to delete channel {channel.name}: {e}")
+                debug_print(f"Failed to delete channel {channel.name}: {e}")
 
         progress("Restoring channels and categories...")
+        debug_print("Restoring channels and categories...")
         category_map = {}
         for ch in backup["channels"]:
             ch_type = ch["type"].lower().replace("channeltype.", "")
@@ -2612,7 +3028,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                     category_map[ch["id"]] = new_cat
                     await asyncio.sleep(2.5)
                 except Exception as e:
-                    print(f"Error creating category {ch['name']}: {e}")
+                    debug_print(f"Error creating category {ch['name']}: {e}")
 
         created_channel_map = {}
         for ch in backup["channels"]:
@@ -2663,20 +3079,20 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                     kwargs["topic"] = ch.get("topic")
                     new_ch = await guild.create_text_channel(**{k: v for k, v in kwargs.items() if v is not None})
                 else:
-                    print(f"Skipping unknown channel type: {ch['type']}")
+                    debug_print(f"Skipping unknown channel type: {ch['type']}")
                     continue
                 created_channel_map[ch["id"]] = new_ch
                 await asyncio.sleep(2.5)
             except discord.HTTPException as e:
-                print(f"Error creating channel {ch['name']}: {e}")
+                debug_print(f"Error creating channel {ch['name']}: {e}")
             except Exception as e:
-                print(f"Error creating channel {ch['name']}: {e}")
+                debug_print(f"Error creating channel {ch['name']}: {e}")
 
         backup_required_channels = {ch["id"]: ch for ch in backup["channels"] if ch.get("id") in required_channel_ids}
         for req_ch in required_channels:
             backup_ch = backup_required_channels.get(req_ch.id)
             if not backup_ch:
-                print(f"No backup data for required channel {req_ch.name} ({req_ch.id}), skipping move.")
+                debug_print(f"No backup data for required channel {req_ch.name} ({req_ch.id}), skipping move.")
                 continue
             parent = None
             if backup_ch.get("category"):
@@ -2684,38 +3100,53 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
             try:
                 await req_ch.edit(category=parent, position=backup_ch["position"], reason="Restoring from backup")
             except Exception as e:
-                print(f"Failed to move required channel {req_ch.name}: {e}")
+                debug_print(f"Failed to move required channel {req_ch.name}: {e}")
 
     except Exception as e:
-        print(f"Error restoring channels: {e}")
+        debug_print(f"Error restoring channels: {e}")
 
     # --- Restore Bans ---
     try:
         progress("Unbanning users...")
+        debug_print("Unbanning users...")
         bans = []
-        async for entry in guild.bans():
-            bans.append(entry)
-        for entry in bans:
-            try:
-                await guild.unban(entry.user, reason="Restoring from backup")
-                await asyncio.sleep(2.5)
-            except Exception as e:
-                print(f"Failed to unban {entry.user}: {e}")
+        try:
+            async def fetch_bans():
+                return [entry async for entry in guild.bans()]
+            bans = await asyncio.wait_for(fetch_bans(), timeout=10)
+        except asyncio.TimeoutError:
+            debug_print("Timeout while fetching bans.")
+            bans = []
+        except Exception as e:
+            debug_print(f"Error fetching bans: {e}")
+            bans = []
+
+        if not bans:
+            debug_print("No users to unban.")
+        else:
+            for entry in bans:
+                try:
+                    await guild.unban(entry.user, reason="Restoring from backup")
+                    await asyncio.sleep(2.5)
+                except Exception as e:
+                    debug_print(f"Failed to unban {entry.user}: {e}")
 
         progress("Restoring bans...")
+        debug_print("Restoring bans...")
         for ban in backup.get("bans", []):
             try:
                 user = discord.Object(id=ban["user_id"])
                 await guild.ban(user, reason=ban.get("reason", "Restored from backup"))
                 await asyncio.sleep(2.5)
             except Exception as e:
-                print(f"Failed to ban user {ban['user_id']}: {e}")
+                debug_print(f"Failed to ban user {ban['user_id']}: {e}")
     except Exception as e:
-        print(f"Error restoring bans: {e}")
+        debug_print(f"Error restoring bans: {e}")
 
     # --- Restore Timed Out Users ---
     try:
         progress("Restoring timed out users...")
+        debug_print("Restoring timed out users...")
         for timeout in backup.get("timeouts", []):
             user_id = timeout.get("user_id")
             until = timeout.get("until")
@@ -2730,50 +3161,81 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                         await member.timeout(until_dt, reason=reason)
                         await asyncio.sleep(1)
                 except Exception as e:
-                    print(f"Error restoring timeout for user {user_id}: {e}")
+                    debug_print(f"Error restoring timeout for user {user_id}: {e}")
             else:
-                print(f"Member {user_id} not found for timeout")
+                debug_print(f"Member {user_id} not found for timeout")
     except Exception as e:
-        print(f"Error restoring timed out users: {e}")
+        debug_print(f"Error restoring timed out users: {e}")
 
     # --- Restore Emojis ---
     try:
         progress("Deleting emojis...")
+        debug_print("Deleting existing emojis...")
         for emoji in guild.emojis:
             try:
                 await emoji.delete(reason="Restoring from backup")
                 await asyncio.sleep(1)
             except Exception as e:
-                print(f"Failed to delete emoji {emoji.name}: {e}")
+                debug_print(f"Failed to delete emoji {emoji.name}: {e}")
 
         progress("Restoring emojis...")
+        debug_print("Restoring emojis...")
         async with aiohttp.ClientSession() as session:
-            for emoji_data in backup.get("emojis", []):
+            for idx, emoji_data in enumerate(backup.get("emojis", []), 1):
                 try:
                     async with session.get(emoji_data["url"]) as resp:
                         img = await resp.read()
-                    await guild.create_custom_emoji(
-                        name=emoji_data["name"],
-                        image=img,
-                        reason="Restoring from backup"
-                    )
-                    await asyncio.sleep(2.5)
+                    while True:
+                        try:
+                            await guild.create_custom_emoji(
+                                name=emoji_data["name"],
+                                image=img,
+                                reason="Restoring from backup"
+                            )
+                            debug_print(f"Restored emoji {emoji_data['name']} ({idx}/{len(backup.get('emojis', []))})")
+                            await asyncio.sleep(7)  # Discord recommends 5-7s between emoji creates
+                            break
+                        except discord.HTTPException as e:
+                            if e.status == 429:
+                                # Try to get retry_after from the exception or default to 10s
+                                retry_after = getattr(e, "retry_after", None)
+                                if retry_after is None:
+                                    # Try to parse from the error text
+                                    try:
+                                        data = e.response.json()
+                                        retry_after = float(data.get("retry_after", 10))
+                                    except Exception:
+                                        retry_after = 10
+                                # If retry_after is very high, skip this emoji
+                                if retry_after > 60 * 5:
+                                    debug_print(f"Rate limited for {retry_after}s on emoji {emoji_data['name']}, skipping.")
+                                    break
+                                debug_print(f"Rate limited while creating emoji {emoji_data['name']}, sleeping for {retry_after} seconds.")
+                                await asyncio.sleep(retry_after)
+                            else:
+                                debug_print(f"Failed to create emoji {emoji_data['name']}: {e}")
+                                break
+                        except Exception as e:
+                            debug_print(f"Failed to create emoji {emoji_data['name']}: {e}")
+                            break
                 except Exception as e:
-                    print(f"Failed to create emoji {emoji_data['name']}: {e}")
+                    debug_print(f"Error restoring emojis: {e}")
     except Exception as e:
-        print(f"Error restoring emojis: {e}")
+        debug_print(f"Error restoring emojis: {e}")
 
     # --- Restore Stickers ---
     try:
         progress("Deleting stickers...")
+        debug_print("Deleting existing stickers...")
         for sticker in getattr(guild, "stickers", []):
             try:
                 await sticker.delete(reason="Restoring from backup")
                 await asyncio.sleep(1)
             except Exception as e:
-                print(f"Failed to delete sticker {sticker.name}: {e}")
+                debug_print(f"Failed to delete sticker {sticker.name}: {e}")
         
         progress("Restoring stickers...")
+        debug_print("Restoring stickers...")
         async with aiohttp.ClientSession() as session:
             for sticker_data in backup.get("stickers", []):
                 try:
@@ -2790,13 +3252,14 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                     )
                     await asyncio.sleep(1)
                 except Exception as e:
-                    print(f"Failed to create sticker {sticker_data.get('name')}: {e}")
+                    debug_print(f"Failed to create sticker {sticker_data.get('name')}: {e}")
     except Exception as e:
-        print(f"Error restoring stickers: {e}")
+        debug_print(f"Error restoring stickers: {e}")
 
     # --- Restore Server Settings ---
     try:
         progress("Restoring server settings...")
+        debug_print("Restoring server settings...")
         settings = backup.get("settings", {})
         icon_bytes = None
         banner_bytes = None
@@ -2827,15 +3290,16 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
         try:
             await guild.edit(**edit_kwargs)
         except discord.Forbidden:
-            print("Error restoring settings: Missing Permissions (Manage Server required)")
+            debug_print("Error restoring settings: Missing Permissions (Manage Server required)")
         except discord.HTTPException as e:
-            print(f"Error restoring settings: {e}")
+            debug_print(f"Error restoring settings: {e}")
         except Exception as e:
-            print(f"Unexpected error restoring settings: {e}")
+            debug_print(f"Unexpected error restoring settings: {e}")
     except Exception as e:
-        print(f"Error restoring settings: {e}")
+        debug_print(f"Error restoring settings: {e}")
 
     progress("Restore complete!")
+    debug_print("Restore complete!")
 
     # --- Restore Audit Log, Features, Tags ---
     # These are not restorable via Discord API currently.
@@ -2845,7 +3309,15 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
 # -------------------- Message Processing --------------------
 @bot_instance.event
 async def on_message(message):
-    if message.author.bot or not message.guild:
+    debug_print(f"Entering on_message with message: {message}", level="all")
+    if not message.guild:
+        return await bot_instance.process_commands(message)
+    config = load_log_config(message.guild.id)
+    log_bots = config.get("log_bots", False)
+    log_self = config.get("log_self", False)
+    log_self = message.author.id == bot_instance.user.id
+    log_bot = getattr(message.author, "bot", False)
+    if (log_self and not log_self) or (log_bot and not log_self and not log_bots):
         return await bot_instance.process_commands(message)
 
     try:
@@ -2858,59 +3330,75 @@ async def on_message(message):
 
         # ===== LEVEL SYSTEM PROCESSING =====
         level_config = get_level_config(guild_id)
+
+        # XP toggles: skip if not allowed
+        if message.author.bot:
+            # If this bot
+            if message.author.id == bot_instance.user.id:
+                if not level_config.get('give_xp_to_self', False):
+                    return
+            else:
+                if not level_config.get('give_xp_to_bots', False):
+                    return
         spam_config = db.get_spam_config(guild_id)
-        
-        # Process XP if not in excluded level channels
-        if str(message.channel.id) not in level_config['excluded_channels']:
-            # XP processing logic
-            cooldown_seconds = level_config['cooldown']
-            user_data = get_level_data(guild_id, user_id)
-            last_cooldown_time = user_data.get('last_message', 0)
 
-            if (current_time - last_cooldown_time) >= cooldown_seconds:
-                db.conn.execute('''
-                    INSERT INTO user_levels (guild_id, user_id, username, last_message, xp)
-                    VALUES (?, ?, ?, ?, 0)
-                    ON CONFLICT(guild_id, user_id) 
-                    DO UPDATE SET
-                        username = excluded.username,
-                        last_message = excluded.last_message
-                ''', (guild_id, user_id, message.author.name, current_time))
+        # --- NO XP after spam detection ---
+        if not hasattr(bot_instance, "no_xp_until"):
+            bot_instance.no_xp_until = defaultdict(dict)
+        no_xp_until = bot_instance.no_xp_until
+        no_xp_user_until = no_xp_until.get(guild_id, {}).get(user_id, 0)
+        if current_time < no_xp_user_until:
+            pass  # User is blocked from XP gain
+        else:
+            # Process XP if not in excluded level channels
+            if str(message.channel.id) not in level_config['excluded_channels']:
+                cooldown_seconds = level_config['cooldown']
+                user_data = get_level_data(guild_id, user_id)
+                last_cooldown_time = user_data.get('last_message', 0)
 
-                # Calculate XP with boost
-                base_xp = random.randint(level_config['xp_min'], level_config['xp_max'])
-                xp_multiplier = 1.0 + sum(
-                    level_config['xp_boost_roles'].get(str(role.id), 0) / 100 
-                    for role in message.author.roles
-                )
-                earned_xp = int(base_xp * xp_multiplier)
+                if (current_time - last_cooldown_time) >= cooldown_seconds:
+                    db.conn.execute('''
+                        INSERT INTO user_levels (guild_id, user_id, username, last_message, xp)
+                        VALUES (?, ?, ?, ?, 0)
+                        ON CONFLICT(guild_id, user_id) 
+                        DO UPDATE SET
+                            username = excluded.username,
+                            last_message = excluded.last_message
+                    ''', (guild_id, user_id, message.author.name, current_time))
 
-                # Update XP
-                db.conn.execute('''
-                    UPDATE user_levels 
-                    SET xp = xp + ?,
-                        last_message = ?
-                    WHERE guild_id = ? AND user_id = ?
-                ''', (earned_xp, current_time, guild_id, user_id))
-                db.conn.commit()
+                    # Calculate XP with boost
+                    base_xp = random.randint(level_config['xp_min'], level_config['xp_max'])
+                    xp_multiplier = 1.0 + sum(
+                        level_config['xp_boost_roles'].get(str(role.id), 0) / 100 
+                        for role in message.author.roles
+                    )
+                    earned_xp = int(base_xp * xp_multiplier)
 
-                # Check for level up
-                new_total_xp = db.get_user_level(guild_id, user_id)['xp']
-                new_level = calculate_level(new_total_xp)
-                
-                if new_level > user_data.get('level', 0):
+                    # Update XP
                     db.conn.execute('''
                         UPDATE user_levels 
-                        SET level = ?
+                        SET xp = xp + ?,
+                            last_message = ?
                         WHERE guild_id = ? AND user_id = ?
-                    ''', (new_level, guild_id, user_id))
+                    ''', (earned_xp, current_time, guild_id, user_id))
                     db.conn.commit()
-                    await handle_level_up(message.author, message.guild, message.channel, old_level=user_data.get('level', 0), new_level=new_level)
+
+                    # Check for level up
+                    new_total_xp = db.get_user_level(guild_id, user_id)['xp']
+                    new_level = calculate_level(new_total_xp)
+                    
+                    if new_level > user_data.get('level', 0):
+                        db.conn.execute('''
+                            UPDATE user_levels 
+                            SET level = ?
+                            WHERE guild_id = ? AND user_id = ?
+                        ''', (new_level, guild_id, user_id))
+                        db.conn.commit()
+                        await handle_level_up(message.author, message.guild, message.channel, old_level=user_data.get('level', 0), new_level=new_level)
 
         # ===== BLOCKED WORDS CHECK =====
         content_lower = message.content.lower()
         blocked_words = db.get_blocked_words(guild_id)
-        
         for word in blocked_words:
             if word.lower() in content_lower:
                 try:
@@ -2920,7 +3408,6 @@ async def on_message(message):
                         "description": "You have used a word that is not allowed.",
                         "color": 0xff0000
                     }
-                    
                     try:
                         embed = discord.Embed(
                             title=embed_config['title'],
@@ -2930,7 +3417,6 @@ async def on_message(message):
                         await message.author.send(embed=embed)
                     except discord.Forbidden:
                         pass
-                    
                     await log_event(
                         message.guild,
                         "message_delete",
@@ -2940,11 +3426,10 @@ async def on_message(message):
                     )
                     return
                 except Exception as e:
-                    print(f"Blocked word handling error: {str(e)}")
+                    debug_print(f"Blocked word handling error: {str(e)}")
                 return
 
         # ===== SPAM DETECTION =====
-        # Check if user/channel is excluded
         user_roles = [str(role.id) for role in message.author.roles]
         is_excluded = (
             str(message.channel.id) in spam_config["excluded_channels"] or
@@ -2984,6 +3469,9 @@ async def on_message(message):
                         f"**User:** {message.author.mention}\n**Count:** {len(message_timestamps[spam_key])} messages\n**Threshold:** {spam_config['spam_threshold']}/{spam_config['spam_time_window']}s",
                         color=discord.Color.orange()
                     )
+                    # Set no-xp state for this user
+                    duration = spam_config.get("no_xp_duration", 60)
+                    no_xp_until.setdefault(guild_id, {})[user_id] = time.time() + duration
                     # Reset after handling spam
                     message_timestamps[spam_key] = []
 
@@ -3005,7 +3493,7 @@ async def on_message(message):
                         except Exception:
                             pass
 
-                        # --- NEW: Check for warning actions and apply them ---
+                        # Check for warning actions and apply them
                         db_warning_actions = db.get_warning_actions(guild_id)
                         user_warnings = db.get_warnings(guild_id, user_id)
                         warning_count = len(user_warnings)
@@ -3023,22 +3511,21 @@ async def on_message(message):
                                             await member.timeout(until, reason=f"Reached {warning_count} warnings (spam)")
                                             action_text = f"User timed out for {duration_seconds//60 if duration_seconds else 60} minutes."
                                         except Exception as e:
-                                            print(f"Failed to timeout user: {e}")
+                                            debug_print(f"Failed to timeout user: {e}")
                                 elif action_type == "kick":
                                     try:
                                         await member.kick(reason=f"Reached {warning_count} warnings (spam)")
                                         action_text = "User kicked."
                                     except Exception as e:
-                                        print(f"Failed to kick user: {e}")
+                                        debug_print(f"Failed to kick user: {e}")
                                 elif action_type == "ban":
                                     try:
                                         await member.ban(reason=f"Reached {warning_count} warnings (spam)")
                                         action_text = "User banned."
                                     except Exception as e:
-                                        print(f"Failed to ban user: {e}")
-                                # Add more actions here if needed
+                                        debug_print(f"Failed to ban user: {e}")
 
-                            # Optionally, notify the channel about the action
+                            # Notify the channel about the action
                             if action_text:
                                 try:
                                     await message.channel.send(
@@ -3051,7 +3538,7 @@ async def on_message(message):
                                 except Exception:
                                     pass
                 except Exception as e:
-                    print(f"Spam handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
+                    debug_print(f"Spam handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
 
         user_data = get_level_data(guild_id, user_id)
         total_xp = user_data['xp']
@@ -3086,9 +3573,9 @@ async def on_message(message):
                 )
                 user_mentions[mention_key] = []
             except Exception as e:
-                print(f"Mention flood handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
+                debug_print(f"Mention flood handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
     except Exception as e:
-        print(f"Error: {str(e)}")
+        debug_print(f"Error: {str(e)}")
 
     # Track processed messages
     processed_messages[message.id] = True
@@ -3101,16 +3588,36 @@ async def on_message(message):
 
 @bot_instance.event
 async def on_message_delete(message):
-    if message.guild is None or message.author.bot:
+    debug_print(f"Entering on_message_delete with message: {message}", level="all")
+    if message.guild is None:
         return
     config = load_log_config(message.guild.id)
+    log_bots_enabled = config.get("log_bots", False)
+    log_self_enabled = config.get("log_self", False)
+    is_self = message.author.id == bot_instance.user.id
+    is_bot = getattr(message.author, "bot", False)
+    # Skip if message is from self and log_self is False
+    if is_self and not log_self_enabled:
+        return
+    # Skip if message is from another bot and log_bots is False
+    if is_bot and not is_self and not log_bots_enabled:
+        return
     if config.get("message_delete", True):
         description = (
             f"**Author:** {message.author.mention}\n"
             f"**Channel:** {message.channel.mention}\n"
             f"**Content:** {message.content if message.content else 'No text content.'}"
         )
-        await log_event(message.guild, "message_delete", "Message Deleted", description, color=discord.Color.red())
+        await log_event(
+            message.guild, "message_delete", "Message Deleted", description, color=discord.Color.red(),
+            extra_fields={
+                "user_id": str(message.author.id),
+                "role_ids": [str(r.id) for r in getattr(message.author, "roles", [])],
+                "channel_id": str(message.channel.id),
+                "log_bot": is_bot,
+                "log_self": is_self
+            }
+        )
         if message.attachments:
             for attachment in message.attachments:
                 if attachment.content_type and attachment.content_type.startswith("image"):
@@ -3119,11 +3626,21 @@ async def on_message_delete(message):
                         f"**Channel:** {message.channel.mention}\n"
                         f"**Image URL:** {attachment.url}"
                     )
-                    await log_event(message.guild, "message_delete", "Image Deleted", img_description, color=discord.Color.dark_red())
+                    await log_event(
+                        message.guild, "message_delete", "Image Deleted", img_description, color=discord.Color.dark_red(),
+                        extra_fields={
+                            "user_id": str(message.author.id),
+                            "role_ids": [str(r.id) for r in getattr(message.author, "roles", [])],
+                            "channel_id": str(message.channel.id),
+                            "log_bot": is_bot,
+                            "log_self": is_self
+                        }
+                    )
                     
 #--------------------- Events ------------------------
 @bot_instance.event
 async def on_member_join(member):
+    debug_print(f"Entering on_member_join with member: {member}", level="all")
     try:
         # Assign auto-roles
         autoroles = db.get_autoroles(str(member.guild.id))
@@ -3178,15 +3695,17 @@ async def on_member_join(member):
             await channel.send(content)
 
     except Exception as e:
-        print(f"Welcome message error: {str(e)}")
+        debug_print(f"Welcome message error: {str(e)}")
 
 def replace_placeholders(text, replacements):
+    debug_print(f"Entering replace_placeholders with text: {text}, replacements: {replacements}", level="all")
     for placeholder, value in replacements.items():
         text = text.replace(placeholder, value)
     return text
 
 async def send_custom_form_dm(user, guild, event_type):
     # Find a form for this guild with dm_on[event_type] enabled
+    debug_print(f"Entering send_custom_form_dm with user: {user}, guild: {guild}, event_type: {event_type}", level="all")
     forms = db.execute_query(
         'SELECT * FROM custom_forms WHERE guild_id = ?', (str(guild.id),), fetch='all'
     )
@@ -3200,11 +3719,12 @@ async def send_custom_form_dm(user, guild, event_type):
             try:
                 await user.send(f"{msg}\n{form_url}")
             except Exception as e:
-                print(f"Failed to DM user {user}: {e}")
+                debug_print(f"Failed to DM user {user}: {e}")
             break  # Only send one form per event
 
 @bot_instance.event
 async def on_member_remove(member):
+    debug_print(f"Entering on_member_remove with member: {member}", level="all")
     try:
         config = db.get_goodbye_config(str(member.guild.id))
         if not config or not config.get('enabled'):
@@ -3240,7 +3760,7 @@ async def on_member_remove(member):
             await channel.send(content)
 
     except Exception as e:
-        print(f"Goodbye message error: {str(e)}")
+        debug_print(f"Goodbye message error: {str(e)}")
 
     try:
         audit_logs = await member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick).flatten()
@@ -3249,10 +3769,11 @@ async def on_member_remove(member):
             if entry.target.id == member.id and (datetime.utcnow() - entry.created_at).total_seconds() < 10:
                 await send_custom_form_dm(member, member.guild, "kick")
     except Exception as e:
-        print(f"Error checking for kick: {e}")
+        debug_print(f"Error checking for kick: {e}")
 
 @bot_instance.event
 async def on_member_update(before, after):
+    debug_print(f"Entering on_member_update with before: {before}, after: {after}", level="all")
     if before.guild is None:
         return
     config = load_log_config(before.guild.id)
@@ -3296,15 +3817,17 @@ async def on_member_update(before, after):
 
 @bot_instance.event
 async def on_guild_available(guild):
+    debug_print(f"Entering on_guild_available with guild: {guild}", level="all")
     if not db.get_guild(str(guild.id)):
-        print(f"⚠️ Guild {guild.name} not in database, attempting recovery...")
+        debug_print(f"⚠️ Guild {guild.name} not in database, attempting recovery...")
         await on_guild_join(guild)  # Re-trigger join logic
 
 @bot_instance.event
 async def on_guild_join(guild):
     """Handle when the bot joins a new guild"""
+    debug_print(f"Entering on_guild_join with guild: {guild}", level="all")
     try:
-        print(f"🤖 Joined new guild: {guild.name} ({guild.id})")
+        debug_print(f"🤖 Joined new guild: {guild.name} ({guild.id})")
         
         # Add to database
         db.add_guild(
@@ -3319,17 +3842,18 @@ async def on_guild_join(guild):
         db.conn.execute('INSERT OR IGNORE INTO level_config (guild_id) VALUES (?)', (str(guild.id),))
         db.conn.commit()
         
-        print(f"💾 Saved guild {guild.id} to database")
+        debug_print(f"💾 Saved guild {guild.id} to database")
         
     except Exception as e:
-        print(f"❌ Error handling guild join: {str(e)}")
+        debug_print(f"❌ Error handling guild join: {str(e)}")
         traceback.print_exc()
         
 @bot_instance.event
 async def on_guild_remove(guild):
     """Handle when the bot is removed from a guild"""
+    debug_print(f"Entering on_guild_remove with guild: {guild}", level="all")
     try:
-        print(f"🚪 Left guild: {guild.name} ({guild.id})")
+        debug_print(f"🚪 Left guild: {guild.name} ({guild.id})")
         guild_id = str(guild.id)
 
         # List of all tables with guild_id
@@ -3350,8 +3874,8 @@ async def on_guild_remove(guild):
             'autoroles',
             'game_roles',
             'user_game_time',
-            'stream_announcements',
-            'video_announcements',
+            'twitch_announcements',
+            'youtube_announcements',
             'role_menus',
             'pending_role_changes'
         ]
@@ -3361,14 +3885,15 @@ async def on_guild_remove(guild):
             db.conn.execute(f'DELETE FROM {table} WHERE guild_id = ?', (guild_id,))
         db.conn.commit()
 
-        print(f"🧹 Cleaned up all data for guild {guild_id}")
+        debug_print(f"🧹 Cleaned up all data for guild {guild_id}")
 
     except Exception as e:
-        print(f"❌ Error handling guild removal: {str(e)}")
+        debug_print(f"❌ Error handling guild removal: {str(e)}")
         traceback.print_exc()
 
 @bot_instance.event
 async def on_bulk_message_delete(messages):
+    debug_print(f"Entering on_bulk_message_delete with messages: {messages}", level="all")
     if not messages:
         return
     guild = messages[0].guild
@@ -3376,16 +3901,41 @@ async def on_bulk_message_delete(messages):
         return
     config = load_log_config(guild.id)
     if config.get("bulk_message_delete", True):
-        description = f"Bulk deleted {len(messages)} messages in {messages[0].channel.mention}"
-        await log_event(guild, "bulk_message_delete", "Bulk Message Delete", description, color=discord.Color.dark_red())
+        for message in messages:
+            description = (
+                f"**Author:** {message.author.mention}\n"
+                f"**Channel:** {message.channel.mention}\n"
+                f"**Content:** {message.content if message.content else 'No text content.'}"
+            )
+            await log_event(
+                guild, "bulk_message_delete", "Bulk Message Deleted", description, color=discord.Color.dark_red(),
+                extra_fields={
+                    "user_id": str(message.author.id),
+                    "role_ids": [str(r.id) for r in getattr(message.author, "roles", [])],
+                    "channel_id": str(message.channel.id),
+                    "log_bot": getattr(message.author, "bot", False),
+                    "log_self": message.author.id == bot_instance.user.id
+                }
+            )
 
 @bot_instance.event
 async def on_message_edit(before, after):
+    debug_print(f"Entering on_message_edit with before: {before}, after: {after}", level="all")
     if before.guild is None:
+        return
+    config = load_log_config(before.guild.id)
+    log_bots_enabled = config.get("log_bots", False)
+    log_self_enabled = config.get("log_self", False)
+    is_self = before.author.id == bot_instance.user.id
+    is_bot = getattr(before.author, "bot", False)
+    # Skip if message is from self and log_self is False
+    if is_self and not log_self_enabled:
+        return
+    # Skip if message is from another bot and log_bots is False
+    if is_bot and not is_self and not log_bots_enabled:
         return
     if before.content == after.content:
         return
-    config = load_log_config(before.guild.id)
     if config.get("message_edit", True):
         description = (
             f"**Author:** {before.author.mention}\n"
@@ -3393,10 +3943,20 @@ async def on_message_edit(before, after):
             f"**Before:** {before.content}\n"
             f"**After:** {after.content}"
         )
-        await log_event(before.guild, "message_edit", "Message Edited", description, color=discord.Color.orange())
+        await log_event(
+            before.guild, "message_edit", "Message Edited", description, color=discord.Color.orange(),
+            extra_fields={
+                "user_id": str(before.author.id),
+                "role_ids": [str(r.id) for r in getattr(before.author, "roles", [])],
+                "channel_id": str(before.channel.id),
+                "log_bot": is_bot,
+                "log_self": is_self
+            }
+        )
 
 @bot_instance.event
 async def on_invite_create(invite):
+    debug_print(f"Entering on_invite_create with invite: {invite}", level="all")
     guild = invite.guild
     config = load_log_config(guild.id)
     if config.get("invite_create", True):
@@ -3407,10 +3967,20 @@ async def on_invite_create(invite):
             f"**Max Uses:** {invite.max_uses}\n"
             f"**Expires In:** {invite.max_age} seconds"
         )
-        await log_event(guild, "invite_create", "Invite Created", description, color=discord.Color.green())
+        await log_event(
+            guild, "invite_create", "Invite Created", description, color=discord.Color.green(),
+            extra_fields={
+                "user_id": str(invite.inviter.id) if invite.inviter else None,
+                "role_ids": [str(r.id) for r in getattr(invite.inviter, "roles", [])] if invite.inviter else [],
+                "channel_id": str(invite.channel.id),
+                "log_bot": getattr(invite.inviter, "bot", False) if invite.inviter else False,
+                "log_self": invite.inviter.id == bot_instance.user.id if invite.inviter else False
+            }
+        )
 
 @bot_instance.event
 async def on_invite_delete(invite):
+    debug_print(f"Entering on_invite_delete with invite: {invite}", level="all")
     guild = invite.guild
     config = load_log_config(guild.id)
     if config.get("invite_delete", True):
@@ -3419,34 +3989,60 @@ async def on_invite_delete(invite):
             f"**Inviter:** {invite.inviter.mention if invite.inviter else 'Unknown'}\n"
             f"**Channel:** {invite.channel.mention}"
         )
-        await log_event(guild, "invite_delete", "Invite Deleted", description, color=discord.Color.dark_green())
+        await log_event(
+            guild, "invite_delete", "Invite Deleted", description, color=discord.Color.red(),
+            extra_fields={
+                "channel_id": str(invite.channel.id)
+            }
+        )
         
 @bot_instance.event
 async def on_member_ban(guild, user):
+    debug_print(f"Entering on_member_ban with guild: {guild}, user: {user}", level="all")
     config = load_log_config(guild.id)
     if config.get("member_ban", True):
         description = f"**Member:** {user.mention} has been banned."
-        await log_event(guild, "member_ban", "Member Banned", description, color=discord.Color.dark_red())
+        await log_event(
+            guild, "member_ban", "Member Banned", description, color=discord.Color.dark_red(),
+            extra_fields={
+                "user_id": str(user.id),
+                "log_bot": getattr(user, "bot", False),
+                "log_self": user.id == bot_instance.user.id
+            }
+        )
     await send_custom_form_dm(user, guild, "ban")
 
 @bot_instance.event
 async def on_guild_role_create(role):
+    debug_print(f"Entering on_guild_role_create with role: {role}", level="all")
     guild = role.guild
     config = load_log_config(guild.id)
     if config.get("role_create", True):
         description = f"**Role Created:** {role.name}\n**ID:** {role.id}"
-        await log_event(guild, "role_create", "Role Created", description, color=discord.Color.green())
+        await log_event(
+            guild, "role_create", "Role Created", description, color=discord.Color.green(),
+            extra_fields={
+                "role_ids": [str(role.id)]
+            }
+        )
 
 @bot_instance.event
 async def on_guild_role_delete(role):
+    debug_print(f"Entering on_guild_role_delete with role: {role}", level="all")
     guild = role.guild
     config = load_log_config(guild.id)
     if config.get("role_delete", True):
         description = f"**Role Deleted:** {role.name}\n**ID:** {role.id}"
-        await log_event(guild, "role_delete", "Role Deleted", description, color=discord.Color.red())
+        await log_event(
+            guild, "role_delete", "Role Deleted", description, color=discord.Color.red(),
+            extra_fields={
+                "role_ids": [str(role.id)]
+            }
+        )
 
 @bot_instance.event
 async def on_guild_role_update(before, after):
+    debug_print(f"Entering on_guild_role_update with before: {before}, after: {after}", level="all")
     guild = before.guild
     config = load_log_config(guild.id)
     if config.get("role_update", True):
@@ -3455,26 +4051,44 @@ async def on_guild_role_update(before, after):
             changes.append(f"**Name:** {before.name} -> {after.name}")
         if changes:
             description = f"**Role Updated:** {after.name}\n" + "\n".join(changes)
-            await log_event(guild, "role_update", "Role Updated", description, color=discord.Color.orange())
+            await log_event(
+                guild, "role_update", "Role Updated", description, color=discord.Color.orange(),
+                extra_fields={
+                    "role_ids": [str(before.id)]
+                }
+            )
 
 @bot_instance.event
 async def on_guild_channel_create(channel):
+    debug_print(f"Entering on_guild_channel_create with channel: {channel}", level="all")
     guild = channel.guild
     config = load_log_config(guild.id)
     if config.get("channel_create", True):
         description = f"**Channel Created:** {channel.mention}\n**Type:** {channel.type}"
-        await log_event(guild, "channel_create", "Channel Created", description, color=discord.Color.green())
+        await log_event(
+            guild, "channel_create", "Channel Created", description, color=discord.Color.green(),
+            extra_fields={
+                "channel_id": str(channel.id)
+            }
+        )
 
 @bot_instance.event
 async def on_guild_channel_delete(channel):
+    debug_print(f"Entering on_guild_channel_delete with channel: {channel}", level="all")
     guild = channel.guild
     config = load_log_config(guild.id)
     if config.get("channel_delete", True):
         description = f"**Channel Deleted:** {channel.name}\n**Type:** {channel.type}"
-        await log_event(guild, "channel_delete", "Channel Deleted", description, color=discord.Color.red())
+        await log_event(
+            guild, "channel_delete", "Channel Deleted", description, color=discord.Color.red(),
+            extra_fields={
+                "channel_id": str(channel.id)
+            }
+        )
 
 @bot_instance.event
 async def on_guild_channel_update(before, after):
+    debug_print(f"Entering on_guild_channel_update with before: {before}, after: {after}", level="all")
     guild = before.guild
     config = load_log_config(guild.id)
     if config.get("channel_update", True):
@@ -3483,10 +4097,16 @@ async def on_guild_channel_update(before, after):
             changes.append(f"**Name:** {before.name} -> {after.name}")
         if changes:
             description = f"**Channel Updated:** {after.mention if hasattr(after, 'mention') else after.name}\n" + "\n".join(changes)
-            await log_event(guild, "channel_update", "Channel Updated", description, color=discord.Color.orange())
+            await log_event(
+                guild, "channel_update", "Channel Updated", description, color=discord.Color.orange(),
+                extra_fields={
+                    "channel_id": str(before.id)
+                }
+            )
 
 @bot_instance.event
 async def on_guild_emojis_update(guild, before, after):
+    debug_print(f"Entering on_guild_emojis_update with guild: {guild}, before: {before}, after: {after}", level="all")
     config = load_log_config(guild.id)
     before_dict = {e.id: e for e in before}
     after_dict = {e.id: e for e in after}
@@ -3569,9 +4189,20 @@ async def on_member_update(before, after):
 
 @bot_instance.event
 async def on_presence_update(before, after):
+    debug_print(f"Entering on_presence_update", level="all")
     try:
-        # Skip processing for bots and non-guild members
-        if after.bot or not after.guild:
+        if not after.guild:
+            return
+        config = load_log_config(after.guild.id)
+        log_bots_enabled = config.get("log_bots", False)
+        log_self_enabled = config.get("log_self", False)
+        is_self = after.id == bot_instance.user.id
+        is_bot = getattr(after, "bot", False)
+        # Skip if member is self and log_self is False
+        if is_self and not log_self_enabled:
+            return
+        # Skip if member is another bot and log_bots is False
+        if is_bot and not is_self and not log_bots_enabled:
             return
 
         guild = after.guild
@@ -3663,12 +4294,13 @@ async def on_presence_update(before, after):
                         await member.remove_roles(role)
 
     except Exception as e:
-        print(f"Presence update error: {str(e)}")
+        debug_print(f"Presence update error: {str(e)}")
 
 # Error handlers
 @bot_instance.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
     """Global error handler for app commands"""
+    debug_print(f"Entering on_app_command_error with interaction: {interaction}, error: {error}", level="all")
     if isinstance(error, app_commands.CheckFailure):
         if not interaction.response.is_done():
             await interaction.response.send_message(
@@ -3681,7 +4313,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: discord.
                 ephemeral=True
             )
     else:
-        print(f"Unhandled command error: {error}")
+        debug_print(f"Unhandled command error: {error}")
         raise error
 
 if __name__ == "__main__":

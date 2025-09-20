@@ -7,6 +7,16 @@
 </head>
 <body>
 <div class="container mt-4">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
     <h2>Audit Log for Guild {{ guild_id }}</h2>
     <a href="{{ url_for('admin_guilds') }}" class="btn btn-secondary mb-3">&larr; Back to Guilds</a>
     <div class="table-responsive">

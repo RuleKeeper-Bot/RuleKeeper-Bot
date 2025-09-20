@@ -6,13 +6,21 @@ import logging
 import sqlite3
 from datetime import datetime
 from collections import defaultdict
+from shared import command_permission_check
+try:
+    from bot.bot import debug_print
+except ImportError:
+    def debug_print(*args, **kwargs):
+        pass
 
 class DebugCog(commands.Cog):
     def __init__(self, bot):
+        debug_print(f"Entering DebugCog.__init__ with bot: {bot}", level="all")
         self.bot = bot
         self.db = bot.db
 
     # @app_commands.command(name="safe_sync_command")
+    # @command_permission_check("safe_sync_command")
     # @app_commands.checks.has_permissions(administrator=True)
     # async def safe_sync_command(self, interaction: discord.Interaction):
         # """Safe command sync with rate limit handling"""
@@ -25,6 +33,7 @@ class DebugCog(commands.Cog):
             # await interaction.followup.send("❌ Sync failed due to rate limits")
     
     # @app_commands.command(name="checkcmds")
+    # @command_permission_check("checkcmds")
     # async def check_commands(self, interaction: discord.Interaction):
         # """Verify command registrations"""
         # global_cmds = await self.bot.tree.fetch_commands()
@@ -37,6 +46,7 @@ class DebugCog(commands.Cog):
         # await interaction.response.send_message(embed=embed)
     
     # @app_commands.command(name="command_debug", description="Show command registration status")
+    # @command_permission_check("command_debug")
     # async def command_debug(self, interaction: discord.Interaction):
         # """Verify command registration"""
         # await interaction.response.defer(ephemeral=True)
@@ -61,8 +71,10 @@ class DebugCog(commands.Cog):
         # await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="list_commands", description="Show all custom commands")
+    @command_permission_check("list_commands")
     @app_commands.checks.has_permissions(administrator=True)
     async def list_commands(self, interaction: discord.Interaction):
+        debug_print(f"Entering /list_commands with interaction: {interaction}", level="all")
         guild_id = str(interaction.guild.id)
         commands = self.db.get_guild_commands_list(guild_id)
         
@@ -110,6 +122,6 @@ class DebugCog(commands.Cog):
             embed.set_footer(text=f"Total commands: {len(commands)}")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        
+
 async def setup(bot):
     await bot.add_cog(DebugCog(bot))

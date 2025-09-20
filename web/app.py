@@ -11,6 +11,9 @@ import time
 import traceback
 import uuid
 import random
+import io
+import zipfile
+import tempfile
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -38,6 +41,11 @@ from database import Database
 from shared import shared
 from bot.bot import bot_instance, load_schedules
 from backups.backups import get_backups, get_backup, init_db, get_conn, set_backup_share_id, import_backup_file, import_backup_file_from_bytes, get_backup_by_share_id
+try:
+    from bot.bot import debug_print
+except ImportError:
+    def debug_print(*args, **kwargs):
+        pass
 
 # Runtime Config
 load_dotenv()
@@ -49,9 +57,9 @@ db = Database(str(Config.DATABASE_PATH))
 db.initialize_db()
 try:
     db.validate_schema()
-    print(f"🌐 Web using database: {db.db_path}")
+    debug_print(f"🌐 Web using database: {db.db_path}")
 except RuntimeError as e:
-    print(f"❌ Database schema validation failed: {str(e)}")
+    debug_print(f"❌ Database schema validation failed: {str(e)}")
     raise
 
 # Initialize Flask app
@@ -88,6 +96,7 @@ JWT_ALGORITHM = 'HS256'
 
 # JWT Helper
 def generate_jwt():
+    debug_print("Entering generate_jwt", level="all")
     import time
     payload = {
         "iss": "dashboard",
@@ -99,8 +108,10 @@ def generate_jwt():
 # Requests wrapper to inject JWT
 class JWTSession(requests.Session):
     def __init__(self, *args, **kwargs):
+        debug_print(f"Entering JWTSession.__init__ with args: {args}, kwargs: {kwargs}", level="all")
         super().__init__(*args, **kwargs)
     def request(self, method, url, **kwargs):
+        debug_print(f"Entering JWTSession.request with method: {method}, url: {url}, kwargs: {kwargs}", level="all")
         headers = kwargs.pop('headers', {}) or {}
         headers['Authorization'] = f'Bearer {generate_jwt()}'
         kwargs['headers'] = headers
@@ -113,8 +124,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Caching
-channel_cache = TTLCache(maxsize=100, ttl=600) # 10 minutes
-role_cache = TTLCache(maxsize=100, ttl=600) # 10 minutes
+channel_cache = TTLCache(maxsize=100, ttl=120) # 2 minutes
+role_cache = TTLCache(maxsize=100, ttl=120) # 2 minutes
 
 class Guild:
     """Mock Guild class for cached guilds"""
@@ -131,7 +142,8 @@ def json_loads_filter(s):
 # Authentication and Authorization
 def login_required(f):
     def wrapper(*args, **kwargs):
-        if not session.get('user') and not session.get('admin'):
+        debug_print(f"Entering login_required wrapper for {f.__name__}", level="all")
+        if not session.get('user') and not session.get('admin') and not session.get('head_admin'):
             flash('Please log in to access this page', 'warning')
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
@@ -141,32 +153,38 @@ def login_required(f):
 def guild_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
+        debug_print(f"Entering guild_required wrapper for {f.__name__}", level="all")
         guild_id = kwargs.get('guild_id')
         if not guild_id:
-            abort(400, "Missing guild ID")
-            
+            abort(404, description="Missing guild ID")
+
         if session.get('admin'):
             return f(*args, **kwargs)
-            
+
         user_guilds = get_user_guilds()
-        
-        # Properly handle guild lookup
+        bot_guild_ids = get_bot_guild_ids()
+
+        # Check if bot is in the server
+        if str(guild_id) not in bot_guild_ids:
+            abort(404, description="Bot not in server")
+
+        # Check if user is in the server
         guild = next(
-            (guild for guild in user_guilds if str(guild.id) == guild_id),
+            (guild for guild in user_guilds if str(guild.id) == str(guild_id)),
             None
         )
-        
-        # Check if guild exists and has permissions
         if not guild:
-            abort(404, "Server not found in your accessible guilds")
-            
+            abort(404, description="Server not found in your accessible guilds")
+
+        # Check if user has manage server permissions
         if not (guild.permissions.value & 0x20):
-            abort(403, "You don't have manage server permissions")
-            
+            abort(403, description="You don't have manage server permissions")
+
         return f(*args, **kwargs)
     return wrapper
 
 def get_user_guilds():
+    debug_print("Entering get_user_guilds", level="all")
     if session.get('admin'):
         return []
 
@@ -207,19 +225,61 @@ def get_user_guilds():
         # Return reconstructed guilds from cache
         return [Guild(g) for g in session.get('guilds_cache', {}).get('guilds', [])]
 
+def get_guild_users(guild_id):
+    debug_print(f"Entering get_guild_users with guild_id: {guild_id}", level="all")
+    try:
+        api_url = f"{API_URL}/api/get_guild_users"
+        resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
+        if resp.status_code == 200:
+            users = resp.json()
+            if users:
+                # Use display_name if available, fallback to username, then ID
+                return [{"id": u["id"], "name": u.get("display_name") or u.get("username") or u["id"]} for u in users]
+        # Fallback to DB users
+        db_users = db.execute_query(
+            'SELECT user_id as id, username as name FROM users WHERE guild_id = ?',
+            (guild_id,),
+            fetch='all'
+        )
+        return db_users or []
+    except Exception as e:
+        logger.error(f"Error fetching users for guild {guild_id}: {e}")
+        return []
+
+def get_builtin_commands(guild_id):
+    debug_print(f"Entering get_builtin_commands with guild_id: {guild_id}", level="all")
+    try:
+        api_url = f"{API_URL}/api/get_guild_commands"
+        resp = jwt_requests.post(api_url, json={"guild_id": str(guild_id)}, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching built-in commands for guild {guild_id}: {e}")
+        return []
+    
+def get_backup_schedules(guild_id):
+    from backups.backups import get_conn
+    with get_conn() as conn:
+        return [dict(row) for row in conn.execute('SELECT * FROM schedules WHERE guild_id = ?', (guild_id,)).fetchall()]
+    
 def get_bot_guild_ids():
+    debug_print("Entering get_bot_guild_ids", level="all")
     bot_guilds = db.get_all_guilds()
     return {g['id'] for g in bot_guilds}
 
 def get_guild_or_404(guild_id):
+    debug_print(f"Entering get_guild_or_404 with guild_id: {guild_id}", level="all")
     guild = db.get_guild(guild_id)
     if not guild:
-        abort(404, "Guild not found in database")
+        abort(404, "Bot not in server")
     return guild
     
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        debug_print(f"Entering admin_required wrapper for {f.__name__}", level="all")
         if not session.get('admin'):
             abort(403, description="Admin privileges required")
         return f(*args, **kwargs)
@@ -228,6 +288,7 @@ def admin_required(f):
 def head_admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        debug_print(f"Entering head_admin_required wrapper for {f.__name__}", level="all")
         if not session.get('head_admin'):
             abort(403, "Head admin privileges required")
         return f(*args, **kwargs)
@@ -235,6 +296,7 @@ def head_admin_required(f):
 
 @app.context_processor
 def inject_admin_status():
+    debug_print("Entering inject_admin_status", level="all")
     def check_head_admin():
         return session.get('head_admin', False)
     
@@ -243,77 +305,104 @@ def inject_admin_status():
     
     return {
         'is_head_admin': check_head_admin,
-        'is_bot_admin': check_bot_admin
+        'log_bot_admin': check_bot_admin
     }
 
-def resolve_youtube_handle(identifier: str) -> tuple:
-    """Convert YouTube handle to channel ID with quota check"""
-    API_KEY = os.getenv('YOUTUBE_API_KEY')
-    if not API_KEY:
-        return identifier, "API key not configured"
+# Map export option to data fetcher and filename
+EXPORT_MAP = {
+    'server-configuration/commands.json': lambda guild_id: db.get_guild_commands_list(guild_id),
+    'server-configuration/command-permissions.json': lambda guild_id: db.execute_query('SELECT * FROM command_permissions WHERE guild_id = ?', (guild_id,), fetch='all'),
+    'server-configuration/blocked-words.json': lambda guild_id: db.get_blocked_words(guild_id),
+    'server-configuration/logging.json': lambda guild_id: db.get_log_config(guild_id),
+    'server-configuration/welcome-message.json': lambda guild_id: db.get_welcome_config(guild_id),
+    'server-configuration/goodbye-message.json': lambda guild_id: db.get_goodbye_config(guild_id),
+    'server-configuration/auto-assign-role.json': lambda guild_id: db.get_autoroles(guild_id),
+    'server-configuration/spam.json': lambda guild_id: db.get_spam_config(guild_id),
+    'server-configuration/warning-actions.json': lambda guild_id: db.get_warning_actions(guild_id),
+    'server-configuration/role-menus.json': lambda guild_id: db.execute_query('SELECT * FROM role_menus WHERE guild_id = ?', (guild_id,), fetch='all'),
+    'leveling-system/leveling.json': lambda guild_id: db.get_level_config(guild_id),
+    'custom-forms/forms.json': lambda guild_id: db.execute_query('SELECT * FROM custom_forms WHERE guild_id = ?', (guild_id,), fetch='all'),
+    'social-pings/twitch-pings.json': lambda guild_id: db.execute_query('SELECT * FROM twitch_announcements WHERE guild_id = ?', (guild_id,), fetch='all'),
+    'social-pings/youtube-pings.json': lambda guild_id: db.execute_query('SELECT * FROM youtube_announcements WHERE guild_id = ?', (guild_id,), fetch='all'),
+    'fun-miscellaneous/game-roles.json': lambda guild_id: db.get_game_roles(guild_id),
+    'backup-restore/backup-schedules.json': lambda guild_id: get_backup_schedules(guild_id),
+}
+
+# def resolve_youtube_handle(identifier: str) -> tuple:
+#     debug_print(f"Entering resolve_youtube_handle with identifier: {identifier}", level="all")
+#     """Convert YouTube handle to channel ID with quota check"""
+#     API_KEY = os.getenv('YOUTUBE_API_KEY')
+#     if not API_KEY:
+#         return identifier, "API key not configured"
     
-    try:
-        # Handle @channel format
-        if identifier.startswith('@'):
-            handle = identifier[1:]
-        else:
-            handle = identifier
+#     try:
+#         # Handle @channel format
+#         if identifier.startswith('@'):
+#             handle = identifier[1:]
+#         else:
+#             handle = identifier
             
-        # Resolve handle to channel ID
-        url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={handle}&key={API_KEY}"
-        response = requests.get(url)
-        data = response.json()
+#         # Resolve handle to channel ID
+#         url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q={handle}&key={API_KEY}"
+#         response = requests.get(url)
+#         data = response.json()
         
-        # Check for quota errors
-        if 'error' in data:
-            if any(e.get('reason') == 'quotaExceeded' for e in data['error'].get('errors', [])):
-                logger.error("YouTube API QUOTA EXCEEDED during handle resolution")
-                return identifier, "YouTube API quota exceeded - try again later"
+#         # Check for quota errors
+#         if 'error' in data:
+#             if any(e.get('reason') == 'quotaExceeded' for e in data['error'].get('errors', [])):
+#                 logger.error("YouTube API QUOTA EXCEEDED during handle resolution")
+#                 return identifier, "YouTube API quota exceeded - try again later"
             
-            error_msg = data['error'].get('message', 'Unknown YouTube API error')
-            return identifier, f"YouTube API error: {error_msg}"
+#             error_msg = data['error'].get('message', 'Unknown YouTube API error')
+#             return identifier, f"YouTube API error: {error_msg}"
         
-        if 'items' in data and len(data['items']) > 0:
-            return data['items'][0]['snippet']['channelId'], None
+#         if 'items' in data and len(data['items']) > 0:
+#             return data['items'][0]['snippet']['channelId'], None
             
-        return identifier, "Channel not found"
-    except Exception as e:
-        logger.error(f"Error resolving YouTube handle: {str(e)}")
-        return identifier, "Connection error"
+#         return identifier, "Channel not found"
+#     except Exception as e:
+#         logger.error(f"Error resolving YouTube handle: {str(e)}")
+#         return identifier, "Connection error"
 
 # TEMPORARY ROUTE
 # @app.route('/update-guild-icons')
 # def update_guild_icons():
-    # if not session.get('admin'):
-        # abort(403)
-        
-    # try:
-        # guilds = db.execute_query('SELECT guild_id FROM guilds', fetch='all')
-        
-        # updated = 0
-        # for g in guilds:
-            # # Use 'guild_id' instead of 'id'
-            # guild_id = int(g['guild_id'])
-            # guild = shared.bot.get_guild(guild_id)
-            
-            # if guild:
-                # icon = str(guild.icon.url) if guild.icon else None
-                # db.execute_query(
-                    # 'UPDATE guilds SET icon = ? WHERE guild_id = ?',
-                    # (icon, guild_id)
-                # )
-                # updated += 1
-                
-        # return f"Updated icons for {updated}/{len(guilds)} guilds"
-        
-    # except Exception as e:
-        # logger.error(f"Error updating guild icons: {str(e)}")
-        # return f"Error: {str(e)}", 500
+#     debug_print("Entering update_guild_icons", level="all")
+#     if not session.get('admin'):
+#         abort(403)
+#
+#     try:
+#         guilds = db.execute_query('SELECT guild_id FROM guilds', fetch='all')
+#
+#         updated = 0
+#         for g in guilds:
+#             # Use 'guild_id' instead of 'id'
+#             guild_id = int(g['guild_id'])
+#             guild = shared.bot.get_guild(guild_id)
+
+#             if guild:
+#                 icon = str(guild.icon.url) if guild.icon else None
+#                 db.execute_query(
+#                     'UPDATE guilds SET icon = ? WHERE guild_id = ?',
+#                     (icon, guild_id)
+#                 )
+#                 updated += 1
+#                 debug_print(f"Updated icon for guild {guild_id}")
+#             else:
+#                 debug_print(f"Guild {guild_id} not found in bot cache")
+#         time.sleep(1)  # Rate limit handling
+#         debug_print(f"Updated icons for {updated}/{len(guilds)} guilds")
+#         return f"Updated icons for {updated}/{len(guilds)} guilds"
+
+#      except Exception as e:
+#         logger.error(f"Error updating guild icons: {str(e)}")
+#         return f"Error: {str(e)}", 500
 
 
 # Before Requests
 @app.before_request
 def refresh_session():
+    debug_print("Entering refresh_session", level="all")
     # Ensure all requests get a session cookie
     session.permanent = True
     if 'user' not in session and 'admin' not in session:
@@ -321,28 +410,34 @@ def refresh_session():
             session['_anon_session'] = str(uuid.uuid4())
             session.modified = True
 def log_real_ip():
+    debug_print("Entering log_real_ip", level="all")
     real_ip = request.headers.get("CF-Connecting-IP", request.remote_addr)
-    print(f"Real IP: {real_ip} -> Path: {request.path}")
+    debug_print(f"Real IP: {real_ip} -> Path: {request.path}")
 
 # Routes
 @app.route('/')
 def index():
+    debug_print("Entering index route", level="all")
     return render_template('index.html')
 
 @app.route("/privacy-policy")
 def privacy_policy():
+    debug_print("Entering privacy_policy route", level="all")
     return render_template("privacy.html")
 
 @app.route("/terms-of-service")
 def terms_of_service():
+    debug_print("Entering terms_of_service route", level="all")
     return render_template("terms.html")
     
 @app.route("/end-user-license-agreement")
 def end_user_license_agreement():
+    debug_print("Entering end_user_license_agreement route", level="all")
     return render_template("eula.html")
 
 @app.route('/login')
 def login():
+    debug_print("Entering login route", level="all")
     session.clear()
     session.permanent = True
     session.modified = True  # Force session save
@@ -353,6 +448,7 @@ def login():
     
 @app.route('/admin/login', methods=['GET', 'POST'])
 def login_admin():
+    debug_print("Entering login_admin route", level="all")
     error = None
     if request.method == 'POST':
         try:
@@ -388,6 +484,7 @@ def login_admin():
 
 @app.route('/logout')
 def logout():
+    debug_print("Entering logout route", level="all")
     session.clear()
     flash('Successfully logged out', 'success')
     return redirect(url_for('login'))
@@ -395,6 +492,7 @@ def logout():
 @app.route('/admin/logout')
 @login_required
 def logout_admin():
+    debug_print("Entering logout_admin route", level="all")
     """Log out from admin access while preserving Discord session"""
     try:
         if session.get('admin'):
@@ -416,6 +514,7 @@ def logout_admin():
 
 @app.route('/callback')
 def callback():
+    debug_print("Entering callback route", level="all")
     try:
         # Let flask_discord handle state validation
         state = session.get('DISCORD_OAUTH2_STATE')
@@ -454,6 +553,7 @@ def callback():
 @app.route('/delete-data', methods=['GET', 'POST'])
 @login_required
 def delete_my_data():
+    debug_print("Entering delete_my_data route", level="all")
     user_id = session['user']['id']
     guilds = get_mutual_guilds(user_id)
 
@@ -488,29 +588,27 @@ def delete_my_data():
 @app.route('/guilds')
 @login_required
 def select_guild():
+    debug_print("Entering select_guild route", level="all")
     user_guilds = get_user_guilds()
-    
-    # Prepare guild data for template
     common_guilds = [{
         'id': str(g.id),
         'name': g.name,
         'icon': g.icon_url or '',
-        'permissions': g.permissions.value
+        'permissions': g.permissions.value,
+        'joined_at': getattr(g, 'joined_at', None)
     } for g in user_guilds]
-    
     if session.get('admin'):
-        # Get full guild data from DB
         common_guilds = db.execute_query(
-            'SELECT guild_id as id, name, icon FROM guilds',
+            'SELECT guild_id as id, name, icon, joined_at FROM guilds',
             fetch='all'
         )
-        
     return render_template('guilds.html', guilds=common_guilds)
     
 @app.route('/admin/guilds')
 @login_required
 @admin_required
 def admin_guilds():
+    debug_print("Entering admin_guilds route", level="all")
     if not session.get('admin'):
         abort(403)
     
@@ -530,6 +628,7 @@ def admin_guilds():
 @app.route('/admin/guilds/<guild_id>/invite', methods=['POST'])
 @admin_required
 def get_guild_invite(guild_id):
+    debug_print(f"Entering get_guild_invite route with guild_id: {guild_id}", level="all")
     """Get or create an invite link for a guild via the bot's webserver API."""
     try:
         csrf.protect()
@@ -550,6 +649,7 @@ def get_guild_invite(guild_id):
 @app.route('/admin/guilds/<guild_id>/audit-log', methods=['POST'])
 @admin_required
 def get_guild_audit_log(guild_id):
+    debug_print(f"Entering get_guild_audit_log route with guild_id: {guild_id}", level="all")
     """Fetch and display the audit log for a guild via the bot's webserver API."""
     try:
         csrf.protect()
@@ -571,6 +671,7 @@ def get_guild_audit_log(guild_id):
 @app.route('/admin/dashboard')
 @admin_required
 def admin_dashboard():
+    debug_print("Entering admin_dashboard route", level="all")
     # Get guild count
     guild_count_result = db.execute_query('SELECT COUNT(*) as count FROM guilds', fetch='one')
     guild_count = guild_count_result['count'] if guild_count_result else 0
@@ -603,6 +704,7 @@ def admin_dashboard():
 @app.route('/admin/bot-admins', methods=['GET', 'POST'])
 @head_admin_required
 def manage_bot_admins():
+    debug_print("Entering manage_bot_admins route", level="all")
     if request.method == 'POST':
         try:
             csrf.protect()  # Verify CSRF token
@@ -648,6 +750,7 @@ def manage_bot_admins():
 @app.route('/admin/delete-bot-admin/<username>')
 @head_admin_required
 def delete_bot_admin(username):
+    debug_print(f"Entering delete_bot_admin route with username: {username}", level="all")
     db.delete_bot_admin(username)
     
     log_action(
@@ -662,6 +765,7 @@ def delete_bot_admin(username):
 @app.route('/update-privileges/<username>', methods=['POST'])
 @head_admin_required
 def update_privileges(username):
+    debug_print(f"Entering update_privileges route with username: {username}", level="all")
     try:
         csrf.protect()
         privileges = {
@@ -691,6 +795,7 @@ def update_privileges(username):
     return redirect(url_for('manage_bot_admins'))
 
 def log_action(action: str, details: str, changes: str = ""):
+    debug_print(f"Entering log_action with action: {action}, details: {details}, changes: {changes}", level="all")
     # Get current admin identity
     admin_identity = "system"
     if session.get('head_admin'):
@@ -708,6 +813,7 @@ def log_action(action: str, details: str, changes: str = ""):
 @app.route('/api/admin/<guild_id>/remove-all-data-and-bot', methods=['POST'])
 @admin_required
 def remove_guild(guild_id):
+    debug_print(f"Entering remove_guild route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
 
@@ -729,8 +835,8 @@ def remove_guild(guild_id):
             'autoroles',
             'game_roles',
             'user_game_time',
-            'stream_announcements',
-            'video_announcements',
+            'twitch_announcements',
+            'youtube_announcements',
             'role_menus',
             'custom_forms',
             'form_submissions',
@@ -761,6 +867,7 @@ def remove_guild(guild_id):
 @login_required
 @guild_required
 def guild_dashboard(guild_id):
+    debug_print(f"Entering guild_dashboard route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     return render_template('dashboard.html', guild=guild)
 
@@ -768,6 +875,7 @@ def guild_dashboard(guild_id):
 @login_required
 @guild_required
 def remove_all_guild_data(guild_id):
+    debug_print(f"Entering remove_all_guild_data route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
 
@@ -788,8 +896,8 @@ def remove_all_guild_data(guild_id):
             'autoroles',
             'game_roles',
             'user_game_time',
-            'stream_announcements',
-            'video_announcements',
+            'twitch_announcements',
+            'youtube_announcements',
             'role_menus',
             'custom_forms',
             'form_submissions',
@@ -810,6 +918,7 @@ def remove_all_guild_data(guild_id):
 @login_required
 @guild_required
 def remove_all_user_data(guild_id):
+    debug_print(f"Entering remove_all_user_data route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
         user_id = request.form.get('user_id', '').strip()
@@ -850,6 +959,7 @@ def remove_all_user_data(guild_id):
 @login_required
 @guild_required
 def guild_commands(guild_id):
+    debug_print(f"Entering guild_commands route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     if request.method == 'POST':
         data = request.get_json(force=True)
@@ -888,6 +998,7 @@ def guild_commands(guild_id):
 @login_required
 @guild_required
 def delete_command_api(guild_id, command_name):
+    debug_print(f"Entering delete_command_api route with guild_id: {guild_id}, command_name: {command_name}", level="all")
     try:
         db.remove_command(guild_id, command_name)
         return jsonify({'success': True})
@@ -899,6 +1010,7 @@ def delete_command_api(guild_id, command_name):
 @login_required
 @guild_required
 def sync_commands(guild_id):
+    debug_print(f"Entering sync_commands route with guild_id: {guild_id}", level="all")
     try:
         api_url = f"{API_URL}/api/sync"
         resp = jwt_requests.post(api_url, timeout=60)
@@ -921,6 +1033,7 @@ def sync_commands(guild_id):
 @login_required
 @guild_required
 def export_commands(guild_id):
+    debug_print(f"Entering export_commands route with guild_id: {guild_id}", level="all")
     try:
         commands = db.get_guild_commands_list(guild_id)
         for cmd in commands:
@@ -938,6 +1051,7 @@ def export_commands(guild_id):
 @login_required
 @guild_required
 def import_commands(guild_id):
+    debug_print(f"Entering import_commands route with guild_id: {guild_id}", level="all")
     try:
         import json
         commands = request.get_json(force=True)
@@ -960,6 +1074,7 @@ def import_commands(guild_id):
 @login_required
 @guild_required
 def delete_all_commands(guild_id):
+    debug_print(f"Entering delete_all_commands route with guild_id: {guild_id}", level="all")
     try:
         db.execute_query('DELETE FROM commands WHERE guild_id = ?', (guild_id,))
         return jsonify({'success': True})
@@ -971,6 +1086,7 @@ def delete_all_commands(guild_id):
 @login_required
 @guild_required
 def edit_command(guild_id, command_name):
+    debug_print(f"Entering edit_command route with guild_id: {guild_id}, command_name: {command_name}", level="all")
     guild = get_guild_or_404(guild_id)
     command = db.get_command(guild_id, command_name)
     
@@ -1005,13 +1121,52 @@ def edit_command(guild_id, command_name):
             logger.error(f"Error updating command: {str(e)}")
             flash('Error updating command', 'danger')
             return redirect(url_for('edit_command', guild_id=guild_id, command_name=command_name))
-    
-    # GET request - show edit form
-    return render_template('edit.html',
+
+    return render_template('edit_command.html',
         guild_id=guild_id,
         guild=guild,
         command_name=command_name,
         command=command
+    )
+
+@app.route('/dashboard/<guild_id>/command-permissions', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def command_permissions(guild_id):
+    debug_print(f"Entering command_permissions route with guild_id: {guild_id}", level="all")
+    guild = get_guild_or_404(guild_id)
+    # Get all built-in commands
+    builtins = [cmd['name'] for cmd in get_builtin_commands(guild_id)]
+    custom_cmds = [cmd['command_name'] for cmd in db.get_guild_commands_list(guild_id)]
+    all_commands = [{"name": c, "is_custom": False} for c in builtins] + [{"name": c, "is_custom": True} for c in custom_cmds]
+    roles = get_roles(guild_id)
+    users = get_guild_users(guild_id)
+
+    if request.method == 'POST':
+        for cmd in all_commands:
+            prefix = f"{cmd['name']}_{'custom' if cmd['is_custom'] else 'builtin'}"
+            allow_roles = request.form.getlist(f"{prefix}_allow_roles")
+            allow_users = request.form.getlist(f"{prefix}_allow_users")
+            db.set_command_permissions(
+                guild_id, cmd['name'],
+                allow_roles, allow_users, is_custom=cmd['is_custom']
+            )
+        flash("Permissions updated!", "success")
+        return redirect(url_for('command_permissions', guild_id=guild_id))
+
+    # Load current permissions
+    permissions = {
+        cmd['name']: db.get_command_permissions(guild_id, cmd['name'])
+        for cmd in all_commands
+    }
+    return render_template(
+        'command_permissions.html',
+        guild_id=guild_id,
+        commands=all_commands,
+        permissions=permissions,
+        roles=roles,
+        users=users,
+        guild=guild
     )
 
 # Log Configuration
@@ -1019,52 +1174,96 @@ def edit_command(guild_id, command_name):
 @login_required
 @guild_required
 def log_config(guild_id):
+    debug_print(f"Entering log_config route with guild_id: {guild_id}", level="all")
     try:
         guild = get_guild_or_404(guild_id)
-        config = db.get_log_config(guild_id)
-        # Get channels from Discord API
-        text_channels = get_text_channels(guild_id)
+        config = db.get_log_config(guild_id) or {}
+        channels = get_text_channels(guild_id)
+        roles = get_roles(guild_id)
+        guild_users = get_guild_users(guild_id)
         if request.method == 'POST':
-            # Verify CSRF token first
             try:
                 csrf.protect()
             except CSRFError:
                 flash('Security token expired. Please submit the form again.', 'danger')
                 return redirect(url_for('log_config', guild_id=guild_id))
-            
-            update_data = {
-                'log_channel_id': request.form.get('log_channel_id'),
-                'log_config_update': 'log_config_update' in request.form,
-                'message_delete': 'message_delete' in request.form,
-                'bulk_message_delete': 'bulk_message_delete' in request.form,
-                'message_edit': 'message_edit' in request.form,
-                'invite_create': 'invite_create' in request.form,
-                'invite_delete': 'invite_delete' in request.form,
-                'member_role_add': 'member_role_add' in request.form,
-                'member_role_remove': 'member_role_remove' in request.form,
-                'member_timeout': 'member_timeout' in request.form,
-                'member_warn': 'member_warn' in request.form,
-                'member_unwarn': 'member_unwarn' in request.form,
-                'member_ban': 'member_ban' in request.form,
-                'member_unban': 'member_unban' in request.form,
-                'role_create': 'role_create' in request.form,
-                'role_delete': 'role_delete' in request.form,
-                'role_update': 'role_update' in request.form,
-                'channel_create': 'channel_create' in request.form,
-                'channel_delete': 'channel_delete' in request.form,
-                'channel_update': 'channel_update' in request.form,
-                'emoji_create': 'emoji_create' in request.form,
-                'emoji_name_change': 'emoji_name_change' in request.form,
-                'emoji_delete': 'emoji_delete' in request.form
-            }
-            
-            guild = get_guild_or_404(guild_id)
-            db.update_log_config(guild_id, **update_data)
-            flash('Log configuration updated', 'success')
+            new_config = dict(config)
+            for key in config:
+                if key in ['guild_id', 'log_channel_id', 'excluded_users', 'excluded_roles', 'excluded_channels', 'log_bots', 'log_self']:
+                    continue
+                new_config[key] = bool(request.form.get(key))
+            new_config['log_channel_id'] = request.form.get('log_channel_id') or None
+            new_config['excluded_users'] = request.form.getlist('excluded_users')
+            new_config['excluded_roles'] = request.form.getlist('excluded_roles')
+            new_config['excluded_channels'] = request.form.getlist('excluded_channels')
+            new_config['log_bots'] = bool(request.form.get('log_bots'))
+            new_config['log_self'] = bool(request.form.get('log_self'))
+            # Remove guild_id from new_config if present to avoid duplicate argument
+            if 'guild_id' in new_config:
+                new_config.pop('guild_id')
+            # Convert lists to JSON strings for SQLite
+            for k, v in new_config.items():
+                if isinstance(v, list):
+                    new_config[k] = json.dumps(v)
+            db.update_log_config(guild_id, **new_config)
+            flash('Logging configuration updated!', 'success')
             return redirect(url_for('log_config', guild_id=guild_id))
-        
-        return render_template('log_config.html', config=config, guild_id=guild_id, guild=guild, channels=text_channels)
-        
+        merged_config = dict(
+            log_channel_id=None,
+            log_config_update=True,
+            message_delete=True,
+            bulk_message_delete=True,
+            message_edit=True,
+            invite_create=True,
+            invite_delete=True,
+            member_role_add=True,
+            member_role_remove=True,
+            member_timeout=True,
+            member_warn=True,
+            member_unwarn=True,
+            member_ban=True,
+            member_unban=True,
+            role_create=True,
+            role_delete=True,
+            role_update=True,
+            channel_create=True,
+            channel_delete=True,
+            channel_update=True,
+            emoji_create=True,
+            emoji_name_change=True,
+            emoji_delete=True,
+            excluded_users=[],
+            excluded_roles=[],
+            excluded_channels=[],
+            log_bots=True,
+            log_self=False
+        )
+        merged_config.update(config)
+        # Normalize user dicts for template (id, username, discriminator)
+        normalized_users = []
+        for u in guild_users:
+            if 'username' in u and 'discriminator' in u:
+                normalized_users.append(u)
+            elif 'name' in u:
+                name = u['name']
+                if '#' in name:
+                    username, discriminator = name.rsplit('#', 1)
+                else:
+                    username, discriminator = name, '0000'
+                normalized_users.append({
+                    'id': u['id'],
+                    'username': username,
+                    'discriminator': discriminator
+                })
+        return render_template(
+            'log_config.html',
+            config=merged_config,
+            guild_id=guild_id,
+            guild=guild,
+            channels=channels,
+            roles=roles,
+            guild_users=normalized_users
+        )
     except Exception as e:
         logger.error(f"Error in log config: {str(e)}")
         abort(500)
@@ -1074,6 +1273,7 @@ def log_config(guild_id):
 @login_required
 @guild_required
 def welcome_config(guild_id):
+    debug_print(f"Entering welcome_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     config = db.execute_query('SELECT * FROM welcome_config WHERE guild_id = ?', (guild_id,), fetch='one') or {
         'message_type': 'text',
@@ -1125,6 +1325,7 @@ def welcome_config(guild_id):
 @login_required
 @guild_required
 def goodbye_config(guild_id):
+    debug_print(f"Entering goodbye_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     config = db.execute_query('SELECT * FROM goodbye_config WHERE guild_id = ?', (guild_id,), fetch='one') or {
         'message_type': 'text',
@@ -1173,6 +1374,7 @@ def goodbye_config(guild_id):
 @login_required
 @guild_required
 def blocked_words(guild_id):
+    debug_print(f"Entering blocked_words route with guild_id: {guild_id}", level="all")
     try:
         guild = get_guild_or_404(guild_id)
         
@@ -1256,6 +1458,7 @@ def blocked_words(guild_id):
 @login_required
 @guild_required
 def banned_users(guild_id):
+    debug_print(f"Entering banned_users route with guild_id: {guild_id}", level="all")
     try:
         # Try the modern query first
         try:
@@ -1290,6 +1493,7 @@ def banned_users(guild_id):
 @login_required
 @guild_required
 def leaderboard(guild_id):
+    debug_print(f"Entering leaderboard route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     
     users = db.execute_query('''
@@ -1309,6 +1513,7 @@ def leaderboard(guild_id):
 @login_required
 @guild_required
 def level_config(guild_id):
+    debug_print(f"Entering level_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     text_channels = get_text_channels(guild_id)
     roles = get_roles(guild_id)
@@ -1328,7 +1533,9 @@ def level_config(guild_id):
         'xp_boost_roles': {},
         'embed_title': '🎉 Level Up!',
         'embed_description': '{user} has reached level **{level}**!',
-        'embed_color': 0xFFD700
+        'embed_color': 0xFFD700,
+        'give_xp_to_bots': True,
+        'give_xp_to_self': True
     }
     
     # Merge configurations properly
@@ -1344,7 +1551,9 @@ def level_config(guild_id):
             'xp_boost_roles': db_config.get('xp_boost_roles', {}),
             'embed_title': db_config.get('embed_title', default_config['embed_title']),
             'embed_description': db_config.get('embed_description', default_config['embed_description']),
-            'embed_color': db_config.get('embed_color', default_config['embed_color'])
+            'embed_color': db_config.get('embed_color', default_config['embed_color']),
+            'give_xp_to_bots': db_config.get('give_xp_to_bots', default_config['give_xp_to_bots']),
+            'give_xp_to_self': db_config.get('give_xp_to_self', default_config['give_xp_to_self'])
         })
     
     # Handle rewards
@@ -1395,7 +1604,9 @@ def level_config(guild_id):
                     'embed_description', 
                     '{user} has reached level **{level}**!'
                 ),
-                'embed_color': int(request.form.get('embed_color', 'ffd700').lstrip('#'), 16)
+                'embed_color': int(request.form.get('embed_color', 'ffd700').lstrip('#'), 16),
+                'give_xp_to_bots': bool(request.form.get('give_xp_to_bots', False)),
+                'give_xp_to_self': bool(request.form.get('give_xp_to_self', False))
             }
 
             # Validate JSON fields
@@ -1433,7 +1644,9 @@ def level_config(guild_id):
                 "xp_boost_roles": new_config["xp_boost_roles"],
                 "embed_title": new_config["embed_title"],
                 "embed_description": new_config["embed_description"],
-                "embed_color": new_config["embed_color"]
+                "embed_color": new_config["embed_color"],
+                "give_xp_to_bots": new_config["give_xp_to_bots"],
+                "give_xp_to_self": new_config["give_xp_to_self"]
             }
 
             db.update_level_config(guild_id, **update_data)
@@ -1476,6 +1689,7 @@ def level_config(guild_id):
 @login_required
 @guild_required
 def auto_roles_config(guild_id):
+    debug_print(f"Entering auto_roles_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     roles = get_roles(guild_id)
     current_autoroles = db.get_autoroles(guild_id)
@@ -1501,6 +1715,7 @@ def auto_roles_config(guild_id):
 @login_required
 @guild_required
 def game_roles_config(guild_id):
+    debug_print(f"Entering game_roles_config route with guild_id: {guild_id}", level="all")
     try:
         # Get guild and roles
         guild = get_guild_or_404(guild_id)
@@ -1581,40 +1796,22 @@ def game_roles_config(guild_id):
         flash('An error occurred while loading game role configurations', 'danger')
         return redirect(url_for('select_guild'))
 
-# Stream and Video Announcements page
-@app.route('/dashboard/<guild_id>/stream-and-video', methods=['GET', 'POST'])
+# Stream Announcements
+@app.route('/dashboard/<guild_id>/twitch-announcements', methods=['GET', 'POST'])
 @login_required
 @guild_required
-def stream_announcements(guild_id):
+def twitch_announcements_page(guild_id):
+    debug_print(f"Entering twitch_announcements_page route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     channels = get_text_channels(guild_id)
     roles = get_roles(guild_id)
-
-    # Default messages for stream and video announcements
     DEFAULT_STREAM_MESSAGE = "🔴 {streamer} is now live! Watch here: {url} {role}"
-    DEFAULT_VIDEO_MESSAGE = "📺 New video from {channel}: {url} {role}"
 
-    # Get existing announcements
-    stream_announcements = db.execute_query(
-        'SELECT * FROM stream_announcements WHERE guild_id = ?',
+    twitch_announcements = db.execute_query(
+        'SELECT * FROM twitch_announcements WHERE guild_id = ?',
         (guild_id,),
         fetch='all'
     )
-    
-    video_announcements = db.execute_query(
-        'SELECT * FROM video_announcements WHERE guild_id = ?',
-        (guild_id,),
-        fetch='all'
-    )
-    # Ensure both channel_id (YouTube) and announce_channel_id (Discord) are present in each dict
-    for ann in video_announcements:
-        if 'announce_channel_id' not in ann or ann['announce_channel_id'] is None:
-            # fallback for legacy rows: try to use channel_id if it looks like a Discord channel
-            ann['announce_channel_id'] = ann.get('announce_channel_id') or ann.get('channel_id')
-        # channel_id is always YouTube channel
-        ann['channel_id'] = ann.get('channel_id')
-
-    # Helper: get role mention by id
     def get_role_mention(role_id):
         if not role_id:
             return ''
@@ -1622,130 +1819,216 @@ def stream_announcements(guild_id):
             if str(r['id']) == str(role_id):
                 return f"<@&{r['id']}>"
         return ''
-    
-    # Helper: get channel name by id
     def get_channel_name(channel_id):
         for channel in channels:
             if str(channel['id']) == str(channel_id):
                 return channel['name']
         return f"Unknown ({channel_id})"
+    for ann in twitch_announcements:
+        ann['role_mention'] = get_role_mention(ann.get('role_id'))
 
-    # Attach role mention to each announcement for preview
-    for ann in stream_announcements:
-        ann['role_mention'] = get_role_mention(ann.get('role_id'))
-    for ann in video_announcements:
-        ann['role_mention'] = get_role_mention(ann.get('role_id'))
+    # Get current user ID
+    user_id = session.get('user', {}).get('id') or session.get('admin_username', 'admin')
+    user_twitch_live_count = db.execute_query(
+        'SELECT COUNT(*) as cnt FROM twitch_announcements WHERE guild_id = ? AND streamer_id IS NOT NULL AND created_by = ?',
+        (guild_id, user_id),
+        fetch='one'
+    )['cnt']
 
     if request.method == 'POST':
         try:
             csrf.protect()
             action = request.form.get('action')
-            
             if action == 'add_stream':
-                platform = request.form['platform']
                 streamer_id = request.form['streamer_id'].strip()
                 channel_id = request.form['channel_id']
                 message = request.form.get('message', '').strip() or DEFAULT_STREAM_MESSAGE
                 role_id = request.form.get('role_id')
+                # Enforce limits
+                if user_twitch_live_count >= 15:
+                    flash("You can only add up to 15 Twitch live channels.", "danger")
+                    return redirect(url_for('twitch_announcements_page', guild_id=guild_id))
                 db.execute_query(
-                    '''INSERT INTO stream_announcements 
-                    (guild_id, channel_id, platform, streamer_id, message, role_id)
+                    '''INSERT INTO twitch_announcements 
+                    (guild_id, channel_id, streamer_id, message, role_id, created_by)
                     VALUES (?, ?, ?, ?, ?, ?)''',
-                    (guild_id, channel_id, platform, streamer_id, message, role_id)
+                    (guild_id, channel_id, streamer_id, message, role_id, user_id)
                 )
-                
             elif action == 'edit_stream':
-                stream_id = request.form.get('stream_id')
-                platform = request.form.get('platform')
+                stream_id = request.form.get('announcement_id') or request.form.get('stream_id')
                 channel_id = request.form.get('channel_id')
                 role_id = request.form.get('role_id') or None
                 streamer_id = request.form.get('streamer_id')
                 message = request.form.get('message')
                 db.execute_query(
-                    'UPDATE stream_announcements SET platform=?, channel_id=?, role_id=?, streamer_id=?, message=? WHERE id=? AND guild_id=?',
-                    (platform, channel_id, role_id, streamer_id, message, stream_id, guild_id)
+                    'UPDATE twitch_announcements SET channel_id=?, role_id=?, streamer_id=?, message=? WHERE id=? AND guild_id=?',
+                    (channel_id, role_id, streamer_id, message, stream_id, guild_id)
                 )
-                flash('Stream announcement updated!', 'success')
-                return redirect(request.url)
-            elif action == 'add_video':
-                platform = request.form['platform']
-                announce_channel_id = request.form['channel_id']  # Discord channel
-                target_channel_id = request.form['target_channel_id']  # YouTube channel
-                message = request.form.get('message', '').strip() or DEFAULT_VIDEO_MESSAGE
-                role_id = request.form.get('role_id')
-                db.execute_query(
-                    '''INSERT INTO video_announcements 
-                    (guild_id, channel_id, announce_channel_id, platform, message, role_id)
-                    VALUES (?, ?, ?, ?, ?, ?)''',
-                    (guild_id, target_channel_id, announce_channel_id, platform, message, role_id)
-                )
-                
-            elif action == 'edit_video':
-                video_id = request.form.get('announcement_id') or request.form.get('video_id')
-                platform = request.form.get('platform')
-                announce_channel_id = request.form.get('channel_id')  # Discord channel
-                target_channel_id = request.form.get('target_channel_id')  # YouTube channel
-                message = request.form.get('message')
-                role_id = request.form.get('role_id') or None
-                db.execute_query(
-                    'UPDATE video_announcements SET platform=?, channel_id=?, announce_channel_id=?, role_id=?, message=? WHERE id=? AND guild_id=?',
-                    (platform, target_channel_id, announce_channel_id, role_id, message, video_id, guild_id)
-                )
-                flash('Video announcement updated!', 'success')
+                flash('Twitch announcement updated!', 'success')
                 return redirect(request.url)
             elif action == 'delete_stream':
                 announcement_id = request.form['announcement_id']
                 db.execute_query(
-                    'DELETE FROM stream_announcements WHERE id = ? AND guild_id = ?',
+                    'DELETE FROM twitch_announcements WHERE id = ? AND guild_id = ?',
                     (announcement_id, guild_id)
                 )
-                
-            elif action == 'delete_video':
-                announcement_id = request.form['announcement_id']
-                db.execute_query(
-                    'DELETE FROM video_announcements WHERE id = ? AND guild_id = ?',
-                    (announcement_id, guild_id)
-                )
-                
             elif action == 'toggle_stream':
                 announcement_id = request.form['announcement_id']
                 enabled = request.form['enabled'] == 'true'
                 db.execute_query(
-                    'UPDATE stream_announcements SET enabled = ? WHERE id = ? AND guild_id = ?',
+                    'UPDATE twitch_announcements SET enabled = ? WHERE id = ? AND guild_id = ?',
                     (int(enabled), announcement_id, guild_id)
                 )
-                
-            elif action == 'toggle_video':
-                announcement_id = request.form['announcement_id']
-                enabled = request.form['enabled'] == 'true'
-                db.execute_query(
-                    'UPDATE video_announcements SET enabled = ? WHERE id = ? AND guild_id = ?',
-                    (int(enabled), announcement_id, guild_id)
-                )
-                
             flash('Settings updated successfully', 'success')
-            return redirect(url_for('stream_announcements', guild_id=guild_id))
-            
+            return redirect(url_for('twitch_announcements_page', guild_id=guild_id))
         except Exception as e:
-            logger.error(f"Stream config error: {str(e)}")
+            logger.error(f"Twitch config error: {str(e)}")
             flash('Error saving configuration', 'danger')
-    
-    return render_template('stream_and_video_announcements.html',
+
+    return render_template('twitch_announcements.html',
                          guild_id=guild_id,
                          guild=guild,
                          channels=channels,
                          roles=roles,
-                         stream_announcements=stream_announcements,
-                         video_announcements=video_announcements,
+                         twitch_announcements=twitch_announcements,
                          get_channel_name=get_channel_name,
-                         DEFAULT_STREAM_MESSAGE=DEFAULT_STREAM_MESSAGE,
+                         DEFAULT_STREAM_MESSAGE=DEFAULT_STREAM_MESSAGE)
+
+# Video Announcements
+@app.route('/dashboard/<guild_id>/youtube-announcements', methods=['GET', 'POST'])
+@login_required
+@guild_required
+def youtube_announcements_page(guild_id):
+    debug_print(f"Entering youtube_announcements_page route with guild_id: {guild_id}", level="all")
+    guild = get_guild_or_404(guild_id)
+    channels = get_text_channels(guild_id)
+    roles = get_roles(guild_id)
+    DEFAULT_VIDEO_MESSAGE = "{role} {channel} uploaded a new video: {title} - {url}"
+
+    youtube_announcements = db.execute_query(
+        'SELECT * FROM youtube_announcements WHERE guild_id = ?',
+        (guild_id,),
+        fetch='all'
+    )
+    for ann in youtube_announcements:
+        if 'announce_channel_id' not in ann or ann['announce_channel_id'] is None:
+            ann['announce_channel_id'] = ann.get('announce_channel_id') or ann.get('channel_id')
+        ann['channel_id'] = ann.get('channel_id')
+    def get_role_mention(role_id):
+        if not role_id:
+            return ''
+        for r in roles:
+            if str(r['id']) == str(role_id):
+                return f"<@&{r['id']}>"
+        return ''
+    def get_channel_name(channel_id):
+        for channel in channels:
+            if str(channel['id']) == str(channel_id):
+                return channel['name']
+        return f"Unknown ({channel_id})"
+    for ann in youtube_announcements:
+        ann['role_mention'] = get_role_mention(ann.get('role_id'))
+
+    # Get current user ID
+    user_id = session.get('user', {}).get('id') or session.get('admin_username', 'admin')
+    user_youtube_video_count = db.execute_query(
+        'SELECT COUNT(*) as cnt FROM youtube_announcements WHERE guild_id = ? AND created_by = ? AND (live_stream IS NULL OR live_stream = 0)',
+        (guild_id, user_id),
+        fetch='one'
+    )['cnt']
+    user_youtube_live_count = db.execute_query(
+        'SELECT COUNT(*) as cnt FROM youtube_announcements WHERE guild_id = ? AND created_by = ? AND live_stream = 1',
+        (guild_id, user_id),
+        fetch='one'
+    )['cnt']
+
+    if request.method == 'POST':
+        try:
+            csrf.protect()
+            action = request.form.get('action')
+            if action == 'add_video':
+                announce_channel_id = request.form['channel_id']
+                target_channel_id = request.form['target_channel_id']
+                message = request.form.get('message', '').strip() or DEFAULT_VIDEO_MESSAGE
+                role_id = request.form.get('role_id')
+                live_stream = 1 if request.form.get('live_stream') == '1' else 0
+                # Enforce limits
+                if live_stream:
+                    if user_youtube_live_count >= 5:
+                        flash("You can only add up to 5 YouTube live stream channels.", "danger")
+                        return redirect(url_for('youtube_announcements_page', guild_id=guild_id))
+                else:
+                    if user_youtube_video_count >= 10:
+                        flash("You can only add up to 10 YouTube video channels.", "danger")
+                        return redirect(url_for('youtube_announcements_page', guild_id=guild_id))
+                db.execute_query(
+                    '''INSERT INTO youtube_announcements 
+                    (guild_id, channel_id, announce_channel_id, message, role_id, created_by, live_stream)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    (guild_id, target_channel_id, announce_channel_id, message, role_id, user_id, live_stream)
+                )
+            elif action == 'edit_video':
+                video_id = request.form.get('announcement_id') or request.form.get('video_id')
+                announce_channel_id = request.form.get('channel_id')
+                target_channel_id = request.form.get('target_channel_id')
+                message = request.form.get('message')
+                role_id = request.form.get('role_id') or None
+                live_stream = 1 if request.form.get('live_stream') == '1' else 0
+                db.execute_query(
+                    'UPDATE youtube_announcements SET channel_id=?, announce_channel_id=?, role_id=?, message=?, live_stream=? WHERE id=? AND guild_id=?',
+                    (target_channel_id, announce_channel_id, role_id, message, live_stream, video_id, guild_id)
+                )
+                flash('YouTube announcement updated!', 'success')
+                return redirect(request.url)
+            elif action == 'delete_video':
+                announcement_id = request.form['announcement_id']
+                db.execute_query(
+                    'DELETE FROM youtube_announcements WHERE id = ? AND guild_id = ?',
+                    (announcement_id, guild_id)
+                )
+            elif action == 'toggle_video':
+                announcement_id = request.form['announcement_id']
+                enabled = request.form['enabled'] == 'true'
+                db.execute_query(
+                    'UPDATE youtube_announcements SET enabled = ? WHERE id = ? AND guild_id = ?',
+                    (int(enabled), announcement_id, guild_id)
+                )
+            flash('Settings updated successfully', 'success')
+            return redirect(url_for('youtube_announcements_page', guild_id=guild_id))
+        except Exception as e:
+            logger.error(f"YouTube config error: {str(e)}")
+            flash('Error saving configuration', 'danger')
+
+    return render_template('youtube_announcements.html',
+                         guild_id=guild_id,
+                         guild=guild,
+                         channels=channels,
+                         roles=roles,
+                         youtube_announcements=youtube_announcements,
+                         get_channel_name=get_channel_name,
                          DEFAULT_VIDEO_MESSAGE=DEFAULT_VIDEO_MESSAGE)
+
+# Role Menus Management
+@app.route('/dashboard/<guild_id>/role-menus')
+@login_required
+@guild_required
+def role_menus(guild_id):
+    debug_print(f"Entering role_menus route with guild_id: {guild_id}", level="all")
+    guild = get_guild_or_404(guild_id)
+    menus = db.execute_query(
+        'SELECT * FROM role_menus WHERE guild_id = ?',
+        (guild_id,),
+        fetch='all'
+    )
+    channels = get_text_channels(guild_id)
+    return render_template('role_menus.html', guild=guild, guild_id=guild_id, menus=menus, channels=channels)
 
 # Role Menu Editing
 @app.route('/dashboard/<guild_id>/<menu_type>/<menu_id>', methods=['GET', 'POST'])
 @login_required
 @guild_required
 def edit_role_menu(guild_id, menu_type, menu_id):
+    debug_print(f"Entering edit_role_menu route with guild_id: {guild_id}, menu_type: {menu_type}, menu_id: {menu_id}", level="all")
     # Validate menu_type
     if menu_type not in ('dropdown', 'reactionrole', 'button'):
         abort(404)
@@ -1776,6 +2059,8 @@ def edit_role_menu(guild_id, menu_type, menu_id):
         flash('Saved!', 'success')
         return redirect(request.url)
 
+    # Generate JWT for frontend API calls
+    jwt_token = generate_jwt()
     return render_template(
         f'edit_{menu_type}.html',
         guild_id=guild_id,
@@ -1783,26 +2068,15 @@ def edit_role_menu(guild_id, menu_type, menu_id):
         config=config,
         roles=roles,
         channels=channels,
-        API_URL=API_URL
+        API_URL=API_URL,
+        jwt_token=jwt_token
     )
-
-# Role Menus Management
-@app.route('/dashboard/<guild_id>/role-menus')
-@login_required
-@guild_required
-def role_menus(guild_id):
-    menus = db.execute_query(
-        'SELECT * FROM role_menus WHERE guild_id = ?',
-        (guild_id,),
-        fetch='all'
-    )
-    channels = get_text_channels(guild_id)
-    return render_template('role_menus.html', guild_id=guild_id, menus=menus, channels=channels)
 
 @app.route('/api/<guild_id>/create_role_menu', methods=['POST'])
 @login_required
 @guild_required
 def api_create_role_menu(guild_id=None):
+    debug_print(f"Entering api_create_role_menu route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
         data = request.get_json(force=True)
@@ -1837,11 +2111,28 @@ def api_create_role_menu(guild_id=None):
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# Delete Role Menu
+@app.route('/api/<guild_id>/role_menus/<menu_id>/delete', methods=['POST'])
+@login_required
+@guild_required
+def delete_role_menu(guild_id, menu_id):
+    debug_print(f"Entering delete_role_menu route with guild_id: {guild_id}, menu_id: {menu_id}", level="all")
+    try:
+        db.execute_query(
+            'DELETE FROM role_menus WHERE id = ? AND guild_id = ?',
+            (menu_id, guild_id)
+        )
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Error deleting role menu {menu_id} for guild {guild_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # Backups Management
 @app.route('/dashboard/<guild_id>/backups', methods=['GET', 'POST'])
 @login_required
 @guild_required
 def guild_backups(guild_id):
+    debug_print(f"Entering guild_backups route with guild_id: {guild_id}", level="all")
     try:
         if request.method == 'POST':
             api_url = f"{API_URL}/api/start_backup"
@@ -1868,6 +2159,7 @@ def guild_backups(guild_id):
 @login_required
 @guild_required
 def backup_progress(guild_id):
+    debug_print(f"Entering backup_progress route with guild_id: {guild_id}", level="all")
     try:
         api_url = f"{API_URL}/api/backup_progress?guild_id={guild_id}"
         resp = jwt_requests.get(api_url, timeout=1)
@@ -1880,6 +2172,7 @@ def backup_progress(guild_id):
 @login_required
 @guild_required
 def download_backup(guild_id, backup_id):
+    debug_print(f"Entering download_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     try:
         backup = get_backup(backup_id, guild_id)
         if not backup:
@@ -1898,6 +2191,7 @@ def download_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def restore_backup(guild_id, backup_id):
+    debug_print(f"Entering restore_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     try:
         backup = get_backup(backup_id, guild_id)
         if not backup or not os.path.exists(backup['file_path']):
@@ -1926,6 +2220,7 @@ def restore_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def delete_backup(guild_id, backup_id):
+    debug_print(f"Entering delete_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     try:
         backup = get_backup(backup_id, guild_id)
         if not backup:
@@ -1947,6 +2242,7 @@ def delete_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def share_backup(guild_id, backup_id):
+    debug_print(f"Entering share_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     share_id = set_backup_share_id(backup_id, guild_id)
     flash(f'Share link created: {FRONTEND_URL}/backup/{share_id}', 'success')
     return redirect(url_for('guild_backups', guild_id=guild_id))
@@ -1955,6 +2251,7 @@ def share_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def import_backup(guild_id):
+    debug_print(f"Entering import_backup route with guild_id: {guild_id}", level="all")
     file = request.files.get('backup_file')
     if not file or not file.filename.endswith('.json'):
         flash('Please upload a valid backup JSON file.', 'danger')
@@ -1971,6 +2268,7 @@ def import_backup(guild_id):
 @login_required
 @guild_required
 def import_backup_url(guild_id):
+    debug_print(f"Entering import_backup_url route with guild_id: {guild_id}", level="all")
     backup_url = request.form.get('backup_url', '').strip()
     if not backup_url or not backup_url.startswith('http'):
         flash('Please enter a valid backup share URL.', 'danger')
@@ -1990,6 +2288,7 @@ def import_backup_url(guild_id):
 
 @app.route('/share/backup/<share_id>')
 def public_backup_download(share_id):
+    debug_print(f"Entering public_backup_download route with share_id: {share_id}", level="all")
     backup = get_backup_by_share_id(share_id)
     if not backup or not os.path.exists(backup['file_path']):
         return "Backup not found or file missing.", 404
@@ -1999,6 +2298,7 @@ def public_backup_download(share_id):
 @login_required
 @guild_required
 def schedule_backup(guild_id):
+    debug_print(f"Entering schedule_backup route with guild_id: {guild_id}", level="all")
     if request.method == 'POST':
         start_date = request.form.get('start_date')
         start_time = request.form.get('start_time')
@@ -2021,7 +2321,7 @@ def schedule_backup(guild_id):
             api_url = f"{API_URL}/api/reload_schedules"
             resp = jwt_requests.post(api_url, timeout=5)
         except Exception as e:
-            print(f"[WARNING] Could not notify bot to reload schedules: {e}")
+            debug_print(f"[WARNING] Could not notify bot to reload schedules: {e}")
 
         return redirect(url_for('schedule_backup', guild_id=guild_id))
 
@@ -2086,6 +2386,7 @@ def schedule_backup(guild_id):
 @login_required
 @guild_required
 def delete_schedule(guild_id, schedule_id):
+    debug_print(f"Entering delete_schedule route with guild_id: {guild_id}, schedule_id: {schedule_id}", level="all")
     try:
         with get_conn() as conn:
             conn.execute('DELETE FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id))
@@ -2099,6 +2400,7 @@ def delete_schedule(guild_id, schedule_id):
 @login_required
 @guild_required
 def toggle_schedule(guild_id, schedule_id):
+    debug_print(f"Entering toggle_schedule route with guild_id: {guild_id}, schedule_id: {schedule_id}", level="all")
     with get_conn() as conn:
         sched = conn.execute('SELECT enabled FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id)).fetchone()
         if sched:
@@ -2114,6 +2416,7 @@ def toggle_schedule(guild_id, schedule_id):
 @login_required
 @guild_required
 def warnings(guild_id):
+    debug_print(f"Entering warnings route with guild_id: {guild_id}", level="all")
     try:
         # First try to update usernames from Discord API
         update_usernames_from_discord(guild_id)
@@ -2137,6 +2440,7 @@ def warnings(guild_id):
         abort(500, description="Could not retrieve warnings")
 
 def update_usernames_from_discord(guild_id):
+    debug_print(f"Entering update_usernames_from_discord with guild_id: {guild_id}", level="all")
     """Update usernames from Discord API for users with warnings"""
     try:
         # Get unique user IDs with warnings
@@ -2168,6 +2472,7 @@ def update_usernames_from_discord(guild_id):
 @login_required
 @guild_required
 def user_warnings(guild_id, user_id):
+    debug_print(f"Entering user_warnings route with guild_id: {guild_id}, user_id: {user_id}", level="all")
     if request.method == 'POST':
         # Verify CSRF token first
         try:
@@ -2203,6 +2508,7 @@ def user_warnings(guild_id, user_id):
 @login_required
 @guild_required
 def delete_warning(guild_id, user_id, warning_id):
+    debug_print(f"Entering delete_warning route with guild_id: {guild_id}, user_id: {user_id}, warning_id: {warning_id}", level="all")
     guild = get_guild_or_404(guild_id)
     db.remove_warning(guild_id, user_id, warning_id)
     flash('Warning deleted successfully', 'success')
@@ -2214,6 +2520,7 @@ def delete_warning(guild_id, user_id, warning_id):
 @login_required
 @guild_required
 def warning_actions_config(guild_id):
+    debug_print(f"Entering warning_actions_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     actions = db.get_warning_actions(guild_id)
 
@@ -2274,6 +2581,7 @@ def warning_actions_config(guild_id):
 @login_required
 @guild_required
 def spam_config(guild_id):
+    debug_print(f"Entering spam_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     config = db.get_spam_config(guild_id)
     text_channels = get_text_channels(guild_id)
@@ -2291,7 +2599,8 @@ def spam_config(guild_id):
                 "excluded_channels": request.form.getlist("excluded_channels"),
                 "excluded_roles": request.form.getlist("excluded_roles"),
                 "enabled": enabled,
-                "spam_strikes_before_warning": int(request.form.get("spam_strikes_before_warning", 1))
+                "spam_strikes_before_warning": int(request.form.get("spam_strikes_before_warning", 1)),
+                "no_xp_duration": int(request.form.get("no_xp_duration", 60))
             }
 
             if any(val < 1 for val in [
@@ -2299,7 +2608,8 @@ def spam_config(guild_id):
                 new_config["spam_time_window"],
                 new_config["mention_threshold"],
                 new_config["mention_time_window"],
-                new_config["spam_strikes_before_warning"]
+                new_config["spam_strikes_before_warning"],
+                new_config["no_xp_duration"]
             ]):
                 flash("All thresholds and windows must be at least 1", "danger")
                 return redirect(url_for("spam_config", guild_id=guild_id))
@@ -2313,6 +2623,7 @@ def spam_config(guild_id):
                 "excluded_roles": [],
                 "enabled": True,
                 "spam_strikes_before_warning": 1,
+                "no_xp_duration": 60,
                 **new_config
             }
 
@@ -2338,6 +2649,7 @@ def spam_config(guild_id):
 @login_required
 @guild_required
 def custom_forms_dashboard(guild_id):
+    debug_print(f"Entering custom_forms_dashboard route with guild_id: {guild_id}", level="all")
     forms = db.execute_query(
         'SELECT * FROM custom_forms WHERE guild_id = ? OR is_template = 1 ORDER BY is_template DESC, created_at DESC',
         (guild_id,),
@@ -2350,7 +2662,8 @@ def custom_forms_dashboard(guild_id):
 @login_required
 @guild_required
 def create_custom_form(guild_id):
-    with open(os.path.join('web', 'static', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
+    debug_print(f"Entering create_custom_form route with guild_id: {guild_id}", level="all")
+    with open(os.path.join('web', 'static', 'other', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
         prebuilt_templates = json.load(f)
     if request.method == 'POST':
         data = request.get_json(force=True)
@@ -2368,7 +2681,8 @@ def create_custom_form(guild_id):
 @login_required
 @guild_required
 def edit_custom_form(guild_id, form_id):
-    with open(os.path.join('web', 'static', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
+    debug_print(f"Entering edit_custom_form route with guild_id: {guild_id}, form_id: {form_id}", level="all")
+    with open(os.path.join('web', 'static', 'other', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
         prebuilt_templates = json.load(f)
     form = db.execute_query(
         'SELECT * FROM custom_forms WHERE id = ? AND guild_id = ?',
@@ -2391,6 +2705,7 @@ def edit_custom_form(guild_id, form_id):
 @login_required
 @guild_required
 def delete_custom_form(guild_id, form_id):
+    debug_print(f"Entering delete_custom_form route with guild_id: {guild_id}, form_id: {form_id}", level="all")
     db.execute_query('DELETE FROM custom_forms WHERE id = ? AND guild_id = ?', (form_id, guild_id))
     flash('Form deleted.', 'success')
     return redirect(url_for('custom_forms_dashboard', guild_id=guild_id))
@@ -2398,6 +2713,7 @@ def delete_custom_form(guild_id, form_id):
 # @app.route('/forms/import/<share_id>', methods=['GET', 'POST'])
 # @login_required
 # def import_shared_form(share_id):
+#     debug_print(f"Entering import_shared_form route with share_id: {share_id}", level="all")
 #     form = db.execute_query('SELECT * FROM custom_forms WHERE share_id = ?', (share_id,), fetch='one')
 #     if not form:
 #         abort(404)
@@ -2416,6 +2732,7 @@ def delete_custom_form(guild_id, form_id):
 @app.route('/api/forms/<form_id>/submit', methods=['POST'])
 @login_required
 def submit_custom_form(form_id):
+    debug_print(f"Entering submit_custom_form route with form_id: {form_id}", level="all")
     try:
         data = request.get_json(force=True)
         user_id = session['user']['id']
@@ -2477,16 +2794,19 @@ def submit_custom_form(form_id):
 @login_required
 @guild_required
 def view_form_submissions(guild_id, form_id):
+    debug_print(f"Entering view_form_submissions route with guild_id: {guild_id}, form_id: {form_id}", level="all")
+    guild = get_guild_or_404(guild_id)
     submissions = db.execute_query(
         'SELECT * FROM form_submissions WHERE form_id = ? AND guild_id = ? ORDER BY submitted_at DESC',
         (form_id, guild_id),
         fetch='all'
     )
-    return render_template('form_submissions.html', submissions=submissions)
+    return render_template('form_submissions.html', submissions=submissions, guild=guild, guild_id=guild_id, form_id=form_id)
 
 @app.route('/forms/<form_id>/fill', methods=['GET'])
 @login_required
 def public_form_fill(form_id):
+    debug_print(f"Entering public_form_fill route with form_id: {form_id}", level="all")
     form = db.execute_query(
         'SELECT * FROM custom_forms WHERE id = ?',
         (form_id,),
@@ -2497,11 +2817,196 @@ def public_form_fill(form_id):
     config = json.loads(form['config'])
     return render_template('public_form_fill.html', form=form, config=config)
 
+# Export route
+@app.route('/api/<guild_id>/export', methods=['POST'])
+@login_required
+@guild_required
+def export_guild_data(guild_id):
+    options = request.json.get('options', [])
+    if not options:
+        return jsonify({'error': 'No export options selected.'}), 400
+    mem_zip = io.BytesIO()
+    with zipfile.ZipFile(mem_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for opt in options:
+            if opt == 'backup-restore/backups':
+                # Add all backup files for this guild
+                backups = get_backups(guild_id)
+                for b in backups:
+                    path = b['file_path'] if 'file_path' in b.keys() else None
+                    if path and os.path.isfile(path):
+                        try:
+                            arcname = f"export/backup-restore/backups/{os.path.basename(path)}"
+                            zf.write(path, arcname)
+                        except Exception:
+                            continue
+            elif opt in EXPORT_MAP:
+                data = EXPORT_MAP[opt](guild_id)
+                arcname = f"export/{opt}"
+                zf.writestr(arcname, json.dumps(data, indent=2, default=str).encode('utf-8'))
+    mem_zip.seek(0)
+    return send_file(
+        mem_zip,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name='export.zip'
+    )
+
+# Import route
+@app.route('/api/<guild_id>/import', methods=['POST'])
+@login_required
+@guild_required
+def import_guild_data(guild_id):
+    if 'import_file' not in request.files:
+        return jsonify({'error': 'No file uploaded.'}), 400
+    file = request.files['import_file']
+    if not file or not file.filename.endswith('.zip'):
+        return jsonify({'error': 'Invalid file.'}), 400
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zip_path = os.path.join(tmpdir, 'import.zip')
+        file.save(zip_path)
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for member in zf.namelist():
+                if not member.startswith('export/'):
+                    continue
+                rel_path = member[len('export/'):]
+                if rel_path == 'backup-restore/backups/' or rel_path.endswith('/'):
+                    continue
+                content = zf.read(member)
+                # Handle each file type
+                if rel_path == 'server-configuration/commands.json':
+                    try:
+                        commands = json.loads(content)
+                        for cmd in commands:
+                            db.add_command(guild_id, cmd['command_name'], cmd['content'], cmd.get('description', ''), cmd.get('ephemeral', True))
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/command-permissions.json':
+                    try:
+                        perms = json.loads(content)
+                        for p in perms:
+                            db.set_command_permissions(guild_id, p['command_name'], p.get('allow_roles', []), p.get('allow_users', []), p.get('is_custom', False))
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/blocked-words.json':
+                    try:
+                        words = json.loads(content)
+                        for w in words:
+                            db.add_blocked_word(guild_id, w)
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/logging.json':
+                    try:
+                        config = json.loads(content)
+                        db.update_log_config(guild_id, **config)
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/welcome-message.json':
+                    try:
+                        config = json.loads(content)
+                        db.update_welcome_config(guild_id, **config)
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/goodbye-message.json':
+                    try:
+                        config = json.loads(content)
+                        db.update_goodbye_config(guild_id, **config)
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/auto-assign-role.json':
+                    try:
+                        roles = json.loads(content)
+                        db.update_autoroles(guild_id, roles)
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/spam.json':
+                    try:
+                        config = json.loads(content)
+                        db.update_spam_config(guild_id, **config)
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/warning-actions.json':
+                    try:
+                        actions = json.loads(content)
+                        for a in actions:
+                            db.set_warning_action(guild_id, a['warning_count'], a['action'], a.get('duration_seconds'))
+                    except Exception:
+                        continue
+                elif rel_path == 'server-configuration/role-menus.json':
+                    try:
+                        menus = json.loads(content)
+                        for m in menus:
+                            db.execute_query('INSERT OR REPLACE INTO role_menus (guild_id, menu_id, config) VALUES (?, ?, ?)', (guild_id, m['menu_id'], json.dumps(m['config'])))
+                    except Exception:
+                        continue
+                elif rel_path == 'leveling-system/leveling.json':
+                    try:
+                        config = json.loads(content)
+                        db.update_level_config(guild_id, **config)
+                    except Exception:
+                        continue
+                elif rel_path == 'custom-forms/forms.json':
+                    try:
+                        forms = json.loads(content)
+                        for f in forms:
+                            db.execute_query('INSERT OR REPLACE INTO custom_forms (id, guild_id, name, description, config, is_template, template_source, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (f['id'], guild_id, f['name'], f.get('description', ''), f['config'], f.get('is_template', 0), f.get('template_source'), f.get('created_by')))
+                    except Exception:
+                        continue
+                elif rel_path == 'social-pings/twitch-pings.json':
+                    try:
+                        pings = json.loads(content)
+                        for p in pings:
+                            db.execute_query('INSERT OR REPLACE INTO twitch_announcements (id, guild_id, config) VALUES (?, ?, ?)', (p['id'], guild_id, json.dumps(p['config'])))
+                    except Exception:
+                        continue
+                elif rel_path == 'social-pings/youtube-pings.json':
+                    try:
+                        pings = json.loads(content)
+                        for p in pings:
+                            db.execute_query('INSERT OR REPLACE INTO youtube_announcements (id, guild_id, config) VALUES (?, ?, ?)', (p['id'], guild_id, json.dumps(p['config'])))
+                    except Exception:
+                        continue
+                elif rel_path == 'fun-miscellaneous/game-roles.json':
+                    try:
+                        roles = json.loads(content)
+                        for r in roles:
+                            db.update_game_role(guild_id, r['game_name'], r['role_id'], r['required_time'])
+                    except Exception:
+                        continue
+                elif rel_path == 'backup-restore/backup-schedules.json':
+                    try:
+                        schedules = json.loads(content)
+                        with get_conn() as conn:
+                            for s in schedules:
+                                # Insert or replace into the schedules table in backups DB
+                                conn.execute('''
+                                    INSERT OR REPLACE INTO schedules 
+                                    (id, guild_id, start_date, start_time, frequency_value, frequency_unit, enabled, timezone)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (
+                                    s['id'], guild_id, s.get('start_date'), s.get('start_time'),
+                                    s.get('frequency_value'), s.get('frequency_unit'),
+                                    s.get('enabled', 1), s.get('timezone', 'UTC')
+                                ))
+                    except Exception:
+                        continue
+                elif rel_path.startswith('backup-restore/backups/'):
+                    # Save backup file to backups dir
+                    try:
+                        os.makedirs('backups', exist_ok=True)
+                        fname = os.path.basename(rel_path)
+                        with open(os.path.join('backups', fname), 'wb') as f:
+                            f.write(content)
+                    except Exception:
+                        continue
+    return jsonify({'success': True})
+
 def random_schedule_id():
+    debug_print("Entering random_schedule_id", level="all")
     return ''.join(random.choices('0123456789', k=5))
 
 # Get text channels from Discord API
 def get_text_channels(guild_id):
+    debug_print(f"Entering get_text_channels with guild_id: {guild_id}", level="all")
     """Fetch text channels with caching"""
     if guild_id in channel_cache:
         return channel_cache[guild_id]
@@ -2522,6 +3027,7 @@ def get_text_channels(guild_id):
 
 # Get roles from Discord API
 def get_roles(guild_id, force_refresh=False):
+    debug_print(f"Entering get_roles with guild_id: {guild_id}, force_refresh: {force_refresh}", level="all")
     """Fetch roles for a guild with optional cache bypass"""
     if not force_refresh and guild_id in role_cache:
         return role_cache[guild_id]
@@ -2549,6 +3055,7 @@ def get_roles(guild_id, force_refresh=False):
 
 # Get mutual guilds for a user
 def get_mutual_guilds(user_id, user_access_token=None):
+    debug_print(f"Entering get_mutual_guilds with user_id: {user_id}, user_access_token: {user_access_token}", level="all")
     """
     Returns a list of guilds (servers) the user shares with the bot.
     Each guild is a dict: {'id': '...', 'name': '...', 'icon': '...'}
@@ -2585,6 +3092,7 @@ def get_mutual_guilds(user_id, user_access_token=None):
 
 @app.template_filter('get_username')
 def get_username_filter(user_id):
+    debug_print(f"Entering get_username_filter with user_id: {user_id}", level="all")
     user = db.execute_query(
         'SELECT username FROM users WHERE user_id = ?',
         (user_id,),
@@ -2594,6 +3102,7 @@ def get_username_filter(user_id):
     
 @app.template_filter('get_channel_name')
 def get_channel_name_filter(channel_id, channels):
+    debug_print(f"Entering get_channel_name_filter with channel_id: {channel_id}, channels: {channels}", level="all")
     for channel in channels:
         if str(channel['id']) == str(channel_id):
             return channel['name']
@@ -2601,6 +3110,7 @@ def get_channel_name_filter(channel_id, channels):
 
 @app.template_filter('datetimeformat')
 def datetimeformat(value, format='%Y-%m-%d %H:%M'):
+    debug_print(f"Entering datetimeformat with value: {value}, format: {format}", level="all")
     """
     Jinja2 filter to format a datetime, timestamp, or ISO string for display.
     Handles int/float (timestamp), str (ISO or timestamp), and datetime objects.
@@ -2655,27 +3165,33 @@ def datetimeformat(value, format='%Y-%m-%d %H:%M'):
 # Error Handlers
 @app.errorhandler(CSRFError)
 def handle_csrf_error(e):
+    debug_print(f"Entering handle_csrf_error with error: {e}", level="all")
     flash('Security token expired. Please refresh the page and try again.', 'danger')
     return redirect(request.referrer or url_for('select_guild'))
 
 @app.errorhandler(401)
 def unauthorized(e):
+    debug_print(f"Entering unauthorized error handler with error: {e}", level="all")
     return redirect(url_for('login'))
 
 @app.errorhandler(403)
 def forbidden(e):
+    debug_print(f"Entering forbidden error handler with error: {e}", level="all")
     return render_template('error.html', 
                          error_message=str(e),
                          help_message="Contact your server administrator for access"), 403
 
 @app.errorhandler(404)
 def not_found(e):
+    debug_print(f"Entering not_found error handler with error: {e}", level="all")
+    error_message = getattr(e, 'description', None) or "The page you requested does not exist."
     return render_template('error.html', 
-                        error_message="404 - Page Not Found",
+                        error_message=error_message,
                         help_message="The page you requested does not exist."), 404
-    
+
 @app.errorhandler(500)
 def internal_error(e):
+    debug_print(f"Entering internal_error handler with error: {e}", level="all")
     return render_template('error.html',
                         error_message="Internal Server Error",
                         help_message="Please try again later"), 500

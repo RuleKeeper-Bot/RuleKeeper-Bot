@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Twitch Announcements</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.0/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <style>
+        :root {
+            --primary-color: #5865F2;
+            --secondary-color: #404EED;
+            --dark-color: #23272A;
+            --light-color: #F6F6F6;
+        }
+        body {
+            background-color: #f5f7fb;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .container {
+            max-width: 1200px;
+            margin-top: 2rem;
+            margin-bottom: 3rem;
+        }
+        .card {
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            border: none;
+            margin-bottom: 2rem;
+            overflow: hidden;
+        }
+        .card-header {
+            background-color: var(--primary-color);
+            color: white;
+            font-weight: 600;
+            padding: 1.2rem 1.5rem;
+            border-bottom: none;
+            border-radius: 12px 12px 0 0 !important;
+        }
+        .table {
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+        .table th {
+            background-color: #f8f9fc;
+            font-weight: 600;
+            color: #4a5568;
+            border-top: none;
+            padding: 0.9rem 1.2rem;
+        }
+        .table td {
+            padding: 1rem 1.2rem;
+            vertical-align: middle;
+            border-top: 1px solid #edf2f7;
+        }
+        .table tr:last-child td {
+            border-bottom: 1px solid #edf2f7;
+        }
+        .status-badge {
+            padding: 0.35rem 0.75rem;
+            border-radius: 50px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .status-active {
+            background-color: #e3fcef;
+            color: #0e9f6e;
+        }
+        .status-inactive {
+            background-color: #fdf6b2;
+            color: #c27803;
+        }
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+            border-radius: 8px;
+            padding: 0.5rem 1.2rem;
+            font-weight: 500;
+        }
+        .btn-primary:hover {
+            background-color: var(--secondary-color);
+            border-color: var(--secondary-color);
+        }
+        .btn-outline-primary {
+            color: var(--primary-color);
+            border-color: var(--primary-color);
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        .btn-outline-primary:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .btn-sm {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+        }
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 26px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: var(--primary-color);
+        }
+        input:checked + .slider:before {
+            transform: translateX(24px);
+        }
+        .modal-content {
+            border-radius: 12px;
+            border: none;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        .modal-header {
+            background-color: var(--primary-color);
+            color: white;
+            border-bottom: none;
+            border-radius: 12px 12px 0 0 !important;
+            padding: 1.2rem 1.5rem;
+        }
+        .modal-title {
+            font-weight: 600;
+        }
+        .modal-body {
+            padding: 1.5rem;
+        }
+        .form-label {
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: #2d3748;
+        }
+        .form-control, .form-select {
+            border-radius: 8px;
+            padding: 0.7rem 1rem;
+            border: 1px solid #e2e8f0;
+            transition: border-color 0.2s;
+        }
+        .form-control:focus, .form-select:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.15);
+        }
+        .template-variables {
+            background-color: #f8f9fc;
+            border-radius: 8px;
+            padding: 1.2rem;
+            margin-top: 1.5rem;
+        }
+        .variable-badge {
+            display: inline-block;
+            background-color: #e0e7ff;
+            color: var(--primary-color);
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            margin: 0.25rem;
+            font-size: 0.9rem;
+        }
+        .footer {
+            margin-top: 3rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid #e2e8f0;
+            color: #718096;
+            font-size: 0.9rem;
+        }
+        .preview-box {
+            background-color: #f8f9fc;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-top: 1.5rem;
+            border: 1px dashed #e2e8f0;
+        }
+        .preview-title {
+            font-weight: 600;
+            color: var(--dark-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <div>
+                <h1 class="mb-0">Twitch Announcements</h1>
+                <p class="text-muted">Manage your Twitch live stream notifications</p>
+            </div>
+            <div>
+                <a href="/dashboard/{{ guild_id }}" class="btn btn-outline-primary">
+                    <i class="bi bi-arrow-left me-1"></i> Back to Dashboard
+                </a>
+            </div>
+        </div>
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <i class="bi bi-broadcast me-2"></i> Twitch Announcements
+                </div>
+                <button class="btn btn-light" data-bs-toggle="modal" data-bs-target="#addStreamModal">
+                    <i class="bi bi-plus-lg me-1"></i> Add Stream
+                </button>
+            </div>
+            <div class="card-body p-0">
+                {% if twitch_announcements %}
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th>Streamer Username</th>
+                                <th>Channel</th>
+                                <th>Role</th>
+                                <th>Message</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ann in twitch_announcements %}
+                            <tr>
+                                <td>
+                                    {% if ann.enabled %}
+                                    <span class="status-badge status-active">Active</span>
+                                    {% else %}
+                                    <span class="status-badge status-inactive">Paused</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ ann.streamer_id }}</td>
+                                <td>
+                                    <i class="bi bi-hash"></i> {{ get_channel_name(ann.channel_id) }}
+                                </td>
+                                <td>
+                                    {% if ann.role_id %}
+                                        {% if ann.role_id == "@everyone" %}
+                                            @everyone
+                                        {% else %}
+                                            {% for role in roles %}
+                                                {% if role.id == ann.role_id|string %}
+                                                    @{{ role.name }}
+                                                {% endif %}
+                                            {% endfor %}
+                                        {% endif %}
+                                    {% else %}
+                                        None
+                                    {% endif %}
+                                </td>
+                                <td class="text-truncate" style="max-width: 250px;" title="{{ ann.message }}">
+                                    {{ ann.message }}
+                                </td>
+                                <td>
+                                    <div class="d-flex gap-2">
+                                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#editStreamModal" data-id="{{ ann.id }}">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                        <form method="post" style="display:inline;">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="announcement_id" value="{{ ann.id }}">
+                                            <input type="hidden" name="action" value="delete_stream">
+                                            <button class="btn btn-sm btn-outline-danger" type="submit" onclick="return confirm('Delete this stream announcement?')">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </form>
+                                        <form method="post" style="display:inline;">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="announcement_id" value="{{ ann.id }}">
+                                            <input type="hidden" name="action" value="toggle_stream">
+                                            <input type="hidden" name="enabled" value="{{ not ann.enabled }}">
+                                            <button class="btn btn-sm btn-outline-primary" type="submit">
+                                                {% if ann.enabled %}Disable{% else %}Enable{% endif %}
+                                            </button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-5">
+                    <i class="bi bi-broadcast text-muted" style="font-size: 3rem;"></i>
+                    <h5 class="mt-3">No Twitch Announcements</h5>
+                    <p class="text-muted">Add your first Twitch notification to get started</p>
+                    <button class="btn btn-primary mt-2" data-bs-toggle="modal" data-bs-target="#addStreamModal">
+                        <i class="bi bi-plus-lg me-1"></i> Add Twitch Notification
+                    </button>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        <!-- Add Stream Modal -->
+        <div class="modal fade" id="addStreamModal" tabindex="-1" aria-labelledby="addStreamModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <form class="modal-content" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="add_stream">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="addStreamModalLabel"><i class="bi bi-broadcast me-2"></i> Add Stream Announcement</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="channel_id" class="form-label">Discord Channel</label>
+                                <select name="channel_id" class="form-select" required>
+                                    {% for channel in channels %}
+                                    <option value="{{ channel.id }}">#{{ channel.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="role_id" class="form-label">Role to Mention (optional)</label>
+                                <select name="role_id" class="form-select" id="stream-role-select">
+                                    <option value="">None</option>
+                                    <option value="@everyone">@everyone</option>
+                                    {% for role in roles %}
+                                    <option value="{{ role.id }}">@{{ role.name }}</option>
+                                    {% endfor %}
+                                </select>
+                                <div class="form-text">Use <code>{role}</code> in your message to mention this role.</div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="streamer_id" class="form-label">Streamer Username</label>
+                            <input type="text" name="streamer_id" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="message" class="form-label">Announcement Message</label>
+                            <textarea name="message" class="form-control" id="stream-message-input" rows="3">{{ DEFAULT_STREAM_MESSAGE }}</textarea>
+                        </div>
+                        <div class="template-variables">
+                            <p class="mb-2"><strong>Template Variables:</strong></p>
+                            <div>
+                                <span class="variable-badge">{streamer}</span>
+                                <span class="variable-badge">{title}</span>
+                                <span class="variable-badge">{game}</span>
+                                <span class="variable-badge">{url}</span>
+                                <span class="variable-badge">{role}</span>
+                            </div>
+                        </div>
+                        <div class="preview-box">
+                            <p class="preview-title">Preview:</p>
+                            <p class="mb-1" id="stream-preview">@everyone <strong>YourStreamer</strong> is now live! Playing <strong>Just Chatting</strong> - https://twitch.tv/yourstreamer</p>
+                        </div>
+                    </div>
+                    <div class="modal-footer border-top-0">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Create Notification</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <!-- Edit Stream Modal -->
+        <div class="modal fade" id="editStreamModal" tabindex="-1" aria-labelledby="editStreamModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <form class="modal-content" method="post" id="editStreamForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="action" value="edit_stream">
+                    <input type="hidden" name="announcement_id" id="edit-stream-id">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="editStreamModalLabel"><i class="bi bi-broadcast me-2"></i> Edit Stream Announcement</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="edit-stream-channel" class="form-label">Discord Channel</label>
+                                <select name="channel_id" class="form-select" id="edit-stream-channel" required>
+                                    {% for channel in channels %}
+                                    <option value="{{ channel.id }}">#{{ channel.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="edit-stream-role" class="form-label">Role to Mention (optional)</label>
+                                <select name="role_id" class="form-select" id="edit-stream-role">
+                                    <option value="">None</option>
+                                    <option value="@everyone">@everyone</option>
+                                    {% for role in roles %}
+                                    <option value="{{ role.id }}">@{{ role.name }}</option>
+                                    {% endfor %}
+                                </select>
+                                <div class="form-text">Use <code>{role}</code> in your message to mention this role.</div>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="edit-streamer-id" class="form-label">Streamer Username</label>
+                            <input type="text" name="streamer_id" class="form-control" id="edit-streamer-id" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="edit-stream-message" class="form-label">Announcement Message</label>
+                            <textarea name="message" class="form-control" id="edit-stream-message" rows="3"></textarea>
+                        </div>
+                        <div class="template-variables">
+                            <p class="mb-2"><strong>Template Variables:</strong></p>
+                            <div>
+                                <span class="variable-badge">{streamer}</span>
+                                <span class="variable-badge">{title}</span>
+                                <span class="variable-badge">{game}</span>
+                                <span class="variable-badge">{url}</span>
+                                <span class="variable-badge">{role}</span>
+                            </div>
+                        </div>
+                        <div class="preview-box">
+                            <p class="preview-title">Preview:</p>
+                            <p class="mb-1" id="edit-stream-preview"></p>
+                        </div>
+                    </div>
+                    <div class="modal-footer border-top-0">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Real-time preview for stream notification
+    function getRoleName(roleId) {
+        if (!roleId) return '';
+        if (roleId === "@everyone") return "@everyone";
+        {% for role in roles %}
+        if (roleId == "{{ role.id }}") return "@{{ role.name }}";
+        {% endfor %}
+        return '';
+    }
+    function updateStreamPreview() {
+        var msg = document.getElementById('stream-message-input').value;
+        var streamer = document.querySelector('input[name="streamer_id"]').value || 'Streamer';
+        var roleId = document.getElementById('stream-role-select') ? document.getElementById('stream-role-select').value : '';
+        var url = 'https://twitch.tv/' + streamer;
+        var preview = msg.replace('{streamer}', streamer)
+                         .replace('{url}', url)
+                         .replace('{role}', getRoleName(roleId))
+                         .replace('{title}', 'My Awesome Stream')
+                         .replace('{game}', 'My Awesome Game');
+        document.getElementById('stream-preview').innerHTML = preview;
+    }
+    document.getElementById('stream-message-input').addEventListener('input', updateStreamPreview);
+    document.querySelector('input[name="streamer_id"]').addEventListener('input', updateStreamPreview);
+    document.getElementById('stream-role-select').addEventListener('change', updateStreamPreview);
+    updateStreamPreview();
+
+    // Edit modal logic
+    var editModal = document.getElementById('editStreamModal');
+    editModal.addEventListener('show.bs.modal', function (event) {
+        var button = event.relatedTarget;
+        var id = button.getAttribute('data-id');
+        var ann = window.streamAnnouncements.find(a => a.id == id);
+        if (!ann) return;
+        document.getElementById('edit-stream-id').value = ann.id;
+        document.getElementById('edit-streamer-id').value = ann.streamer_id;
+        document.getElementById('edit-stream-channel').value = ann.channel_id;
+        document.getElementById('edit-stream-role').value = ann.role_id || '';
+        document.getElementById('edit-stream-message').value = ann.message;
+        updateEditStreamPreview();
+    });
+    function updateEditStreamPreview() {
+        var msg = document.getElementById('edit-stream-message').value;
+        var streamer = document.getElementById('edit-streamer-id').value || 'Streamer';
+        var roleId = document.getElementById('edit-stream-role').value;
+        var url = 'https://twitch.tv/' + streamer;
+        var preview = msg.replace('{streamer}', streamer)
+                         .replace('{url}', url)
+                         .replace('{role}', getRoleName(roleId))
+                         .replace('{title}', 'My Awesome Stream')
+                         .replace('{game}', 'My Awesome Game');
+        document.getElementById('edit-stream-preview').innerHTML = preview;
+    }
+    document.getElementById('edit-stream-message').addEventListener('input', updateEditStreamPreview);
+    document.getElementById('edit-stream-role').addEventListener('change', updateEditStreamPreview);
+    document.getElementById('edit-streamer-id').addEventListener('input', updateEditStreamPreview);
+    updateEditStreamPreview();
+
+    // Make announcements available to JS
+    window.streamAnnouncements = {{ twitch_announcements|tojson }};
+    </script>
+    <footer class="footer">
+      <p>
+        &copy; 2025 RuleKeeper. All rights reserved. |
+        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+      </p>
+    </footer>
+</body>
+</html>

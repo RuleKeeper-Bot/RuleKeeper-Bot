@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 from functools import partial
 from bot.bot import log_event
-from typing import Optional
+from typing import Optional, Union
 import re
 import random
 import string
@@ -15,6 +15,12 @@ from pytz import timezone as pytz_timezone, all_timezones
 from datetime import datetime, timedelta
 from bot.bot import save_guild_backup, load_schedules, restore_guild_backup as restore
 from backups.backups import get_backup, get_conn
+from shared import command_permission_check
+try:
+    from bot.bot import debug_print
+except ImportError:
+    def debug_print(*args, **kwargs):
+        pass
 
 def random_id(length=6):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -49,8 +55,28 @@ class ContinueCancelView(discord.ui.View):
         self.stop()
         await interaction.response.defer()
 
+@app_commands.autocomplete(permissions=True)
+async def permissions_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for Discord permissions."""
+    all_perms = [
+        'add_reactions', 'administrator', 'attach_files', 'ban_members', 'change_nickname', 'connect',
+        'create_instant_invite', 'deafen_members', 'embed_links', 'kick_members', 'manage_channels',
+        'manage_emojis_and_stickers', 'manage_events', 'manage_guild', 'manage_messages', 'manage_nicknames',
+        'manage_roles', 'manage_threads', 'manage_webhooks', 'mention_everyone', 'moderate_members',
+        'move_members', 'mute_members', 'priority_speaker', 'read_message_history', 'read_messages',
+        'request_to_speak', 'send_messages', 'send_messages_in_threads', 'send_tts_messages', 'speak',
+        'stream', 'use_application_commands', 'use_embedded_activities', 'use_external_emojis',
+        'use_external_stickers', 'use_voice_activation', 'view_audit_log', 'view_channel', 'view_guild_insights'
+    ]
+    matches = [p for p in all_perms if current.lower() in p.lower()]
+    return [app_commands.Choice(name=p.replace('_', ' ').title(), value=p) for p in matches[:25]]
+
 class UtilitiesCog(commands.Cog):
     def __init__(self, bot):
+        debug_print(f"Entering UtilitiesCog.__init__ with bot: {bot}", level="all")
         self.bot = bot
         self.db = bot.db
         
@@ -58,100 +84,16 @@ class UtilitiesCog(commands.Cog):
     def validate_command_name(name: str) -> bool:
         """Validate command name format"""
         return re.fullmatch(r'^[\w-]{1,32}$', name) is not None
-    
-    # Autocompletes
-    @app_commands.autocomplete(backup_id=True)
-    async def backup_id_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str
-    ) -> list[app_commands.Choice[str]]:
-        """Autocomplete for backup IDs with info (local time, pretty label, timezone name)."""
-        guild_id = str(interaction.guild.id)
-        with get_conn() as conn:
-            backups = conn.execute(
-                'SELECT id, created_at, file_path FROM backups WHERE guild_id = ? ORDER BY created_at DESC',
-                (guild_id,)
-            ).fetchall()
-        # Try to get the guild's preferred timezone from the latest schedule, fallback to UTC
-        with get_conn() as conn:
-            sched = conn.execute(
-                'SELECT timezone FROM schedules WHERE guild_id = ? ORDER BY id DESC LIMIT 1', (guild_id,)
-            ).fetchone()
-        tz_str = sched['timezone'] if sched and sched['timezone'] else 'UTC'
-        try:
-            local_tz = pytz_timezone(tz_str)
-        except Exception:
-            local_tz = pytz_timezone('UTC')
-            tz_str = 'UTC'
-        choices = []
-        for b in backups:
-            # Convert from UTC timestamp to local time in the preferred timezone
-            dt_utc = datetime.utcfromtimestamp(b['created_at']).replace(tzinfo=pytz_timezone('UTC'))
-            dt_local = dt_utc.astimezone(local_tz)
-            dt_str = dt_local.strftime('%Y-%m-%d %I:%M %p')
-            label = f"ID: {b['id']} | Created: {dt_str} ({tz_str}) | File: {os.path.basename(b['file_path'])}"
-            if current in str(b['id']):
-                choices.append(app_commands.Choice(name=label, value=str(b['id'])))
-            if len(choices) >= 25:
-                break
-        return choices
-
-    @app_commands.autocomplete(schedule_id=True)
-    async def schedule_id_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str
-    ) -> list[app_commands.Choice[str]]:
-        """Autocomplete for schedule IDs with info (local time, pretty label)."""
-        guild_id = str(interaction.guild.id)
-        with get_conn() as conn:
-            schedules = conn.execute(
-                'SELECT * FROM schedules WHERE guild_id = ? ORDER BY start_date, start_time',
-                (guild_id,)
-            ).fetchall()
-        choices = []
-        for s in schedules:
-            tz_str = s['timezone'] if 'timezone' in s.keys() and s['timezone'] else 'UTC'
-            try:
-                local_tz = pytz_timezone(tz_str)
-            except Exception:
-                local_tz = pytz_timezone('UTC')
-            # Parse local start datetime
-            try:
-                start_dt_local = local_tz.localize(datetime.strptime(f"{s['start_date']} {s['start_time']}", "%Y-%m-%d %H:%M"))
-                dt_str = start_dt_local.strftime('%Y-%m-%d %I:%M %p')
-            except Exception:
-                dt_str = f"{s['start_date']} {s['start_time']}"
-            label = (
-                f"ID: {s['id']} | Start: {dt_str} | Every {s['frequency_value']} {s['frequency_unit']} "
-                f"({tz_str}) {'(enabled)' if s['enabled'] else '(disabled)'}"
-            )
-            if current in str(s['id']):
-                choices.append(app_commands.Choice(name=label, value=str(s['id'])))
-            if len(choices) >= 25:
-                break
-        return choices
-    
-    @app_commands.autocomplete(timezone=True)
-    async def timezone_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str
-    ) -> list[app_commands.Choice[str]]:
-        # Show up to 25 matching timezones
-        matches = [tz for tz in all_timezones if current.lower() in tz.lower()]
-        return [app_commands.Choice(name=tz, value=tz) for tz in matches[:25]]
 
     # Commands
     @app_commands.command(name="create_command", description="Create a custom command")
+    @command_permission_check("create_command")
     @app_commands.describe(
         command_name="Command name (no spaces)",
         content="Response content",
         description="Command description",
         ephemeral="Hide response from others"
     )
-    @app_commands.checks.has_permissions(administrator=True)
     async def create_custom_command(
         self,
         interaction: discord.Interaction,
@@ -160,6 +102,7 @@ class UtilitiesCog(commands.Cog):
         description: str = "Custom command",
         ephemeral: bool = True
     ):
+        debug_print(f"Entering /create_custom_command with interaction: {interaction}, command_name: {command_name}, content: {content}, description: {description}, ephemeral: {ephemeral}", level="all")
         guild_id = str(interaction.guild.id)
 
         # Validate command name
@@ -189,7 +132,8 @@ class UtilitiesCog(commands.Cog):
             return
 
         # Create proper callback with closure
-        async def command_callback(interaction: discord.Interaction):
+        @command_permission_check(command_name, is_custom=True)
+        async def command_callback(self, interaction: discord.Interaction):
             await self.handle_custom_command(interaction, cmd_data)
 
         try:
@@ -206,7 +150,7 @@ class UtilitiesCog(commands.Cog):
             cmd = app_commands.Command(
                 name=command_name,
                 description=description,
-                callback=command_callback
+                callback=partial(command_callback, self)
             )
             
             # Store in bot registry
@@ -229,6 +173,7 @@ class UtilitiesCog(commands.Cog):
             traceback.print_exc()
 
     async def handle_custom_command(self, interaction: discord.Interaction, cmd_data: dict):
+        debug_print(f"Entering /handle_custom_command with interaction: {interaction}, cmd_data: {cmd_data}", level="all")
         """Handler for custom commands"""
         try:
             response = cmd_data['content']
@@ -249,12 +194,13 @@ class UtilitiesCog(commands.Cog):
                 "❌ Error executing command",
                 ephemeral=True
             )
-            print(f"Custom command error: {str(e)}")
+            debug_print(f"[Custom Command Error]: {str(e)}")
 
     @app_commands.command(name="delete_command", description="Remove a custom command")
+    @command_permission_check("delete_command")
     @app_commands.describe(command_name="Name of command to remove")
-    @app_commands.checks.has_permissions(administrator=True)
     async def delete_command(self, interaction: discord.Interaction, command_name: str):
+        debug_print(f"Entering /delete_command with interaction: {interaction}, command_name: {command_name}", level="all")
         guild_id = str(interaction.guild.id)
         
         # Find command in database
@@ -296,8 +242,428 @@ class UtilitiesCog(commands.Cog):
             f"Command '/{command_name}' deleted successfully!",
             ephemeral=True
         )
+        
+    @app_commands.command(name="role", description="Give or take a role from a user")
+    @command_permission_check("role")
+    @app_commands.describe(
+        action="Give or take the role",
+        role="Role to give or take",
+        user="User to modify"
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Give", value="give"),
+        app_commands.Choice(name="Take", value="take")
+    ])
+    async def role(
+        self,
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str],
+        role: discord.Role,
+        user: discord.Member
+    ):
+        debug_print(f"Entering /role with interaction: {interaction}, action: {action}, role: {role}, user: {user}", level="all")
+        author = interaction.user
+
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.manage_roles:
+            await interaction.response.send_message(
+                "I need the 'Manage Roles' permission to do this.", ephemeral=True
+            )
+            return
+
+        # Check role hierarchy
+        if role >= interaction.guild.me.top_role:
+            await interaction.response.send_message(
+                "I can't manage that role because it's higher than my top role.", ephemeral=True
+            )
+            return
+
+        if action.value == "give":
+            if role in user.roles:
+                await interaction.response.send_message(
+                    f"{user.mention} already has the {role.mention} role.", ephemeral=True
+                )
+                return
+            try:
+                await user.add_roles(role, reason=f"Role given by {author}")
+                await interaction.response.send_message(
+                    f"Gave {role.mention} to {user.mention}.", ephemeral=True
+                )
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "I don't have permission to give that role.", ephemeral=True
+                )
+        elif action.value == "take":
+            if role not in user.roles:
+                await interaction.response.send_message(
+                    f"{user.mention} does not have the {role.mention} role.", ephemeral=True
+                )
+                return
+            try:
+                await user.remove_roles(role, reason=f"Role removed by {author}")
+                await interaction.response.send_message(
+                    f"Removed {role.mention} from {user.mention}.", ephemeral=True
+                )
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "I don't have permission to remove that role.", ephemeral=True
+                )
+        else:
+            await interaction.response.send_message(
+                "Invalid action. Use 'give' or 'take'.", ephemeral=True
+            )
+            
+    @app_commands.command(name="create_role", description="Create a new role with optional permissions")
+    @command_permission_check("create_role")
+    @app_commands.describe(
+        name="Name of the new role",
+        color="Hex color (e.g. #7289da) or leave blank",
+        permissions="Comma-separated permissions",
+        mentionable="Allow everyone to mention this role",
+        hoist="Display role separately from online members",
+        perms_integer="Permissions integer (overrides permissions if provided)"
+    )
+    @app_commands.autocomplete(permissions=permissions_autocomplete)
+    async def create_role(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        color: Optional[str] = None,
+        permissions: Optional[str] = None,
+        mentionable: bool = False,
+        hoist: bool = False,
+        perms_integer: Optional[int] = None
+    ):
+        debug_print(f"Entering /create_role with interaction: {interaction}, name: {name}, color: {color}, permissions: {permissions}, mentionable: {mentionable}, hoist: {hoist}", level="all")
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        # Parse color
+        role_color = None
+        if color:
+            try:
+                if color.startswith('#'):
+                    color = color[1:]
+                role_color = discord.Color(int(color, 16))
+            except Exception:
+                await interaction.response.send_message("Invalid color format. Use hex like #7289da.", ephemeral=True)
+                return
+        # Parse permissions
+        if perms_integer is not None:
+            perms = discord.Permissions(perms_integer)
+        else:
+            perms = discord.Permissions.none()
+            if permissions:
+                perms_list = [p.strip() for p in permissions.split(',') if p.strip()]
+                invalid = []
+                for p in perms_list:
+                    if hasattr(perms, p):
+                        setattr(perms, p, True)
+                    else:
+                        invalid.append(p)
+                if invalid:
+                    await interaction.response.send_message(f"Invalid permission(s): {', '.join(invalid)}", ephemeral=True)
+                    return
+        try:
+            new_role = await guild.create_role(
+                name=name,
+                colour=role_color or discord.Color.default(),
+                permissions=perms,
+                mentionable=mentionable,
+                hoist=hoist,
+                reason=f"Created by {interaction.user} via /create_role"
+            )
+            await interaction.response.send_message(f"✅ Created role {new_role.mention}", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to create role: {e}", ephemeral=True)
+
+    @app_commands.command(name="delete_role", description="Delete a role by name or mention")
+    @command_permission_check("delete_role")
+    @app_commands.describe(role="Role to delete")
+    async def delete_role(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role
+    ):
+        debug_print(f"Entering /delete_role with interaction: {interaction}, role: {role}", level="all")
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        # Check bot permissions and hierarchy
+        if not guild.me.guild_permissions.manage_roles:
+            await interaction.response.send_message("I need the 'Manage Roles' permission to delete roles.", ephemeral=True)
+            return
+        if role >= guild.me.top_role:
+            await interaction.response.send_message("I can't delete that role because it's higher than my top role.", ephemeral=True)
+            return
+        try:
+            await role.delete(reason=f"Deleted by {interaction.user} via /delete_role")
+            await interaction.response.send_message(f"✅ Deleted role `{role.name}`.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to delete that role.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to delete role: {e}", ephemeral=True)
                 
+    @app_commands.command(name="edit_role", description="Edit a role's name, color, allowed/denied permissions, mentionable, or hoist")
+    @command_permission_check("edit_role")
+    @app_commands.describe(
+        role="Role to edit",
+        name="New name (leave blank to keep current)",
+        color="New hex color (e.g. #7289da) or leave blank",
+        allow_perms="Comma-separated permissions to allow (leave blank to keep current)",
+        deny_perms="Comma-separated permissions to deny (leave blank to keep current)",
+        mentionable="Allow everyone to mention this role",
+        hoist="Display role separately from online members",
+        perms_integer="Permissions integer (overrides allow/deny perms if provided)"
+    )
+    @app_commands.autocomplete(allow_perms=permissions_autocomplete, deny_perms=permissions_autocomplete)
+    async def edit_role(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        name: Optional[str] = None,
+        color: Optional[str] = None,
+        allow_perms: Optional[str] = None,
+        deny_perms: Optional[str] = None,
+        mentionable: Optional[bool] = None,
+        hoist: Optional[bool] = None,
+        perms_integer: Optional[int] = None
+    ):
+        debug_print(f"Entering /edit_role with interaction: {interaction}, role: {role}, name: {name}, color: {color}, allow_perms: {allow_perms}, deny_perms: {deny_perms}, mentionable: {mentionable}, hoist: {hoist}", level="all")
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        # Check bot permissions and hierarchy
+        if not guild.me.guild_permissions.manage_roles:
+            await interaction.response.send_message("I need the 'Manage Roles' permission to edit roles.", ephemeral=True)
+            return
+        if role >= guild.me.top_role:
+            await interaction.response.send_message("I can't edit that role because it's higher than my top role.", ephemeral=True)
+            return
+        kwargs = {}
+        if name:
+            kwargs['name'] = name
+        if color:
+            try:
+                kwargs['colour'] = discord.Color(int(color.lstrip('#'), 16))
+            except Exception:
+                await interaction.response.send_message("Invalid color format. Use hex like #7289da.", ephemeral=True)
+                return
+        # Permissions logic
+        if perms_integer is not None:
+            kwargs['permissions'] = discord.Permissions(perms_integer)
+        elif allow_perms or deny_perms:
+            perms = role.permissions.value
+            allow = discord.Permissions(perms)
+            deny = discord.Permissions.none()
+            invalid_allow = []
+            invalid_deny = []
+            if allow_perms:
+                for p in [perm.strip() for perm in allow_perms.split(',') if perm.strip()]:
+                    if p in discord.Permissions.VALID_FLAGS:
+                        setattr(allow, p, True)
+                    else:
+                        invalid_allow.append(p)
+            if deny_perms:
+                for p in [perm.strip() for perm in deny_perms.split(',') if perm.strip()]:
+                    if p in discord.Permissions.VALID_FLAGS:
+                        setattr(allow, p, False)
+                        setattr(deny, p, True)
+                    else:
+                        invalid_deny.append(p)
+            if invalid_allow or invalid_deny:
+                msg = ""
+                if invalid_allow:
+                    msg += f"Invalid allow permissions: {', '.join(invalid_allow)}\n"
+                if invalid_deny:
+                    msg += f"Invalid deny permissions: {', '.join(invalid_deny)}"
+                await interaction.response.send_message(msg, ephemeral=True)
+                return
+            kwargs['permissions'] = allow
+        if mentionable is not None:
+            kwargs['mentionable'] = mentionable
+        if hoist is not None:
+            kwargs['hoist'] = hoist
+        try:
+            await role.edit(reason=f"Edited by {interaction.user} via /edit_role", **kwargs)
+            await interaction.response.send_message(f"✅ Edited role `{role.name}`.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to edit that role.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to edit role: {e}", ephemeral=True)
+
+    @app_commands.command(name="create_channel", description="Create a new text or voice channel")
+    @command_permission_check("create_channel")
+    @app_commands.describe(
+        name="Name of the new channel",
+        type="Type of channel (text or voice)",
+        category="Category to create the channel in (optional)",
+        perms_integer="Permissions integer for @everyone (optional, overrides default permissions)"
+    )
+    @app_commands.choices(type=[
+        app_commands.Choice(name="Text", value="text"),
+        app_commands.Choice(name="Voice", value="voice")
+    ])
+    async def create_channel(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        type: app_commands.Choice[str],
+        category: Optional[discord.CategoryChannel] = None,
+        perms_integer: Optional[int] = None
+    ):
+        debug_print(f"Entering /create_channel with interaction: {interaction}, name: {name}, type: {type}, category: {category}", level="all")
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not guild.me.guild_permissions.manage_channels:
+            await interaction.response.send_message("I need the 'Manage Channels' permission to create channels.", ephemeral=True)
+            return
+        try:
+            overwrites = None
+            if perms_integer is not None:
+                everyone = guild.default_role
+                overwrites = {everyone: discord.PermissionOverwrite.from_pair(discord.Permissions(perms_integer), discord.Permissions.none())}
+            if type.value == "text":
+                channel = await guild.create_text_channel(name=name, category=category, overwrites=overwrites, reason=f"Created by {interaction.user} via /create_channel")
+            elif type.value == "voice":
+                channel = await guild.create_voice_channel(name=name, category=category, overwrites=overwrites, reason=f"Created by {interaction.user} via /create_channel")
+            else:
+                await interaction.response.send_message("Invalid channel type.", ephemeral=True)
+                return
+            await interaction.response.send_message(f"✅ Created channel {channel.mention}", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to create channels.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to create channel: {e}", ephemeral=True)
+
+    @app_commands.command(name="delete_channel", description="Delete a channel by name or mention")
+    @command_permission_check("delete_channel")
+    @app_commands.describe(channel="Channel to delete")
+    async def delete_channel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.abc.GuildChannel
+    ):
+        debug_print(f"Entering /delete_channel with interaction: {interaction}, channel: {channel}", level="all")
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not guild.me.guild_permissions.manage_channels:
+            await interaction.response.send_message("I need the 'Manage Channels' permission to delete channels.", ephemeral=True)
+            return
+        try:
+            await channel.delete(reason=f"Deleted by {interaction.user} via /delete_channel")
+            await interaction.response.send_message(f"✅ Deleted channel `{channel.name}`.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to delete that channel.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to delete channel: {e}", ephemeral=True)
+
+    @app_commands.command(name="edit_channel", description="Edit a channel's name, topic, or position")
+    @command_permission_check("edit_channel")
+    @app_commands.describe(
+        channel="Channel to edit",
+        name="New name (leave blank to keep current)",
+        topic="New topic (text channels only, leave blank to keep current)",
+        position="New position in the channel list (leave blank to keep current)",
+        target="Role or user to set permissions for (optional)",
+        allow_perms="Comma-separated permissions to allow (optional)",
+        deny_perms="Comma-separated permissions to deny (optional)",
+        perms_integer="Permissions integer for target (optional, overrides allow/deny perms)"
+    )
+    @app_commands.autocomplete(allow_perms=permissions_autocomplete, deny_perms=permissions_autocomplete)
+    async def edit_channel(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.abc.GuildChannel,
+        name: Optional[str] = None,
+        topic: Optional[str] = None,
+        position: Optional[int] = None,
+        target: Optional[Union[discord.Member, discord.Role]] = None,
+        allow_perms: Optional[str] = None,
+        deny_perms: Optional[str] = None,
+        perms_integer: Optional[int] = None
+    ):
+        debug_print(f"Entering /edit_channel with interaction: {interaction}, channel: {channel}, name: {name}, topic: {topic}, position: {position}, target: {target}, allow_perms: {allow_perms}, deny_perms: {deny_perms}", level="all")
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        if not guild.me.guild_permissions.manage_channels:
+            await interaction.response.send_message("I need the 'Manage Channels' permission to edit channels.", ephemeral=True)
+            return
+        kwargs = {}
+        if name:
+            kwargs['name'] = name
+        if topic and isinstance(channel, discord.TextChannel):
+            kwargs['topic'] = topic
+        if position is not None:
+            kwargs['position'] = position
+        # Permission overwrites
+        if target and (perms_integer is not None or allow_perms or deny_perms):
+            # Get the target object (role or member)
+            overwrite_target = None
+            if isinstance(target, discord.Role):
+                overwrite_target = target
+            elif isinstance(target, discord.Member):
+                overwrite_target = target
+            else:
+                overwrite_target = guild.get_role(getattr(target, 'id', None)) or guild.get_member(getattr(target, 'id', None))
+            if not overwrite_target:
+                await interaction.response.send_message("Target role or user not found.", ephemeral=True)
+                return
+            # Build permissions
+            if perms_integer is not None:
+                perms_obj = discord.Permissions(perms_integer)
+                perms_dict = {perm: getattr(perms_obj, perm) for perm in discord.Permissions.VALID_FLAGS}
+            else:
+                allow = discord.Permissions.none()
+                deny = discord.Permissions.none()
+                invalid_allow = []
+                invalid_deny = []
+                if allow_perms:
+                    for p in [perm.strip() for perm in allow_perms.split(',') if perm.strip()]:
+                        if hasattr(allow, p):
+                            setattr(allow, p, True)
+                        else:
+                            invalid_allow.append(p)
+                if deny_perms:
+                    for p in [perm.strip() for perm in deny_perms.split(',') if perm.strip()]:
+                        if hasattr(deny, p):
+                            setattr(deny, p, True)
+                        else:
+                            invalid_deny.append(p)
+                if invalid_allow or invalid_deny:
+                    await interaction.response.send_message(f"Invalid permissions: Allow: {', '.join(invalid_allow)} Deny: {', '.join(invalid_deny)}", ephemeral=True)
+                    return
+                perms_dict = {}
+                for perm in discord.Permissions.VALID_FLAGS:
+                    if getattr(allow, perm, False):
+                        perms_dict[perm] = True
+                    elif getattr(deny, perm, False):
+                        perms_dict[perm] = False
+            # Get current overwrites
+            overwrites = dict(channel.overwrites)
+            overwrites[overwrite_target] = discord.PermissionOverwrite(**perms_dict)
+            kwargs['overwrites'] = overwrites
+        try:
+            await channel.edit(reason=f"Edited by {interaction.user} via /edit_channel", **kwargs)
+            await interaction.response.send_message(f"✅ Edited channel `#{channel.name}`.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to edit that channel.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to edit channel: {e}", ephemeral=True)
+    
     @app_commands.command(name="purge", description="Delete a specified number of messages")
+    @command_permission_check("purge")
     @app_commands.describe(
         amount="Number of messages to delete",
         user="User whose messages should be deleted (optional)",
@@ -305,6 +671,7 @@ class UtilitiesCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(manage_messages=True)
     async def purge(self, interaction: discord.Interaction, amount: int, user: discord.User = None, contains: str = None):
+        debug_print(f"Entering /purge with interaction: {interaction}, amount: {amount}, user: {user}, contains: {contains}", level="all")
         if amount <= 0 or amount > 100:
             await interaction.response.send_message("Amount must be between 1 and 100.", ephemeral=True)
             return
@@ -340,19 +707,22 @@ class UtilitiesCog(commands.Cog):
 
     @purge.error
     async def purge_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        debug_print(f"Entering purge_error with interaction: {interaction}, error: {error}", level="all")
         if isinstance(error, app_commands.CheckFailure):
             await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         else:
             await interaction.response.send_message("An error occurred while executing this command.", ephemeral=True)
-            print(f"Purge command error: {error}")
-                
+            debug_print(f"[Purge Error]: {error}")
+
     @app_commands.command(name="purge_after", description="Delete messages after a specific message ID")
+    @command_permission_check("purge_after")
     @app_commands.describe(
         message_id="The message ID to start purging after",
         count="Number of messages to delete after the specified message ID (optional, max 100)"
     )
     @app_commands.checks.has_permissions(manage_messages=True)
     async def purge_after(self, interaction: discord.Interaction, message_id: str, count: int = 100):
+        debug_print(f"Entering /purge_after with interaction: {interaction}, message_id: {message_id}, count: {count}")
         # Validate count
         if count <= 0 or count > 100:
             await interaction.response.send_message("Count must be between 1 and 100.", ephemeral=True)
@@ -426,13 +796,15 @@ class UtilitiesCog(commands.Cog):
 
     @purge_after.error
     async def purge_after_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        debug_print(f"Entering purge_after_error with interaction: {interaction}, error: {error}", level="all")
         if isinstance(error, app_commands.CheckFailure):
             await interaction.response.send_message("❌ You need manage messages permissions to use this command.", ephemeral=True)
         else:
             await interaction.response.send_message("⚠️ An error occurred while processing this command.", ephemeral=True)
-            print(f"Purge After Error: {str(error)}")
+            debug_print(f"[Purge After Error]: {str(error)}")
 
     async def _create_role_menu(self, interaction, menu_type):
+        debug_print(f"Entering _create_role_menu with interaction: {interaction}, menu_type: {menu_type}", level="all")
         guild_id = str(interaction.guild.id)
         channel_id = str(interaction.channel.id)
         creator_id = str(interaction.user.id)
@@ -452,24 +824,28 @@ class UtilitiesCog(commands.Cog):
         )
 
     @app_commands.command(name="create_dropdown", description="Create a dropdown role menu")
-    @app_commands.checks.has_permissions(administrator=True)
+    @command_permission_check("create_dropdown")
     async def create_dropdown(self, interaction: discord.Interaction):
+        debug_print(f"Entering /create_dropdown with interaction: {interaction}", level="all")
         await self._create_role_menu(interaction, "dropdown")
 
     @app_commands.command(name="create_reactionrole", description="Create a reaction role menu")
-    @app_commands.checks.has_permissions(administrator=True)
+    @command_permission_check("create_reactionrole")
     async def create_reactionrole(self, interaction: discord.Interaction):
+        debug_print(f"Entering /create_reactionrole with interaction: {interaction}", level="all")
         await self._create_role_menu(interaction, "reactionrole")
 
     @app_commands.command(name="create_button", description="Create a button role menu")
-    @app_commands.checks.has_permissions(administrator=True)
+    @command_permission_check("create_button")
     async def create_button(self, interaction: discord.Interaction):
+        debug_print(f"Entering /create_button with interaction: {interaction}", level="all")
         await self._create_role_menu(interaction, "button")
 
     @app_commands.command(name="setlogchannel", description="Set the channel for logging events")
+    @command_permission_check("setlogchannel")
     @app_commands.describe(channel="The channel to use for logging")
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_log_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        debug_print(f"Entering /set_log_channel with interaction: {interaction}, channel: {channel}", level="all")
         if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message("❌ Must be a text channel", ephemeral=True)
             return
@@ -491,7 +867,9 @@ class UtilitiesCog(commands.Cog):
         )
     
     @app_commands.command(name="help", description="Show information about available commands")
+    @command_permission_check("help")
     async def help(self, interaction: discord.Interaction):
+        debug_print(f"Entering /help with interaction: {interaction}", level="all")
         """Display a help message with available commands."""
         embed = discord.Embed(
             title="**SentinelBot Help**",
@@ -540,473 +918,8 @@ class UtilitiesCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="create_backup", description="Create a server backup now")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def create_backup(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        if not guild:
-            await interaction.followup.send(content="This command can only be used in a server.", ephemeral=True)
-            return
-
-        bot_member = guild.me
-        perms = bot_member.guild_permissions
-
-        # Build the list of failed checks
-        checks = []
-        if not perms.manage_guild:
-            checks.append("❌ I need the **Manage Server** permission to create a backup.")
-        if not perms.manage_roles:
-            checks.append("❌ I need the **Manage Roles** permission to backup and restore roles.")
-        if not perms.view_audit_log:
-            checks.append("❌ I need the **View Audit Log** permission to fully backup server settings.")
-        has_emojis = len(getattr(guild, "emojis", [])) > 0
-        has_stickers = hasattr(guild, "stickers") and len(getattr(guild, "stickers", [])) > 0
-        missing_perms = []
-        if (has_emojis or has_stickers):
-            if not perms.manage_emojis_and_stickers:
-                missing_perms.append("Create Expressions")
-            if not perms.manage_expressions:
-                missing_perms.append("Manage Expressions")
-        if missing_perms:
-            checks.append(
-                "❌ I need the following permission(s) to backup emojis/stickers: **" +
-                ", ".join(missing_perms) + "**"
-            )
-        if not perms.manage_channels:
-            checks.append("❌ I need the **Manage Channels** permission to backup and restore channels and categories.")
-        admin_roles = [role for role in guild.roles if role.permissions.administrator and not role.is_default()]
-        if admin_roles and not perms.administrator:
-            admin_role_names = ", ".join([role.name for role in admin_roles])
-            checks.append(
-                "❌ One or more roles in this server have the **Administrator** permission "
-                f"({admin_role_names}).\n"
-                "I need the **Administrator** permission to properly back up and restore these roles."
-            )
-        rulekeeper_role = discord.utils.get(guild.roles, name="RuleKeeper")
-        if rulekeeper_role and rulekeeper_role != guild.roles[-1]:
-            checks.append(
-                "⚠️ The **RuleKeeper** role is not the highest role in the server. For best results, please move it to the top of the role list."
-            )
-
-        # Sequentially prompt for each failed check, requiring explicit continue for each
-        prev_msg = None
-        for reason in checks:
-            view = ContinueCancelView(timeout=120)
-            msg = await interaction.followup.send(
-                content=(
-                    f"{reason}\n\n"
-                    "Click the **Continue** button to proceed (not recommended), or click **Cancel** to stop the backup."
-                ),
-                view=view,
-                ephemeral=True
-            )
-            # Wait for the user to click a button or for timeout
-            await view.wait()
-            # Delete the previous prompt (if any)
-            if prev_msg:
-                try:
-                    await prev_msg.delete()
-                except Exception:
-                    pass
-            # If cancelled or timed out, stop
-            if view.value is None or view.value is False:
-                await msg.edit(content="Backup cancelled.", view=None)
-                return
-            # Otherwise, update this prompt and continue
-            await msg.edit(content="Bypassed. Checking next requirement...", view=None)
-            prev_msg = msg
-            await asyncio.sleep(0.5)
-        if prev_msg:
-            try:
-                await prev_msg.delete()
-            except Exception:
-                pass
-
-        # Now start the backup
-        progress_msg = await interaction.followup.send(content="Starting backup...", ephemeral=True)
-
-        progress = {"val": 0, "step": "Preparing backup..."}
-        done = False
-
-        async def progress_updater():
-            last_val = -1
-            while not done:
-                if progress["val"] != last_val:
-                    try:
-                        await progress_msg.edit(
-                            content=f"Backup progress: {progress['val']}% - {progress['step']}"
-                        )
-                    except Exception:
-                        pass
-                    last_val = progress["val"]
-                await asyncio.sleep(0.5)
-
-        def set_progress(val, step_text=None):
-            progress["val"] = val
-            if step_text:
-                progress["step"] = step_text
-
-        updater_task = asyncio.create_task(progress_updater())
-
-        try:
-            await save_guild_backup(guild, set_progress=set_progress)
-            progress["val"] = 100
-            progress["step"] = "Backup complete!"
-            done = True
-            await updater_task
-
-            with get_conn() as conn:
-                row = conn.execute(
-                    'SELECT id FROM backups WHERE guild_id = ? ORDER BY created_at DESC LIMIT 1',
-                    (str(guild.id),)
-                ).fetchone()
-                backup_id = row['id'] if row else "unknown"
-
-            await progress_msg.edit(
-                content=f"✅ Backup complete! Backup ID: `{backup_id}`"
-            )
-        except Exception as e:
-            done = True
-            await updater_task
-            await progress_msg.edit(
-                content=f"❌ Backup failed: {e}"
-            )
-
-    @app_commands.command(name="delete_backup", description="Delete a backup by ID")
-    @app_commands.describe(backup_id="The backup ID to delete")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.autocomplete(backup_id=backup_id_autocomplete)
-    async def delete_backup(self, interaction: discord.Interaction, backup_id: str):
-        guild_id = str(interaction.guild.id)
-        backup = get_backup(backup_id, guild_id)
-        if not backup:
-            await interaction.response.send_message("Backup not found.", ephemeral=True)
-            return
-        # Remove file from disk
-        if backup['file_path'] and os.path.exists(backup['file_path']):
-            os.remove(backup['file_path'])
-        # Remove from DB
-        with get_conn() as conn:
-            conn.execute('DELETE FROM backups WHERE id = ? AND guild_id = ?', (backup_id, guild_id))
-        await interaction.response.send_message(f"Backup `{backup_id}` deleted.", ephemeral=True)
-
-    @app_commands.command(name="restore_backup", description="Restore a backup by ID (DANGEROUS: overwrites server settings, roles, channels, etc.)")
-    @app_commands.describe(backup_id="The backup ID to restore")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.autocomplete(backup_id=backup_id_autocomplete)
-    async def restore_backup(self, interaction: discord.Interaction, backup_id: str):
-        guild = interaction.guild
-        guild_id = str(guild.id)
-        backup = get_backup(backup_id, guild_id)
-        if not backup:
-            await interaction.response.send_message("Backup not found.", ephemeral=True)
-            return
-        file_path = backup['file_path']
-        if not file_path or not os.path.exists(file_path):
-            await interaction.response.send_message("Backup file not found on disk.", ephemeral=True)
-            return
-
-        # --- Confirmation Button ---
-        view = ConfirmRestoreView(timeout=30)
-        await interaction.response.send_message(
-            "⚠️ **WARNING:** This will overwrite your server's roles, channels, and settings with the backup.\n"
-            "Click the button below within 30 seconds to confirm.",
-            ephemeral=True,
-            view=view
-        )
-
-        timeout = await view.wait()
-        if not view.value:
-            await interaction.edit_original_response(
-                content="Restore cancelled (no confirmation received).",
-                view=None
-            )
-            return
-
-        await interaction.edit_original_response(
-            content="Restore confirmed. Proceeding...",
-            view=None
-        )
-
-        # --- DM Progress ---
-        try:
-            dm = await interaction.user.create_dm()
-            msg1 = await dm.send("Restoring backup... This may take a while.")
-            msg2 = await dm.send("Starting...")
-        except Exception:
-            dm = None
-            msg1 = None
-            msg2 = None
-
-        last_progress = {"content": None, "time": 0}
-
-        async def progress_callback(step_text):
-            if msg2:
-                now = time.monotonic()
-                # Only update if content changed and at least 1s since last update
-                if step_text != last_progress["content"] and now - last_progress["time"] > 1:
-                    try:
-                        await msg2.edit(content=f"🔄 {step_text}")
-                        last_progress["content"] = step_text
-                        last_progress["time"] = now
-                        await asyncio.sleep(2.5)  # Throttle to avoid rate limits
-                    except Exception:
-                        pass
-
-        try:
-            await interaction.followup.send("Restoring backup... This may take a while.", ephemeral=True)
-        except discord.HTTPException as e:
-            if e.code == 10003:
-                try:
-                    await interaction.user.send("Restoring backup... This may take a while. (original channel was deleted)")
-                except Exception:
-                    pass
-            else:
-                raise
-
-        try:
-            result = await restore(interaction.guild, file_path, progress_callback=progress_callback)
-            # Delete progress messages
-            for m in (msg2, msg1):
-                if m:
-                    try:
-                        await m.delete()
-                        await asyncio.sleep(1)
-                    except Exception:
-                        pass
-            if dm:
-                try:
-                    if result:
-                        await dm.send("✅ Backup restored successfully!")
-                    else:
-                        await dm.send("❌ Restore failed. Check logs for details.")
-                except Exception:
-                    pass
-            if result:
-                try:
-                    await interaction.followup.send("✅ Backup restored successfully!", ephemeral=True)
-                except discord.HTTPException as e:
-                    if e.code == 10003:
-                        try:
-                            await interaction.user.send("✅ Backup restored successfully!")
-                        except Exception:
-                            pass
-                    else:
-                        raise
-            else:
-                try:
-                    await interaction.followup.send("❌ Restore failed. Check logs for details.", ephemeral=True)
-                except discord.HTTPException as e:
-                    if e.code == 10003:
-                        try:
-                            await interaction.user.send("❌ Restore failed. Check logs for details. (original channel was deleted)")
-                        except Exception:
-                            pass
-                    else:
-                        raise
-        except Exception as e:
-            for m in (msg2, msg1):
-                if m:
-                    try:
-                        await m.delete()
-                        await asyncio.sleep(2)
-                    except Exception:
-                        pass
-            if dm:
-                try:
-                    await dm.send(f"❌ Restore failed: {e}")
-                except Exception:
-                    pass
-            try:
-                await interaction.followup.send(f"❌ Restore failed: {e}", ephemeral=True)
-            except discord.HTTPException as e2:
-                if e2.code == 10003:
-                    try:
-                        await interaction.user.send(f"❌ Restore failed: {e} (original channel was deleted)")
-                    except Exception:
-                        pass
-                else:
-                    raise
-
-    @app_commands.command(name="schedule_backup", description="Schedule regular backups")
-    @app_commands.describe(
-        frequency_value="How often to backup (number)",
-        frequency_unit="Unit (days, weeks, months, years)",
-        start_date="Start date (YYYY-MM-DD, in your local time)",
-        start_time="Start time (HH:MM, 24h, in your local time)",
-        timezone="Your timezone (e.g. UTC, America/Denver, Europe/London)"
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.autocomplete(timezone=timezone_autocomplete)
-    async def schedule_backup(
-        self,
-        interaction: discord.Interaction,
-        frequency_value: int,
-        frequency_unit: str,
-        start_date: str,
-        start_time: str,
-        timezone: str = "UTC"
-    ):
-        # Validate timezone
-        try:
-            tz = pytz_timezone(timezone)
-        except Exception:
-            await interaction.response.send_message(
-                f"Invalid timezone. See https://en.wikipedia.org/wiki/List_of_tz_database_time_zones for valid names.",
-                ephemeral=True
-            )
-            return
-
-        # Validate date and time
-        try:
-            local_dt = tz.localize(datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M"))
-        except Exception:
-            await interaction.response.send_message(
-                "Invalid date or time format. Use YYYY-MM-DD for date and HH:MM (24h) for time.",
-                ephemeral=True
-            )
-            return
-
-        guild_id = str(interaction.guild.id)
-        schedule_id = ''.join(random.choices('0123456789', k=5))
-        with get_conn() as conn:
-            conn.execute(
-                'INSERT INTO schedules (id, guild_id, start_date, start_time, timezone, frequency_value, frequency_unit, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                (schedule_id, guild_id, start_date, start_time, timezone, frequency_value, frequency_unit, 1)
-            )
-        load_schedules()
-        await interaction.response.send_message(
-            f"Scheduled backups every {frequency_value} {frequency_unit} starting {start_date} {start_time} ({timezone}). Schedule ID: `{schedule_id}`",
-            ephemeral=True
-        )
-
-    @app_commands.command(name="delete_scheduled_backup", description="Delete a scheduled backup by schedule ID")
-    @app_commands.describe(schedule_id="The schedule ID to delete (see /list_backup)")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.autocomplete(schedule_id=schedule_id_autocomplete)
-    async def delete_scheduled_backup(self, interaction: discord.Interaction, schedule_id: int):
-        guild_id = str(interaction.guild.id)
-        with get_conn() as conn:
-            result = conn.execute(
-                'SELECT * FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id)
-            ).fetchone()
-            if not result:
-                await interaction.response.send_message("Schedule not found.", ephemeral=True)
-                return
-            conn.execute('DELETE FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id))
-        await interaction.response.send_message(f"Schedule `{schedule_id}` deleted.", ephemeral=True)
-
-    @app_commands.command(name="list_backup", description="List all backups and schedules for this server")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def list_backup(self, interaction: discord.Interaction):
-        guild_id = str(interaction.guild.id)
-        # Get preferred timezone from latest schedule, fallback to UTC
-        with get_conn() as conn:
-            sched = conn.execute(
-                'SELECT timezone FROM schedules WHERE guild_id = ? ORDER BY id DESC LIMIT 1', (guild_id,)
-            ).fetchone()
-            backups = conn.execute(
-                'SELECT id, created_at, file_path FROM backups WHERE guild_id = ? ORDER BY created_at DESC', (guild_id,)
-            ).fetchall()
-            schedules = conn.execute(
-                'SELECT * FROM schedules WHERE guild_id = ?', (guild_id,)
-            ).fetchall()
-        tz_str = sched['timezone'] if sched and sched['timezone'] else 'UTC'
-        try:
-            local_tz = pytz_timezone(tz_str)
-        except Exception:
-            local_tz = pytz_timezone('UTC')
-            tz_str = 'UTC'
-
-        msg = ""
-        if backups:
-            msg += "**Backups:**\n"
-            for b in backups:
-                dt_utc = datetime.utcfromtimestamp(b['created_at']).replace(tzinfo=pytz_timezone('UTC'))
-                dt_local = dt_utc.astimezone(local_tz)
-                dt_str = dt_local.strftime('%Y-%m-%d %I:%M %p')
-                msg += f"- ID: `{b['id']}` | Created: {dt_str} ({tz_str}) | File: `{os.path.basename(b['file_path'])}`\n"
-        else:
-            msg += "No backups found.\n"
-        if schedules:
-            msg += "\n**Schedules:**\n"
-            for s in schedules:
-                sched_tz_str = s['timezone'] if 'timezone' in s.keys() and s['timezone'] else 'UTC'
-                try:
-                    sched_local_tz = pytz_timezone(sched_tz_str)
-                except Exception:
-                    sched_local_tz = pytz_timezone('UTC')
-                    sched_tz_str = 'UTC'
-                try:
-                    start_dt_local = sched_local_tz.localize(datetime.strptime(f"{s['start_date']} {s['start_time']}", "%Y-%m-%d %H:%M"))
-                    dt_str = start_dt_local.strftime('%Y-%m-%d %I:%M %p')
-                except Exception:
-                    dt_str = f"{s['start_date']} {s['start_time']}"
-                msg += (
-                    f"- ID: `{s['id']}` | Start: {dt_str} ({sched_tz_str}) | Every {s['frequency_value']} {s['frequency_unit']} "
-                    f"{'(enabled)' if s['enabled'] else '(disabled)'}\n"
-                )
-        else:
-            msg += "\nNo schedules found."
-        await interaction.response.send_message(msg, ephemeral=True)
-
-    @app_commands.command(name="next_backup", description="Show when the next scheduled backup will run")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def next_backup(self, interaction: discord.Interaction):
-        guild_id = str(interaction.guild.id)
-        now = datetime.utcnow()
-        with get_conn() as conn:
-            schedules = conn.execute(
-                'SELECT * FROM schedules WHERE guild_id = ? AND enabled = 1', (guild_id,)
-            ).fetchall()
-        if not schedules:
-            await interaction.response.send_message("No backup schedules set for this server.", ephemeral=True)
-            return
-
-        soonest_time = None
-        soonest_sched = None
-        for sched in schedules:
-            try:
-                start_dt = datetime.strptime(f"{sched['start_date']} {sched['start_time']}", "%Y-%m-%d %H:%M")
-            except Exception:
-                continue
-            freq_val = int(sched['frequency_value'])
-            freq_unit = sched['frequency_unit']
-            next_backup = start_dt
-            while next_backup < now:
-                if freq_unit == 'days':
-                    next_backup += timedelta(days=freq_val)
-                elif freq_unit == 'weeks':
-                    next_backup += timedelta(weeks=freq_val)
-                elif freq_unit == 'months':
-                    next_backup += timedelta(days=30 * freq_val)  # Approximate
-                elif freq_unit == 'years':
-                    next_backup += timedelta(days=365 * freq_val)  # Approximate
-            if soonest_time is None or next_backup < soonest_time:
-                soonest_time = next_backup
-                soonest_sched = sched
-
-        if soonest_time:
-            seconds = int((soonest_time - now).total_seconds())
-            if seconds < 60:
-                time_str = f"{seconds} seconds"
-            elif seconds < 3600:
-                time_str = f"{seconds // 60} minutes"
-            elif seconds < 86400:
-                time_str = f"{seconds // 3600} hours"
-            else:
-                time_str = f"{seconds // 86400} days"
-            msg = (
-                f"Next backup is scheduled for **{soonest_time.strftime('%Y-%m-%d %H:%M UTC')}** "
-                f"(in {time_str})."
-            )
-        else:
-            msg = "Could not determine the next backup time."
-
-        await interaction.response.send_message(msg, ephemeral=True)
-
     async def custom_command_handler(self, interaction: discord.Interaction, cmd_data: dict):
+        debug_print(f"Entering custom_command_handler with interaction: {interaction}, cmd_data: {cmd_data}", level="all")
         """Handler for database-stored commands"""
         try:
             await interaction.response.send_message(
@@ -1015,7 +928,7 @@ class UtilitiesCog(commands.Cog):
             )
         except Exception as e:
             await interaction.response.send_message("Command error!", ephemeral=True)
-            print(f"Custom command error: {str(e)}")
-        
+            debug_print(f"[Custom Command Error]: {str(e)}")
+
 async def setup(bot):
     await bot.add_cog(UtilitiesCog(bot))
