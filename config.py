@@ -2,6 +2,11 @@ import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+try:
+    from bot.bot import debug_print
+except ImportError:
+    def debug_print(*args, **kwargs):
+        pass
 
 load_dotenv()
 
@@ -35,23 +40,28 @@ class Config:
     }
 
     def __init__(self):
+        debug_print(f"Entering Config.__init__", level="all")
         # Initialize dynamic properties
         self.DISCORD_REDIRECT_URI = f"{self.FRONTEND_URL}/callback"
 
     @property
     def SQLALCHEMY_DATABASE_URI(self):
+        debug_print(f"Accessing SQLALCHEMY_DATABASE_URI property")
         return f"sqlite:///{self.DATABASE_PATH}"
 
     @property
     def PERMITTED_GUILDS(self):
+        debug_print(f"Accessing PERMITTED_GUILDS property")
         return os.getenv('PERMITTED_GUILDS', '').split(',')
 
     @staticmethod
     def verify_paths():
+        debug_print(f"Calling Config.verify_paths()", level="all")
         db_path = Config.DATABASE_PATH
         if not os.path.exists(db_path):
             # If the file doesn't exist, create an empty file so SQLite can use it
             open(db_path, 'a').close()
 
 # Instantiate the configuration
+debug_print("Instantiating Config")
 config = Config()

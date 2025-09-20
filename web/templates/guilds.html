@@ -81,6 +81,23 @@
     </style>
 </head>
 <body class="bg-dark text-light">
+    {% if session.admin %}
+    <script>
+        window.location.replace('/admin/guilds');
+    </script>
+    {% endif %}
+    {%- with messages = get_flashed_messages(with_categories=true) %}
+      {%- if messages %}
+        <div class="container mt-3">
+          {%- for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+              {{ message|safe }}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          {%- endfor %}
+        </div>
+      {%- endif %}
+    {%- endwith %}
     <div class="container mt-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h1 class="display-4">Select a Server</h1>
@@ -89,7 +106,9 @@
                 <span class="badge bg-danger">Admin Mode</span>
                 <a href="/admin/guilds" class="btn btn-warning ms-2">Manage All Servers</a>
                 {% else %}
-                <a href="/logout" class="btn btn-outline-danger">Logout</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-danger">
+                    <i class="bi bi-box-arrow-right"></i> Logout
+                </a>
                 {% endif %}
             </div>
         </div>
@@ -101,9 +120,11 @@
                     <button type="button" class="btn btn-outline-secondary btn-sort" id="sort-by-id" data-sort="id">
                         <i class="bi bi-sort-numeric-down"></i> Sort by ID
                     </button>
+                    {% if session.admin %}
                     <button type="button" class="btn btn-outline-secondary btn-sort" id="sort-by-join" data-sort="join">
                         <i class="bi bi-calendar"></i> Sort by Join Date
                     </button>
+                    {% endif %}
                 </div>
             </div>
             
@@ -111,7 +132,7 @@
             <div class="row row-cols-1 row-cols-md-3 g-4" id="guilds-container">
                 {% for guild in guilds %}
                 <div class="col guild-item" data-id="{{ guild.id }}" 
-                     data-join-timestamp="{% if guild.icon %}{{ guild.icon.split('?t=')[1] if '?t=' in guild.icon else '0' }}{% else %}0{% endif %}">
+                     data-join-timestamp="{{ guild.joined_at or 0 }}">
                     <a href="{{ url_for('guild_dashboard', guild_id=guild.id) }}" class="text-decoration-none text-dark">
                         <div class="card guild-card h-100 bg-secondary">
                             {% if session.admin %}
@@ -145,55 +166,9 @@
             </div>
             {% endif %}
         </div>
-        
-        <!-- Delete Data Section -->
-        <div id="delete-data" class="content-section">
-            <div class="management-section">
-                <h3 class="section-title">Delete Data</h3>
-                <div class="alert alert-danger mt-4">
-                    <i class="bi bi-exclamation-triangle me-2"></i>
-                    This section is under development. Data deletion functionality will be available soon.
-                </div>
-                <div class="card">
-                    <div class="card-body">
-                        <p class="card-text">
-                            When fully implemented this section will allow you to:
-                        </p>
-                        <ul>
-                            <li>Delete all server configuration data from database</li>
-                            <li>Remove user information from a server using their user ID</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
 
     <script>
-        // Handle section switching based on URL hash
-        function showSection() {
-            document.querySelectorAll('.content-section').forEach(section => {
-                section.classList.remove('active');
-            });
-            
-            document.querySelectorAll('.sidebar-link').forEach(link => {
-                link.classList.remove('active');
-            });
-            
-            const hash = window.location.hash;
-            
-            if (hash === '#delete-data') {
-                document.getElementById('delete-data').classList.add('active');
-                document.getElementById('delete-data-link').classList.add('active');
-            } else {
-                document.getElementById('server-configuration').classList.add('active');
-                document.getElementById('server-configuration-link').classList.add('active');
-            }
-        }
-        
-        showSection();
-        window.addEventListener('hashchange', showSection);
-        
         // Guild sorting functionality
         document.addEventListener('DOMContentLoaded', function() {
             const sortBtns = document.querySelectorAll('.btn-sort');

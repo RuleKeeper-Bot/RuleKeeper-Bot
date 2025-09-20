@@ -15,7 +15,7 @@
 <body>
 <div class="container py-4">
     <h2>Form Submissions</h2>
-    <a href="{{ url_for('custom_forms_dashboard', guild_id=guild_id) }}" class="btn btn-secondary mb-3">&larr; Back to Forms</a>
+    <a href="/dashboard/{{ guild_id }}/forms" class="btn btn-secondary mb-3 bi bi-arrow-left">&larr; Back to Forms</a>
     {% if submissions %}
         <div class="row">
         {% for sub in submissions %}

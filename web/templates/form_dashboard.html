@@ -13,7 +13,10 @@
 </head>
 <body>
 <div class="container py-4">
-    <h2>Custom Forms for {{ guild.name }}</h2>
+    <div class="mb-3 d-flex align-items-center gap-2">
+        <h2 class="mb-0">Custom Forms for {{ guild.name }}</h2>
+    </div>
+    <a href="/dashboard/{{ guild_id }}" class="btn btn-secondary mb-3 bi bi-arrow-left">Back to Dashboard</a>
     <div class="mb-3">
         <a href="{{ url_for('create_custom_form', guild_id=guild_id) }}" class="btn btn-primary">+ New Form</a>
     </div>

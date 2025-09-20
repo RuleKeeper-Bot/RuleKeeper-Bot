@@ -19,8 +19,18 @@
     </style>
 </head>
 <body>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
     <div class="container">
-        <h2 class="mb-4">Role Menus for Server</h2>
+        <h2 class="mb-4">Role Menus for {{ guild.name}}</h2>
         <div class="mb-3 d-flex align-items-center gap-2">
             <a href="/dashboard/{{ guild_id }}" class="btn btn-outline-secondary btn-sm">
                 <i class="bi bi-arrow-left"></i> Back to Dashboard
@@ -107,10 +117,13 @@
                                 {% endif %}
                               </span>
                             </div>
-                            <div class="menu-actions">
+                            <div class="menu-actions d-flex gap-2 flex-wrap">
                                 <a href="/dashboard/{{ guild_id }}/{{ menu.type }}/{{ menu.id }}" class="btn btn-sm btn-primary">
                                     <i class="bi bi-pencil-square"></i> Edit
                                 </a>
+                                <button type="button" class="btn btn-sm btn-danger" onclick="deleteMenu('{{ menu.id }}', '{{ menu.type }}')">
+                                    <i class="bi bi-trash"></i> Delete
+                                </button>
                                 {% if menu.message_id %}
                                 <a href="https://discord.com/channels/{{ guild_id }}/{{ menu.channel_id }}/{{ menu.message_id }}" target="_blank" class="btn btn-sm btn-outline-secondary">
                                     <i class="bi bi-discord"></i> View in Discord
@@ -187,6 +200,41 @@
             if (modal) modal.hide();
             return false;
         }
+    // Delete menu function
+    async function deleteMenu(menuId, menuType) {
+        if (!confirm('Are you sure you want to delete this role menu? This cannot be undone.')) return;
+        try {
+            const response = await fetch(`/api/${guildId}/role_menus/${menuId}/delete`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({ menu_type: menuType })
+            });
+            let data = null;
+            if (response.ok) {
+                try {
+                    data = await response.json();
+                } catch (e) {
+                    // Not JSON, treat as error
+                    alert('Failed to delete role menu: Server did not return JSON.');
+                    return;
+                }
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Failed to delete role menu.');
+                }
+            } else {
+                // Try to get error text
+                const text = await response.text();
+                alert('Failed to delete role menu.\n' + text);
+            }
+        } catch (err) {
+            alert('Error deleting menu: ' + err);
+        }
+    }
     </script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
 </body>

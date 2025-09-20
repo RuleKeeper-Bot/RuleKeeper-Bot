@@ -17,7 +17,18 @@
     </style>
 </head>
 <body>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
     <div class="container">
+        <a href="/dashboard/{{ guild_id }}/role-menus" class="btn btn-secondary mb-3"><i class="bi bi-arrow-left"></i> Back to Role Menus</a>
         <h2 class="mb-4"><i class="bi bi-boxes me-2"></i>Button Role Menu Setup</h2>
         <div class="mb-3">
             <span class="badge bg-secondary">ID: {{ menu_id }}</span>
@@ -54,6 +65,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let API_URL = "{{ API_URL }}";
+        let JWT_TOKEN = "{{ jwt_token }}";
         let options = {{ config.get('options', []) | tojson }};
         function renderOptions() {
             const container = document.getElementById('options');
@@ -192,7 +204,10 @@
             try {
                 let sendResp = await fetch(`${API_URL}/api/send_role_menu/{{ menu_id }}`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + JWT_TOKEN
+                    },
                     body: JSON.stringify({ menu_id: "{{ menu_id }}" })
                 });
                 let result = await sendResp.json();
