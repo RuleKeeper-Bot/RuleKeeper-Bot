@@ -12,7 +12,7 @@ except ImportError:
 
 BACKUPS_DIR = os.path.join(os.path.dirname(__file__))
 BACKUPS_DB_PATH = os.path.join(BACKUPS_DIR, 'backups.db')
-
+os.makedirs(BACKUPS_DIR, exist_ok=True)
 def get_conn():
     debug_print("Called get_conn()", level="all")
     conn = sqlite3.connect(BACKUPS_DB_PATH)
