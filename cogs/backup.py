@@ -626,13 +626,22 @@ class BackupCog(commands.Cog):
                 else:
                     raise
         # Log restore result
-        await log_event(
-            guild,
-            event_key="backup_restored",
-            title="Backup Restored",
-            description=f"Backup `{backup_id}` was restored.",
-            color=discord.Color.blurple()
-        )
+        if result:
+            await log_event(
+                guild,
+                event_key="backup_restored",
+                title="Backup Restored",
+                description=f"Backup `{backup_id}` was restored.",
+                color=discord.Color.blurple()
+            )
+        else:
+            await log_event(
+                guild,
+                event_key="backup_restore_failed",
+                title="Backup Restore Failed",
+                description=f"Backup `{backup_id}` restore failed or was cancelled.",
+                color=discord.Color.red()
+            )
 
     @app_commands.command(name="schedule_backup", description="Schedule regular backups")
     @command_permission_check("schedule_backup")
