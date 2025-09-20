@@ -11,10 +11,27 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        No-op fallback for debug printing.
+        
+        This function intentionally does nothing; it accepts any positional and keyword arguments to match the signature of the real `debug_print` used elsewhere so callers can invoke it safely when a real debug logger is not available.
+        
+        Parameters:
+            *args: Ignored positional arguments.
+            **kwargs: Ignored keyword arguments.
+        
+        Returns:
+            None
+        """
         pass
 
 class DebugCog(commands.Cog):
     def __init__(self, bot):
+        """
+        Initialize the DebugCog.
+        
+        Stores the provided bot instance on self.bot and caches its database connection on self.db.
+        """
         debug_print(f"Entering DebugCog.__init__ with bot: {bot}", level="all")
         self.bot = bot
         self.db = bot.db
@@ -74,6 +91,19 @@ class DebugCog(commands.Cog):
     @command_permission_check("list_commands")
     @app_commands.checks.has_permissions(administrator=True)
     async def list_commands(self, interaction: discord.Interaction):
+        """
+        Show the guild's configured custom commands in an ephemeral embed to the invoking user.
+        
+        Builds a Discord embed titled for the current guild and lists each custom command (name, short description, truncated response). Long lists are split into multiple embed fields to avoid Discord field-length limits. Sends the embed as an ephemeral response to the provided interaction.
+        
+        Parameters:
+            interaction (discord.Interaction): The interaction that invoked the command — used to determine the guild, author and to send the ephemeral reply.
+        
+        Notes:
+            - Command descriptions are truncated to 25 characters and responses to 30 characters in the embed.
+            - Fields are split when a field's accumulated text would exceed ~1000 characters.
+            - This command requires the caller to pass the permission check applied by decorators (administrator privileges and the "list_commands" permission check).
+        """
         debug_print(f"Entering /list_commands with interaction: {interaction}", level="all")
         guild_id = str(interaction.guild.id)
         commands = self.db.get_guild_commands_list(guild_id)
@@ -124,4 +154,9 @@ class DebugCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
+    """
+    Register the DebugCog with the given bot.
+    
+    Adds an instance of DebugCog to the bot so its application command(s) become available.
+    """
     await bot.add_cog(DebugCog(bot))

@@ -45,6 +45,11 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        No-op debug print hook.
+        
+        This function is a placeholder debug logging hook that accepts the same calling convention as Python's built-in `print` (any positional and keyword arguments) but does nothing by default. Call sites can safely invoke `debug_print(...)` without side effects; the symbol may be reassigned at runtime to a real debug logger or printer to enable diagnostic output.
+        """
         pass
 
 # Runtime Config
@@ -96,6 +101,14 @@ JWT_ALGORITHM = 'HS256'
 
 # JWT Helper
 def generate_jwt():
+    """
+    Generate a short-lived JWT used by the dashboard for privileged admin requests.
+    
+    The token has an issuer of "dashboard", a role of "admin", and expires 60 seconds after creation.
+    
+    Returns:
+        str: Encoded JWT suitable for use as a Bearer token in Authorization headers.
+    """
     debug_print("Entering generate_jwt", level="all")
     import time
     payload = {
@@ -108,9 +121,19 @@ def generate_jwt():
 # Requests wrapper to inject JWT
 class JWTSession(requests.Session):
     def __init__(self, *args, **kwargs):
+        """
+        Initialize a JWTSession instance.
+        
+        Forwards all positional and keyword arguments to the superclass initializer (e.g., requests.Session).
+        """
         debug_print(f"Entering JWTSession.__init__ with args: {args}, kwargs: {kwargs}", level="all")
         super().__init__(*args, **kwargs)
     def request(self, method, url, **kwargs):
+        """
+        Send an HTTP request, automatically injecting a short-lived Bearer JWT into the Authorization header.
+        
+        This method behaves like requests.Session.request but ensures an Authorization header is present by calling generate_jwt() and setting 'Authorization: Bearer <token>'. Any headers passed in via kwargs are preserved; the Authorization header will be overwritten if present in the provided headers. Returns the Response object from the underlying requests implementation.
+        """
         debug_print(f"Entering JWTSession.request with method: {method}, url: {url}, kwargs: {kwargs}", level="all")
         headers = kwargs.pop('headers', {}) or {}
         headers['Authorization'] = f'Bearer {generate_jwt()}'
@@ -141,6 +164,16 @@ def json_loads_filter(s):
 
 # Authentication and Authorization
 def login_required(f):
+    """
+    Decorator that requires an authenticated session to access a view.
+    
+    If the Flask session does not contain 'user', 'admin', or 'head_admin', the wrapper flashes
+    a warning and redirects the client to the login page (preserving the original URL in the
+    `next` query parameter). Otherwise the original view function is called with its arguments.
+    
+    Returns:
+        function: A wrapped view function suitable for use as a Flask route decorator.
+    """
     def wrapper(*args, **kwargs):
         debug_print(f"Entering login_required wrapper for {f.__name__}", level="all")
         if not session.get('user') and not session.get('admin') and not session.get('head_admin'):
@@ -151,6 +184,21 @@ def login_required(f):
     return wrapper
 
 def guild_required(f):
+    """
+    Decorator that ensures the current request is authorized to access a guild-scoped route.
+    
+    Checks performed (in order):
+    - A `guild_id` keyword argument is present; otherwise aborts 404.
+    - If an admin session is active, access is allowed.
+    - Verifies the bot is present in the guild using `get_bot_guild_ids()`; otherwise aborts 404.
+    - Verifies the current user is a member of the guild using `get_user_guilds()`; otherwise aborts 404.
+    - Verifies the user has the Discord "Manage Server" permission (permission bit 0x20); otherwise aborts 403.
+    
+    Side effects:
+    - Reads `session`.
+    - Calls `get_user_guilds()` and `get_bot_guild_ids()`.
+    - May call `abort()` to terminate the request with 404 or 403.
+    """
     @wraps(f)
     def wrapper(*args, **kwargs):
         debug_print(f"Entering guild_required wrapper for {f.__name__}", level="all")
@@ -184,6 +232,21 @@ def guild_required(f):
     return wrapper
 
 def get_user_guilds():
+    """
+    Return the list of guilds the current logged-in user shares with the bot.
+    
+    Short-circuits and caching:
+    - If an admin session is active, returns an empty list.
+    - Uses a per-session cache of serializable guild dicts (5 minute TTL) and will return cached Guild wrappers when valid.
+    
+    Behavior:
+    - On a successful fetch, stores a serializable representation of guilds (id, name, icon, permissions) in the session cache and returns the original guild objects fetched from Discord.
+    - If the Discord API raises Unauthorized, clears the session and returns an empty list.
+    - If the Discord API rate-limits the request, returns Guild wrappers reconstructed from the session cache (if available).
+    
+    Returns:
+        list: A list of guild objects (original Discord guild objects on success; Guild wrapper instances reconstructed from cached data in cached or rate-limited paths).
+    """
     debug_print("Entering get_user_guilds", level="all")
     if session.get('admin'):
         return []
@@ -226,6 +289,17 @@ def get_user_guilds():
         return [Guild(g) for g in session.get('guilds_cache', {}).get('guilds', [])]
 
 def get_guild_users(guild_id):
+    """
+    Fetch a guild's users, preferring data from the bot API and falling back to the local database.
+    
+    Attempts to retrieve user objects from the bot API endpoint; each returned user is normalized to a dict with keys `id` (string) and `name` (display name if available, otherwise username, otherwise the id). If the API call fails, returns users from the local `users` table. On unexpected errors an empty list is returned.
+    
+    Parameters:
+        guild_id (int|str): The guild identifier to query.
+    
+    Returns:
+        list[dict]: A list of user dictionaries with keys `id` and `name`. Returns an empty list on error or when no users are found.
+    """
     debug_print(f"Entering get_guild_users with guild_id: {guild_id}", level="all")
     try:
         api_url = f"{API_URL}/api/get_guild_users"
@@ -247,6 +321,19 @@ def get_guild_users(guild_id):
         return []
 
 def get_builtin_commands(guild_id):
+    """
+    Fetch the guild's built-in command definitions from the internal API.
+    
+    This performs an HTTP POST to the backend `/api/get_guild_commands` endpoint (10s timeout)
+    and returns the parsed JSON response on success. If the request fails or the response
+    status is not 200, an empty list is returned.
+    
+    Parameters:
+        guild_id (int | str): Discord guild ID to fetch built-in commands for.
+    
+    Returns:
+        list: Parsed JSON list of built-in command definitions, or an empty list on error.
+    """
     debug_print(f"Entering get_builtin_commands with guild_id: {guild_id}", level="all")
     try:
         api_url = f"{API_URL}/api/get_guild_commands"
@@ -260,16 +347,42 @@ def get_builtin_commands(guild_id):
         return []
     
 def get_backup_schedules(guild_id):
+    """
+    Return all backup schedule rows for a guild.
+    
+    Parameters:
+        guild_id (int | str): Discord guild (server) ID to query schedules for.
+    
+    Returns:
+        list[dict]: List of schedule rows from the `schedules` table, each row represented as a dict (column name -> value).
+    """
     from backups.backups import get_conn
     with get_conn() as conn:
         return [dict(row) for row in conn.execute('SELECT * FROM schedules WHERE guild_id = ?', (guild_id,)).fetchall()]
     
 def get_bot_guild_ids():
+    """
+    Return the set of guild IDs where the bot is a member.
+    
+    Queries the database for all stored guild records and returns a set of their IDs (typically Discord snowflake strings).
+    """
     debug_print("Entering get_bot_guild_ids", level="all")
     bot_guilds = db.get_all_guilds()
     return {g['id'] for g in bot_guilds}
 
 def get_guild_or_404(guild_id):
+    """
+    Return the guild record for the given guild_id or abort with HTTP 404 if not found.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild to look up.
+    
+    Returns:
+        dict: Guild record as returned by db.get_guild.
+    
+    Raises:
+        werkzeug.exceptions.HTTPException: Aborts the request with a 404 error ("Bot not in server") when the guild is not present.
+    """
     debug_print(f"Entering get_guild_or_404 with guild_id: {guild_id}", level="all")
     guild = db.get_guild(guild_id)
     if not guild:
@@ -277,6 +390,17 @@ def get_guild_or_404(guild_id):
     return guild
     
 def admin_required(f):
+    """
+    Decorator that restricts a view to requests with an active admin session.
+    
+    If the Flask session does not contain an 'admin' truthy value, the wrapper aborts the request with a 403 status and description "Admin privileges required". Otherwise it calls and returns the wrapped view's result.
+    
+    Parameters:
+        f (callable): The view function to wrap.
+    
+    Returns:
+        callable: A wrapped view function that enforces admin-only access.
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         debug_print(f"Entering admin_required wrapper for {f.__name__}", level="all")
@@ -286,6 +410,14 @@ def admin_required(f):
     return decorated_function
 
 def head_admin_required(f):
+    """
+    Decorator that restricts access to handlers to users with a head-admin session flag.
+    
+    When applied to a Flask view or handler, the wrapper checks Flask's `session` for the key
+    'head_admin'. If the key is missing/false, the request is aborted with HTTP 403 and the
+    message "Head admin privileges required". Otherwise the original function is called and
+    its result returned.
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         debug_print(f"Entering head_admin_required wrapper for {f.__name__}", level="all")
@@ -296,8 +428,22 @@ def head_admin_required(f):
 
 @app.context_processor
 def inject_admin_status():
+    """
+    Expose admin status helpers to templates.
+    
+    Returns two zero-argument callables for Jinja2 templates:
+    - is_head_admin(): returns True if the current session has the 'head_admin' flag.
+    - log_bot_admin(): returns True if the current session has the 'admin' flag.
+    
+    Both read directly from Flask's session and return False when the keys are absent.
+    """
     debug_print("Entering inject_admin_status", level="all")
     def check_head_admin():
+        """
+        Return True if the current session is marked as a head admin.
+        
+        Checks the Flask session for the 'head_admin' flag and returns its truthy value (defaults to False).
+        """
         return session.get('head_admin', False)
     
     def check_bot_admin():
@@ -402,6 +548,11 @@ EXPORT_MAP = {
 # Before Requests
 @app.before_request
 def refresh_session():
+    """
+    Ensure every request has a persistent session and, when no user or admin is present, create a stable anonymous session id.
+    
+    Sets session.permanent = True so the session uses the app's permanent-session lifetime. If neither 'user' nor 'admin' is in the session and no '_anon_session' key exists, a UUID string is stored at session['_anon_session'] and session.modified is set to True to force the cookie to be saved.
+    """
     debug_print("Entering refresh_session", level="all")
     # Ensure all requests get a session cookie
     session.permanent = True
@@ -410,6 +561,11 @@ def refresh_session():
             session['_anon_session'] = str(uuid.uuid4())
             session.modified = True
 def log_real_ip():
+    """
+    Record the client's apparent IP address (preferring Cloudflare's header) and emit a debug entry.
+    
+    Reads the "CF-Connecting-IP" request header and falls back to Flask's request.remote_addr if the header is absent, then logs the resolved IP and request path via the debug_print helper.
+    """
     debug_print("Entering log_real_ip", level="all")
     real_ip = request.headers.get("CF-Connecting-IP", request.remote_addr)
     debug_print(f"Real IP: {real_ip} -> Path: {request.path}")
@@ -417,26 +573,55 @@ def log_real_ip():
 # Routes
 @app.route('/')
 def index():
+    """
+    Render the application's homepage.
+    
+    Returns:
+        A Flask response rendering the 'index.html' template.
+    """
     debug_print("Entering index route", level="all")
     return render_template('index.html')
 
 @app.route("/privacy-policy")
 def privacy_policy():
+    """
+    Render and return the site's privacy policy page.
+    
+    Returns:
+        A Flask response object containing the rendered "privacy.html" template.
+    """
     debug_print("Entering privacy_policy route", level="all")
     return render_template("privacy.html")
 
 @app.route("/terms-of-service")
 def terms_of_service():
+    """
+    Render and return the site's Terms of Service page.
+    
+    Returns:
+        Response: A Flask HTML response rendering the "terms.html" template.
+    """
     debug_print("Entering terms_of_service route", level="all")
     return render_template("terms.html")
     
 @app.route("/end-user-license-agreement")
 def end_user_license_agreement():
+    """
+    Render the End User License Agreement page.
+    
+    Returns:
+        A Flask response with the rendered "eula.html" template.
+    """
     debug_print("Entering end_user_license_agreement route", level="all")
     return render_template("eula.html")
 
 @app.route('/login')
 def login():
+    """
+    Start a Discord OAuth2 login flow for the current user.
+    
+    Clears the current Flask session, ensures the session cookie is permanent and saved, then initiates a Discord OAuth2 authorization request with the scopes `identify` and `guilds` and `prompt="none"`. Returns the response produced by the OAuth client (typically a redirect to Discord's authorization page).
+    """
     debug_print("Entering login route", level="all")
     session.clear()
     session.permanent = True
@@ -448,6 +633,16 @@ def login():
     
 @app.route('/admin/login', methods=['GET', 'POST'])
 def login_admin():
+    """
+    Render and handle the admin login page.
+    
+    For GET requests this returns the admin login template. For POST requests it validates the CSRF token and authenticates either a head admin (credentials compared to HEAD_BOT_ADMIN_* environment variables) or a stored bot admin (password verified with bcrypt via db.get_bot_admin). On successful authentication sets session keys:
+    - 'admin' = True
+    - 'admin_username' = the provided username
+    - 'head_admin' = True (only for head admin)
+    
+    On success redirects to the admin dashboard. On failure flashes an error and redirects back to the login page. CSRF token failures flash a security message and redirect. Returns a Flask response (redirect or rendered template).
+    """
     debug_print("Entering login_admin route", level="all")
     error = None
     if request.method == 'POST':
@@ -484,6 +679,14 @@ def login_admin():
 
 @app.route('/logout')
 def logout():
+    """
+    Log the current user out by clearing the session.
+    
+    Clears all session data, adds a success flash message, and redirects the client to the login page.
+    
+    Returns:
+        A Flask redirect response to the login route.
+    """
     debug_print("Entering logout route", level="all")
     session.clear()
     flash('Successfully logged out', 'success')
@@ -492,6 +695,17 @@ def logout():
 @app.route('/admin/logout')
 @login_required
 def logout_admin():
+    """
+    Log out the current admin session while preserving the user's Discord session.
+    
+    Removes admin-related session keys ('admin', 'head_admin', 'admin_username', '_fresh') so the user loses admin privileges but remains logged in to Discord. Flashes a success message when an admin session was terminated, or a warning if no admin session existed. Redirects to the guild selection page.
+    
+    Returns:
+        A Flask redirect response to the guild selection route.
+    
+    Errors:
+        On unexpected errors, logs the error and aborts with HTTP 500.
+    """
     debug_print("Entering logout_admin route", level="all")
     """Log out from admin access while preserving Discord session"""
     try:
@@ -514,6 +728,16 @@ def logout_admin():
 
 @app.route('/callback')
 def callback():
+    """
+    Handle the Discord OAuth2 callback, finalize login, and store the authenticated user's session.
+    
+    This endpoint is called after Discord redirects back from the OAuth flow. It validates the callback via the discord client, fetches the user's Discord profile, saves a minimal user object and the access token into the Flask session, marks the session permanent, and redirects to the guild selection page on success.
+    
+    On failure (missing token or any authorization/error during callback) the session is cleared, a flash error is set, and the client is redirected to the login page.
+    
+    Returns:
+        A Flask redirect response to either the guild selection page on success or the login page on failure.
+    """
     debug_print("Entering callback route", level="all")
     try:
         # Let flask_discord handle state validation
@@ -553,6 +777,14 @@ def callback():
 @app.route('/delete-data', methods=['GET', 'POST'])
 @login_required
 def delete_my_data():
+    """
+    Delete the current user's stored data for selected guilds (or all mutual guilds).
+    
+    Handles GET and POST for the "delete my data" page: on GET it renders a confirmation page listing mutual guilds; on POST it deletes the user's records from guild-scoped tables for each selected guild and removes the global users row. Requires an authenticated Discord session (user id present in session). Success and error outcomes are reported via flash messages and the route redirects back to itself after a successful deletion.
+    
+    Returns:
+        A Flask response: rendered template for GET, or a redirect after processing POST.
+    """
     debug_print("Entering delete_my_data route", level="all")
     user_id = session['user']['id']
     guilds = get_mutual_guilds(user_id)
@@ -588,6 +820,19 @@ def delete_my_data():
 @app.route('/guilds')
 @login_required
 def select_guild():
+    """
+    Render the guild selection page showing mutual guilds for the current user or all guilds for an admin.
+    
+    If the session has 'admin' set, the function loads all guild records from the database; otherwise it uses get_user_guilds() to build a list of the user's mutual guilds. Each non-admin guild entry includes:
+    - id (str)
+    - name
+    - icon (URL or empty string)
+    - permissions (integer bitfield)
+    - joined_at (may be None)
+    
+    Returns:
+        A Flask response rendering the 'guilds.html' template with the context variable `guilds`.
+    """
     debug_print("Entering select_guild route", level="all")
     user_guilds = get_user_guilds()
     common_guilds = [{
@@ -608,6 +853,21 @@ def select_guild():
 @login_required
 @admin_required
 def admin_guilds():
+    """
+    Render the admin guilds overview page.
+    
+    Raises:
+        werkzeug.exceptions.Forbidden: if the current session is not an admin (HTTP 403).
+    
+    Returns:
+        Response: Rendered 'admin_guilds.html' template with `guilds`, where each guild dict includes:
+            - id: guild_id
+            - name
+            - owner_id
+            - icon
+            - joined_at
+            - member_count: number of users in the guild
+    """
     debug_print("Entering admin_guilds route", level="all")
     if not session.get('admin'):
         abort(403)
@@ -628,6 +888,17 @@ def admin_guilds():
 @app.route('/admin/guilds/<guild_id>/invite', methods=['POST'])
 @admin_required
 def get_guild_invite(guild_id):
+    """
+    Get or create an invite link for a guild via the bot's API and redirect back to the admin guilds page.
+    
+    Attempts to create or fetch an invite by POSTing the guild ID to the bot web API. On success flashes a clickable invite link to the user; on failure flashes an error message. The request is CSRF-protected and errors are logged.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild to get or create an invite for.
+    
+    Returns:
+        werkzeug.wrappers.Response: A redirect response to the admin guilds listing (url_for('admin_guilds')).
+    """
     debug_print(f"Entering get_guild_invite route with guild_id: {guild_id}", level="all")
     """Get or create an invite link for a guild via the bot's webserver API."""
     try:
@@ -649,6 +920,15 @@ def get_guild_invite(guild_id):
 @app.route('/admin/guilds/<guild_id>/audit-log', methods=['POST'])
 @admin_required
 def get_guild_audit_log(guild_id):
+    """
+    Render the guild's audit log by fetching it from the bot's API.
+    
+    On success returns a rendered 'audit_log.html' template populated with the audit log.
+    On failure flashes an error message and redirects to the admin guilds page.
+    Performs CSRF protection and may raise a CSRFError (handled internally) or other HTTP/JSON-related errors while contacting the bot API.
+    Returns:
+        A Flask response: rendered template on success or a redirect on failure.
+    """
     debug_print(f"Entering get_guild_audit_log route with guild_id: {guild_id}", level="all")
     """Fetch and display the audit log for a guild via the bot's webserver API."""
     try:
@@ -671,6 +951,18 @@ def get_guild_audit_log(guild_id):
 @app.route('/admin/dashboard')
 @admin_required
 def admin_dashboard():
+    """
+    Render the admin dashboard page with summary counts and recent audit logs.
+    
+    Gathers total guilds, bot admin count, and form submission count from the database, fetches the 10 most recent audit log entries, and returns the rendered 'admin_dashboard.html' template populated with:
+    - guild_count: total number of guilds
+    - admin_count: total number of bot admins
+    - submission_count: total number of form submissions
+    - recent_logs: list of the most recent audit log rows
+    
+    Returns:
+        A Flask response (rendered template) for the admin dashboard.
+    """
     debug_print("Entering admin_dashboard route", level="all")
     # Get guild count
     guild_count_result = db.execute_query('SELECT COUNT(*) as count FROM guilds', fetch='one')
@@ -704,6 +996,18 @@ def admin_dashboard():
 @app.route('/admin/bot-admins', methods=['GET', 'POST'])
 @head_admin_required
 def manage_bot_admins():
+    """
+    Manage bot admin users.
+    
+    GET: Render the bot admin management page with the current list of bot admins and their privileges.
+    POST: Create a new bot admin after verifying CSRF, validating required form fields, and ensuring the username is unique.
+    On successful POST the password is hashed and the new admin is persisted; an audit log entry is created and the user is redirected back to the management page with a success flash. If validation or CSRF checks fail, the request is redirected with an appropriate flash message.
+    
+    Side effects:
+    - Inserts a new row into the bot_admins table and (implicitly) admin_privileges as applicable.
+    - Writes an audit log entry via log_action().
+    - Emits flash messages and issues redirects.
+    """
     debug_print("Entering manage_bot_admins route", level="all")
     if request.method == 'POST':
         try:
@@ -750,6 +1054,17 @@ def manage_bot_admins():
 @app.route('/admin/delete-bot-admin/<username>')
 @head_admin_required
 def delete_bot_admin(username):
+    """
+    Delete a bot admin by username and redirect back to the bot-admins management page.
+    
+    Performs the deletion from persistent storage, records an audit log entry, flashes a success message to the user, and returns a redirect response to the bot-admins list.
+    
+    Parameters:
+        username (str): The bot admin's username to remove.
+    
+    Returns:
+        werkzeug.wrappers.Response: A redirect response to the manage_bot_admins page.
+    """
     debug_print(f"Entering delete_bot_admin route with username: {username}", level="all")
     db.delete_bot_admin(username)
     
@@ -765,6 +1080,17 @@ def delete_bot_admin(username):
 @app.route('/update-privileges/<username>', methods=['POST'])
 @head_admin_required
 def update_privileges(username):
+    """
+    Update a bot admin's privilege flags from submitted form data and redirect to the bot-admins page.
+    
+    Reads `manage_servers`, `edit_config`, and `remove_bot` from the current request form, updates the stored privileges for `username`, records a human-readable audit entry via log_action, and flashes a success or security error message before redirecting.
+    
+    Parameters:
+        username (str): The bot admin's username whose privileges will be updated.
+    
+    Returns:
+        A Flask redirect response to the `manage_bot_admins` view.
+    """
     debug_print(f"Entering update_privileges route with username: {username}", level="all")
     try:
         csrf.protect()
@@ -795,6 +1121,17 @@ def update_privileges(username):
     return redirect(url_for('manage_bot_admins'))
 
 def log_action(action: str, details: str, changes: str = ""):
+    """
+    Log an administrative action to the application's audit_log table.
+    
+    Determines the acting identity from the current session (prefers head admin, then bot admin, otherwise "system")
+    and inserts a record into the `audit_log` database table with the provided action, details, and optional changes.
+    
+    Parameters:
+        action (str): Short identifier of the action performed (e.g., "create_command", "delete_backup").
+        details (str): Human-readable details describing the action context (e.g., which guild or object).
+        changes (str, optional): Optional machine- or human-readable summary of changes made; defaults to empty string.
+    """
     debug_print(f"Entering log_action with action: {action}, details: {details}, changes: {changes}", level="all")
     # Get current admin identity
     admin_identity = "system"
@@ -813,6 +1150,17 @@ def log_action(action: str, details: str, changes: str = ""):
 @app.route('/api/admin/<guild_id>/remove-all-data-and-bot', methods=['POST'])
 @admin_required
 def remove_guild(guild_id):
+    """
+    Remove all stored data for a guild and instruct the bot to leave that server.
+    
+    Deletes rows referencing the guild from a fixed set of tables (commands, configs, role menus, forms, warnings, announcements, backups of related features, etc.), calls the bot API to leave the guild, and redirects back to the admin guilds page. CSRF protection is enforced and user-facing flash messages indicate success, partial success (data deleted but bot leave failed), or failure.
+    
+    Parameters:
+        guild_id (int | str): Guild identifier (Discord snowflake or numeric ID) whose data should be removed.
+    
+    Returns:
+        A Flask redirect response to the admin guilds listing page.
+    """
     debug_print(f"Entering remove_guild route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
@@ -867,6 +1215,17 @@ def remove_guild(guild_id):
 @login_required
 @guild_required
 def guild_dashboard(guild_id):
+    """
+    Render the main dashboard page for a specific guild.
+    
+    Looks up the guild by ID (will abort with 404 if the guild is not accessible) and returns the rendered 'dashboard.html' template populated with the guild object.
+    
+    Parameters:
+        guild_id (str|int): Discord guild ID (snowflake) identifying which guild's dashboard to display.
+    
+    Returns:
+        Response: Flask response rendering the 'dashboard.html' template.
+    """
     debug_print(f"Entering guild_dashboard route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     return render_template('dashboard.html', guild=guild)
@@ -875,6 +1234,24 @@ def guild_dashboard(guild_id):
 @login_required
 @guild_required
 def remove_all_guild_data(guild_id):
+    """
+    Remove all stored data for a guild and return a JSON response indicating success or failure.
+    
+    This performs destructive deletion of rows associated with the provided guild_id across multiple application tables
+    (e.g., commands, configs, forms, announcements, roles, warnings, leveling data, backups-related tables, etc.).
+    On success it flashes a success message and returns a JSON response {"success": True}.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild whose data will be removed.
+    
+    Returns:
+        Flask Response: A JSON response with {"success": True} on success. On failure returns JSON {"success": False, "error": "<message>"}
+        and an appropriate HTTP status code (403 for invalid CSRF token, 500 for other errors).
+    
+    Side effects:
+        - Permanently deletes rows for the guild from multiple database tables.
+        - Emits a flash message on successful deletion.
+    """
     debug_print(f"Entering remove_all_guild_data route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
@@ -918,6 +1295,16 @@ def remove_all_guild_data(guild_id):
 @login_required
 @guild_required
 def remove_all_user_data(guild_id):
+    """
+    Delete all stored data for a single user within a guild and redirect back to the guild dashboard.
+    
+    This handler reads `user_id` from the POST form (key: `'user_id'`), enforces CSRF protection, and removes rows matching that user from several guild-scoped tables (user_levels, warnings, warning_actions, form_submissions, pending_role_changes, user_game_time, user_connections) and from the global `users` table. On success it flashes a success message and redirects to the guild dashboard; on CSRF failure or other errors it flashes an error message and redirects to the guild dashboard.
+    
+    Notes:
+    - Expects to be called as a POST route with form data.
+    - Requires a valid CSRF token.
+    - Returns a Flask redirect response to the guild dashboard.
+    """
     debug_print(f"Entering remove_all_user_data route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
@@ -959,6 +1346,17 @@ def remove_all_user_data(guild_id):
 @login_required
 @guild_required
 def guild_commands(guild_id):
+    """
+    Render and manage custom commands for a guild.
+    
+    Handles GET to render the commands management page for the specified guild (including the list of commands and the last sync time) and POST to create a new custom command for that guild.
+    
+    Parameters:
+        guild_id (str|int): Discord guild (server) identifier for which commands are displayed or created.
+    
+    Returns:
+        Flask response: On GET, renders the 'commands.html' template with guild data, commands list, and last_synced timestamp. On successful POST, returns JSON {"success": True}. On validation failure returns a 400 JSON error; on unexpected errors renders the error template with a 500 status.
+    """
     debug_print(f"Entering guild_commands route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     if request.method == 'POST':
@@ -998,6 +1396,16 @@ def guild_commands(guild_id):
 @login_required
 @guild_required
 def delete_command_api(guild_id, command_name):
+    """
+    Delete a custom command for a guild and return a JSON result.
+    
+    Parameters:
+        guild_id: ID of the guild whose command should be removed.
+        command_name: Name of the command to delete (case-sensitive).
+    
+    Returns:
+        A Flask JSON response: on success {'success': True}; on failure {'error': <message>} with HTTP 500.
+    """
     debug_print(f"Entering delete_command_api route with guild_id: {guild_id}, command_name: {command_name}", level="all")
     try:
         db.remove_command(guild_id, command_name)
@@ -1010,6 +1418,19 @@ def delete_command_api(guild_id, command_name):
 @login_required
 @guild_required
 def sync_commands(guild_id):
+    """
+    Trigger a remote command sync and update the guild's last_synced timestamp on success.
+    
+    Sends a POST to the configured internal sync API and, if the API responds with HTTP 200, updates the guild's
+    last_synced column to the current UTC timestamp. On non-200 responses or exceptions the function returns a JSON
+    error payload and an HTTP 500 status.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild whose last_synced timestamp should be updated on a successful sync.
+    
+    Returns:
+        flask.Response: JSON response with {'success': True} on success, or {'error': <message>} and HTTP 500 on failure.
+    """
     debug_print(f"Entering sync_commands route with guild_id: {guild_id}", level="all")
     try:
         api_url = f"{API_URL}/api/sync"
@@ -1033,6 +1454,17 @@ def sync_commands(guild_id):
 @login_required
 @guild_required
 def export_commands(guild_id):
+    """
+    Export all custom commands for a guild as a downloadable JSON file.
+    
+    Retrieves the guild's command list from the database, removes internal IDs, and returns a Flask Response containing the commands JSON with a Content-Disposition header to prompt file download.
+    
+    Parameters:
+        guild_id (int | str): Discord guild (server) ID whose commands will be exported.
+    
+    Returns:
+        flask.Response: Attachment response with JSON payload named "commands_<guild_id>.json". On failure returns a JSON error and HTTP 500.
+    """
     debug_print(f"Entering export_commands route with guild_id: {guild_id}", level="all")
     try:
         commands = db.get_guild_commands_list(guild_id)
@@ -1051,6 +1483,25 @@ def export_commands(guild_id):
 @login_required
 @guild_required
 def import_commands(guild_id):
+    """
+    Import a list of custom commands for a guild from the request JSON and persist them to the database.
+    
+    Expects the request body to be a JSON array of command objects. Each command may include the keys:
+    `command_name`, `content`, `description`, and `ephemeral`. Missing fields use sensible defaults
+    (`''` for strings, `'Custom command'` for description, `False` for ephemeral).
+    
+    Parameters:
+        guild_id (int | str): Discord guild identifier for which the commands will be created.
+    
+    Returns:
+        A Flask JSON response:
+          - 200 with `{'success': True}` on successful import.
+          - 400 with `{'error': 'Invalid format'}` if the request body is not a JSON list.
+          - 500 with `{'error': <message>}` on unexpected errors.
+    
+    Side effects:
+        Inserts one or more commands into persistent storage via `db.add_command`.
+    """
     debug_print(f"Entering import_commands route with guild_id: {guild_id}", level="all")
     try:
         import json
@@ -1074,6 +1525,18 @@ def import_commands(guild_id):
 @login_required
 @guild_required
 def delete_all_commands(guild_id):
+    """
+    Delete all custom commands for the specified guild.
+    
+    Deletes every row in the `commands` table for the given guild_id and returns a JSON response indicating success.
+    On failure returns a JSON error message with HTTP 500.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild whose commands should be removed.
+    
+    Returns:
+        Flask Response: JSON `{ "success": True }` on success or `{ "error": "<message>" }` with status 500 on failure.
+    """
     debug_print(f"Entering delete_all_commands route with guild_id: {guild_id}", level="all")
     try:
         db.execute_query('DELETE FROM commands WHERE guild_id = ?', (guild_id,))
@@ -1086,6 +1549,23 @@ def delete_all_commands(guild_id):
 @login_required
 @guild_required
 def edit_command(guild_id, command_name):
+    """
+    Render and handle editing of a custom command for a guild.
+    
+    On GET, renders the edit form populated with the existing command. On POST, validates CSRF, updates (upserts) the command's content, description, and ephemeral flag in the database, then redirects to the guild's commands page with an "updated" indicator.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild containing the command.
+        command_name (str): Name/identifier of the command to edit.
+    
+    Returns:
+        A Flask response: the edit page template (GET) or a redirect (POST). 
+    
+    Behavior:
+    - If the command does not exist, responds with 404.
+    - If CSRF validation fails on POST, flashes a message and redirects back to the edit page.
+    - On database update errors, flashes an error and redirects back to the edit page.
+    """
     debug_print(f"Entering edit_command route with guild_id: {guild_id}, command_name: {command_name}", level="all")
     guild = get_guild_or_404(guild_id)
     command = db.get_command(guild_id, command_name)
@@ -1133,6 +1613,17 @@ def edit_command(guild_id, command_name):
 @login_required
 @guild_required
 def command_permissions(guild_id):
+    """
+    Render and update command-level permission settings for a guild.
+    
+    Displays current allow-lists for both built-in and custom commands (roles and users) and, on POST, saves submitted permissions for each command into persistent storage and redirects back to the same page.
+    
+    Parameters:
+        guild_id (str|int): Discord guild (server) identifier.
+    
+    Returns:
+        Flask response: On GET, renders the 'command_permissions.html' template populated with commands, current permissions, roles, users, and guild info. On successful POST, redirects to the same route after persisting updates.
+    """
     debug_print(f"Entering command_permissions route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     # Get all built-in commands
@@ -1174,6 +1665,24 @@ def command_permissions(guild_id):
 @login_required
 @guild_required
 def log_config(guild_id):
+    """
+    Render and handle updates to a guild's logging configuration.
+    
+    GET: Loads the current logging configuration (merged with sensible defaults), available text channels, roles, and guild users, normalizes user entries into dicts with keys 'id', 'username', and 'discriminator', and renders the 'log_config.html' template.
+    
+    POST: Validates the CSRF token, reads form fields to build an updated log configuration (converting list fields to JSON strings where stored), updates the database via db.update_log_config, flashes a success message, and redirects back to the same settings page. If CSRF protection fails, flashes an error and redirects to the settings page.
+    
+    Parameters:
+        guild_id (int | str): Discord guild (server) identifier for which the logging configuration is being viewed or updated.
+    
+    Returns:
+        A Flask response: either a rendered template on GET, a redirect after a successful POST or CSRF failure, or a 500 abort on unexpected errors.
+    
+    Side effects:
+        - May update persistent logging configuration in the database.
+        - Emits flash messages for user feedback.
+        - Normalizes and exposes guild user objects for template rendering.
+    """
     debug_print(f"Entering log_config route with guild_id: {guild_id}", level="all")
     try:
         guild = get_guild_or_404(guild_id)
@@ -1273,6 +1782,24 @@ def log_config(guild_id):
 @login_required
 @guild_required
 def welcome_config(guild_id):
+    """
+    Render and update the welcome message configuration for a guild.
+    
+    Handles GET to display the current welcome configuration (falls back to sensible defaults)
+    and POST to validate and save updated settings. On POST the request is CSRF-checked,
+    the configuration is written to the database (INSERT OR REPLACE), and the user is redirected
+    back to the same configuration page with a flash message; on failure a danger flash is shown
+    and the form re-renders.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild whose welcome settings are being viewed or modified.
+    
+    Returns:
+        A Flask response: on GET it renders the "welcome_config.html" template with the current
+        configuration, guild data, and available text channels; on successful POST it redirects
+        to the same route (with a success flash); on POST failure it re-renders the template
+        with an error flash.
+    """
     debug_print(f"Entering welcome_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     config = db.execute_query('SELECT * FROM welcome_config WHERE guild_id = ?', (guild_id,), fetch='one') or {
@@ -1325,6 +1852,22 @@ def welcome_config(guild_id):
 @login_required
 @guild_required
 def goodbye_config(guild_id):
+    """
+    Render and update the goodbye message configuration for a guild.
+    
+    On GET: renders the goodbye configuration page populated from the database (falls back to a default config).
+    On POST: validates CSRF, reads form fields (enabled, channel_id, message_type, message_content, embed_title,
+    embed_description, embed_color, embed_thumbnail, show_server_icon), converts `embed_color` from a hex string
+    to an integer, and upserts the configuration into the `goodbye_config` table. On success it flashes a success
+    message and redirects back to the same page; on failure it logs the error and flashes an error message.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild whose goodbye configuration is being viewed or updated.
+    
+    Returns:
+        A Flask response object: either a rendered template for the configuration page (GET or failed POST)
+        or a redirect response after a successful POST.
+    """
     debug_print(f"Entering goodbye_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     config = db.execute_query('SELECT * FROM goodbye_config WHERE guild_id = ?', (guild_id,), fetch='one') or {
@@ -1374,6 +1917,27 @@ def goodbye_config(guild_id):
 @login_required
 @guild_required
 def blocked_words(guild_id):
+    """
+    Render and manage the blocked-words configuration for a guild.
+    
+    Handles GET to display the current blocked words and their embed configuration, and POST to update them.
+    On POST the route:
+    - Verifies CSRF and flashes a user-visible error if the token is invalid.
+    - Replaces the guild's blocked-words list and upserts the blocked-word embed configuration inside a single database transaction.
+    - Normalizes color input (hex string → integer), falling back to red on parse errors.
+    
+    Parameters:
+        guild_id: Guild identifier (snowflake) for which to load or update blocked-word settings.
+    
+    Returns:
+        A rendered template on GET or after successful POST redirect; redirects back to the same page on validation/CSRF/database errors, or aborts with HTTP 500 for unexpected failures.
+    
+    Side effects:
+        Writes to the blocked_words and blocked_word_embeds tables in the database when processing a POST.
+    
+    Error handling:
+        Database errors flash a message and redirect back to the settings page; unexpected exceptions result in a 500 response.
+    """
     debug_print(f"Entering blocked_words route with guild_id: {guild_id}", level="all")
     try:
         guild = get_guild_or_404(guild_id)
@@ -1458,6 +2022,20 @@ def blocked_words(guild_id):
 @login_required
 @guild_required
 def banned_users(guild_id):
+    """
+    Render a page showing users banned in a guild.
+    
+    Queries the warnings table for entries with a ban action (new schema) and falls back to a legacy query that matches 'ban' in the reason if the action_type column is not available. Renders the 'banned_users.html' template with a list of ban records (each as a dict), plus guild and guild_id for the template.
+    
+    Parameters:
+        guild_id (str|int): Guild identifier used to scope the query and load guild metadata.
+    
+    Returns:
+        A Flask response rendering 'banned_users.html'.
+    
+    Errors:
+        Aborts with HTTP 500 if the ban list or guild data cannot be retrieved.
+    """
     debug_print(f"Entering banned_users route with guild_id: {guild_id}", level="all")
     try:
         # Try the modern query first
@@ -1493,6 +2071,23 @@ def banned_users(guild_id):
 @login_required
 @guild_required
 def leaderboard(guild_id):
+    """
+    Render the XP/level leaderboard for a guild.
+    
+    Loads the guild (404 if not found), queries up to the top 100 users by level and XP from the user_levels table, and returns the rendered leaderboard page.
+    
+    Parameters:
+        guild_id (int|str): ID of the guild to show the leaderboard for.
+    
+    Returns:
+        A Flask response rendering 'leaderboard.html' with context keys:
+          - users: list of rows from `user_levels` ordered by level then xp
+          - guild_id: the provided guild ID
+          - guild: guild metadata returned by `get_guild_or_404`
+    
+    Raises:
+        404: If the guild does not exist (propagated from get_guild_or_404).
+    """
     debug_print(f"Entering leaderboard route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     
@@ -1513,6 +2108,19 @@ def leaderboard(guild_id):
 @login_required
 @guild_required
 def level_config(guild_id):
+    """
+    Render and handle the leveling configuration page for a guild.
+    
+    On GET: loads guild info, merges stored level config with sensible defaults, loads level rewards, channels, and roles, and renders the "level_config.html" template populated with that data.
+    
+    On POST: protects against CSRF, handles two actions:
+    - Adding a reward: validates numeric level and role existence, then stores a new level reward.
+    - Updating settings: parses and validates form fields (integers for cooldown/xp bounds, JSON for `xp_boost_roles`, hex color parsing, and filtering `excluded_channels` against available text channels), persists the merged configuration to the database, and flashes success or error messages.
+    
+    On query param delete (GET): deletes a configured reward for the given level after validation.
+    
+    Returns a Flask response: either a rendered template (GET) or a redirect back to the same page after POST/delete actions. Error conditions produce user-facing flash messages; unexpected errors are logged and result in an error flash and redirect.
+    """
     debug_print(f"Entering level_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     text_channels = get_text_channels(guild_id)
@@ -1689,6 +2297,18 @@ def level_config(guild_id):
 @login_required
 @guild_required
 def auto_roles_config(guild_id):
+    """
+    Render and update a guild's automatic role (auto-role) configuration.
+    
+    GET: render the auto-roles page showing available roles and the currently configured auto-roles.
+    POST: accept a form field "autoroles" (one or more role IDs), update the stored auto-role list for the guild, flash a success message, and redirect back to the same page. If the CSRF check fails, a danger flash is shown and the page is re-rendered.
+    
+    Parameters:
+        guild_id (int or str): ID of the guild whose auto-role settings are being viewed or modified.
+    
+    Returns:
+        A Flask response: either the rendered auto_roles_config template (GET or failed CSRF) or a redirect response after a successful update.
+    """
     debug_print(f"Entering auto_roles_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     roles = get_roles(guild_id)
@@ -1715,6 +2335,20 @@ def auto_roles_config(guild_id):
 @login_required
 @guild_required
 def game_roles_config(guild_id):
+    """
+    Render and handle the game-role configuration page for a guild.
+    
+    Displays existing game->role mappings, a list of top games from static configuration, and available guild roles. On POST it validates and persists new mappings or deletes an existing mapping, flashing a success or error message and redirecting back to the same page.
+    
+    Parameters:
+        guild_id: ID of the guild whose game-role settings are being viewed/modified.
+    
+    Behavior notes:
+    - Reads a static JSON file (static/other/rpc_games.json) to populate the top games list; if missing or invalid, an empty list is used and a flash message is emitted.
+    - On POST, enforces CSRF protection. If the form contains 'delete' it removes the mapping for the submitted game name; otherwise it validates `game_name`, `role_id`, and `required_minutes` (must be a positive integer) and inserts or replaces the row in the `game_roles` table.
+    - Uses the global `db` for queries and `flash` for user-facing messages.
+    - Returns a rendered template ('game_roles.html') on GET or after successful operations; on unexpected errors it flashes an error and redirects to the guild selection page.
+    """
     debug_print(f"Entering game_roles_config route with guild_id: {guild_id}", level="all")
     try:
         # Get guild and roles
@@ -1801,6 +2435,17 @@ def game_roles_config(guild_id):
 @login_required
 @guild_required
 def twitch_announcements_page(guild_id):
+    """
+    Render and handle the Twitch announcements configuration page for a guild.
+    
+    Displays existing Twitch announcement entries and processes form actions to add, edit, delete, or toggle announcements. Actions modify the `twitch_announcements` database table, enforce a per-user limit of 15 live stream entries, require a valid CSRF token for POST requests, and use Flask flash messages and redirects to report results.
+    
+    Parameters:
+        guild_id (str|int): Discord guild (server) ID whose Twitch announcement settings are being viewed or modified.
+    
+    Returns:
+        A Flask response rendering the 'twitch_announcements.html' template on GET, or a redirect/flash response after handling POST actions.
+    """
     debug_print(f"Entering twitch_announcements_page route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     channels = get_text_channels(guild_id)
@@ -1813,6 +2458,17 @@ def twitch_announcements_page(guild_id):
         fetch='all'
     )
     def get_role_mention(role_id):
+        """
+        Return a Discord role mention string for a given role ID.
+        
+        If role_id is falsy or not found in the module-level `roles` list, an empty string is returned.
+        
+        Parameters:
+            role_id: Role identifier (any type convertible to string) to look up in `roles`.
+        
+        Returns:
+            str: A mention in the format "<@&{role_id}>" when found, otherwise an empty string.
+        """
         if not role_id:
             return ''
         for r in roles:
@@ -1820,6 +2476,15 @@ def twitch_announcements_page(guild_id):
                 return f"<@&{r['id']}>"
         return ''
     def get_channel_name(channel_id):
+        """
+        Return the display name for a channel id from the in-memory `channels` list.
+        
+        Parameters:
+            channel_id: ID of the channel to look up (int or str).
+        
+        Returns:
+            str: The channel's name if found; otherwise the string "Unknown (<channel_id>)".
+        """
         for channel in channels:
             if str(channel['id']) == str(channel_id):
                 return channel['name']
@@ -1899,6 +2564,22 @@ def twitch_announcements_page(guild_id):
 @login_required
 @guild_required
 def youtube_announcements_page(guild_id):
+    """
+    Render and manage YouTube announcement configurations for a guild.
+    
+    Handles GET to render the YouTube announcements page (provides guild, text channels, roles,
+    and existing announcements). Handles POST form actions to add, edit, delete, or toggle
+    announcements in the `youtube_announcements` table. Adding enforces per-user limits
+    (maximum 10 regular video channels and 5 live-stream channels). Requests are protected
+    by CSRF and user-facing success or error messages are flashed.
+    
+    Parameters:
+        guild_id (str|int): Guild (server) identifier for which announcements are managed.
+    
+    Returns:
+        A Flask response: on GET renders 'youtube_announcements.html'; on successful POST redirects
+        back to the page (or to the current URL after edits); on error flashes an error and renders/redirects accordingly.
+    """
     debug_print(f"Entering youtube_announcements_page route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     channels = get_text_channels(guild_id)
@@ -1915,6 +2596,17 @@ def youtube_announcements_page(guild_id):
             ann['announce_channel_id'] = ann.get('announce_channel_id') or ann.get('channel_id')
         ann['channel_id'] = ann.get('channel_id')
     def get_role_mention(role_id):
+        """
+        Return a Discord role mention string for a given role ID.
+        
+        If role_id is falsy or not found in the module-level `roles` list, an empty string is returned.
+        
+        Parameters:
+            role_id: Role identifier (any type convertible to string) to look up in `roles`.
+        
+        Returns:
+            str: A mention in the format "<@&{role_id}>" when found, otherwise an empty string.
+        """
         if not role_id:
             return ''
         for r in roles:
@@ -1922,6 +2614,15 @@ def youtube_announcements_page(guild_id):
                 return f"<@&{r['id']}>"
         return ''
     def get_channel_name(channel_id):
+        """
+        Return the display name for a channel id from the in-memory `channels` list.
+        
+        Parameters:
+            channel_id: ID of the channel to look up (int or str).
+        
+        Returns:
+            str: The channel's name if found; otherwise the string "Unknown (<channel_id>)".
+        """
         for channel in channels:
             if str(channel['id']) == str(channel_id):
                 return channel['name']
@@ -2013,6 +2714,18 @@ def youtube_announcements_page(guild_id):
 @login_required
 @guild_required
 def role_menus(guild_id):
+    """
+    Render the role menus editor page for a guild.
+    
+    Loads the guild (404 if not found or inaccessible), fetches stored role menus and text channels for the guild,
+    and returns the rendered 'role_menus.html' template.
+    
+    Parameters:
+        guild_id (int | str): The guild's ID.
+    
+    Returns:
+        Response: Rendered Flask template for the role menus page.
+    """
     debug_print(f"Entering role_menus route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     menus = db.execute_query(
@@ -2028,6 +2741,24 @@ def role_menus(guild_id):
 @login_required
 @guild_required
 def edit_role_menu(guild_id, menu_type, menu_id):
+    """
+    Render and handle edits for a role menu (dropdown, reaction role, or button) for a guild.
+    
+    On GET: load the menu config, available roles and text channels, generate a short-lived JWT for front-end API calls, and render the appropriate editor template for the given menu type.
+    On POST: validate CSRF, persist the submitted JSON config to the database, flash a success message and redirect back to the same editor.
+    
+    Parameters:
+        guild_id: ID of the guild the menu belongs to.
+        menu_type: One of 'dropdown', 'reactionrole', or 'button' — selects which editor template and validates the stored menu type.
+        menu_id: Database ID of the role menu to edit.
+    
+    Returns:
+        A Flask response: rendered editor template on GET, or a redirect after successful POST.
+    
+    Side effects:
+        - Aborts with 404 if menu_type is invalid or the menu row does not exist for the given guild.
+        - Updates the role_menus.config column when a POST with valid CSRF is received.
+    """
     debug_print(f"Entering edit_role_menu route with guild_id: {guild_id}, menu_type: {menu_type}, menu_id: {menu_id}", level="all")
     # Validate menu_type
     if menu_type not in ('dropdown', 'reactionrole', 'button'):
@@ -2076,6 +2807,23 @@ def edit_role_menu(guild_id, menu_type, menu_id):
 @login_required
 @guild_required
 def api_create_role_menu(guild_id=None):
+    """
+    Create a new placeholder role menu for a guild and return a setup URL.
+    
+    Accepts JSON with optional "guild_id" (overrides route param), required "menu_type" (one of "dropdown", "button", "reactionrole") and required "channel_id". The function inserts a new row into the `role_menus` table with an auto-generated menu id and an empty JSON config, setting the creator from the current session user or admin username. Returns JSON with a `setup_url` for editing the new menu.
+    
+    Returns:
+        JSON response with:
+          - success (bool)
+          - setup_url (str) on success
+          - error (str) on failure
+    
+    HTTP status codes:
+        200 on success,
+        400 when required fields are missing or menu_type is invalid,
+        403 if CSRF protection fails,
+        500 on unexpected errors.
+    """
     debug_print(f"Entering api_create_role_menu route with guild_id: {guild_id}", level="all")
     try:
         csrf.protect()
@@ -2116,6 +2864,19 @@ def api_create_role_menu(guild_id=None):
 @login_required
 @guild_required
 def delete_role_menu(guild_id, menu_id):
+    """
+    Delete a role menu record for a guild and return a JSON response.
+    
+    Deletes the row in the `role_menus` table matching the provided `menu_id` and `guild_id`.
+    On success returns a JSON object {"success": True}. On failure returns {"success": False, "error": "<message>"} with HTTP status 500.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild that owns the role menu.
+        menu_id (int | str): ID of the role menu to delete.
+    
+    Returns:
+        flask.Response: JSON response indicating success or failure. HTTP 200 on success, 500 on error.
+    """
     debug_print(f"Entering delete_role_menu route with guild_id: {guild_id}, menu_id: {menu_id}", level="all")
     try:
         db.execute_query(
@@ -2132,6 +2893,19 @@ def delete_role_menu(guild_id, menu_id):
 @login_required
 @guild_required
 def guild_backups(guild_id):
+    """
+    Render the backups page for a guild (GET) or start a backup (POST).
+    
+    GET: fetches backup metadata via get_backups(guild_id) and renders the 'backups.html' template with the results. If fetching backups fails the page is rendered with an empty list and a flashed error message.
+    
+    POST: requests a backup to be started by POSTing to the internal backup API. On success returns a JSON response with HTTP 202. On API failure flashes an error and redirects back to the backups page.
+    
+    Parameters:
+        guild_id (int|str): ID of the guild whose backups are being viewed or started.
+    
+    Returns:
+        A Flask response — either a rendered template, a redirect, or a JSON response with status 202 when a backup start is accepted.
+    """
     debug_print(f"Entering guild_backups route with guild_id: {guild_id}", level="all")
     try:
         if request.method == 'POST':
@@ -2159,6 +2933,17 @@ def guild_backups(guild_id):
 @login_required
 @guild_required
 def backup_progress(guild_id):
+    """
+    Return the current backup progress for a guild as JSON.
+    
+    Calls the internal bot API to fetch backup progress for the given guild and proxies the JSON response. On error returns a JSON object with keys "progress" (0), "step_text" (empty string) and "error" (error message) with HTTP 200.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild to query.
+    
+    Returns:
+        flask.Response: JSON response from the bot API or an error object as described above.
+    """
     debug_print(f"Entering backup_progress route with guild_id: {guild_id}", level="all")
     try:
         api_url = f"{API_URL}/api/backup_progress?guild_id={guild_id}"
@@ -2172,6 +2957,23 @@ def backup_progress(guild_id):
 @login_required
 @guild_required
 def download_backup(guild_id, backup_id):
+    """
+    Download a stored guild backup file and return it as an attachment.
+    
+    Looks up the backup by backup_id for the given guild_id and streams the backup file
+    to the client as an attachment. If the backup record is missing or the file is
+    not present on disk, flashes an error message and aborts with a 404. On unexpected
+    errors the function logs the error, flashes a failure message, and redirects to
+    the guild backups page.
+    
+    Parameters:
+        guild_id (int|str): ID of the guild that owns the backup.
+        backup_id (int|str): Identifier of the backup to download.
+    
+    Returns:
+        A Flask response that sends the backup file as an attachment on success,
+        or a redirect response to the guild backups page on failure.
+    """
     debug_print(f"Entering download_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     try:
         backup = get_backup(backup_id, guild_id)
@@ -2191,6 +2993,19 @@ def download_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def restore_backup(guild_id, backup_id):
+    """
+    Start a backup restore for a guild by requesting the bot API and redirecting to the backups page.
+    
+    Checks that the specified backup exists on disk, then posts a restore request to the bot API. On success, flashes an informational message; if the backup is missing or the API reports failure, flashes an error and redirects to the guild backups page. Unexpected exceptions are logged, flashed as errors, and also redirect to the guild backups page. May abort with a 404 if the backup record or file is missing.
+    
+    Parameters:
+        guild_id: ID of the guild whose backup will be restored.
+        backup_id: Identifier of the backup to restore.
+    
+    Side effects:
+        - Calls the bot API endpoint to start a restore.
+        - Uses Flask flash messages and redirects (or aborts 404) to communicate outcome.
+    """
     debug_print(f"Entering restore_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     try:
         backup = get_backup(backup_id, guild_id)
@@ -2220,6 +3035,18 @@ def restore_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def delete_backup(guild_id, backup_id):
+    """
+    Delete a stored backup file and its database record for a guild, then redirect back to the backups page.
+    
+    Deletes the backup file on disk (if present) and removes the corresponding row from the `backups` table. On success a success flash message is set; on failure an error is flashed and logged. Always redirects to the guild backups view.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild that owns the backup.
+        backup_id (int | str): Identifier of the backup to delete.
+    
+    Returns:
+        werkzeug.wrappers.Response: A redirect response to the guild backups page.
+    """
     debug_print(f"Entering delete_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     try:
         backup = get_backup(backup_id, guild_id)
@@ -2242,6 +3069,19 @@ def delete_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def share_backup(guild_id, backup_id):
+    """
+    Create a public share link for a guild backup and redirect back to the backups page.
+    
+    Creates a share identifier for the backup (via set_backup_share_id), flashes a success
+    message with the public URL, and redirects to the guild's backups dashboard.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild that owns the backup.
+        backup_id (int | str): ID of the backup to share.
+    
+    Returns:
+        A Flask redirect response to the guild backups page.
+    """
     debug_print(f"Entering share_backup route with guild_id: {guild_id}, backup_id: {backup_id}", level="all")
     share_id = set_backup_share_id(backup_id, guild_id)
     flash(f'Share link created: {FRONTEND_URL}/backup/{share_id}', 'success')
@@ -2251,6 +3091,17 @@ def share_backup(guild_id, backup_id):
 @login_required
 @guild_required
 def import_backup(guild_id):
+    """
+    Import a guild backup JSON uploaded via multipart form and register it for the guild.
+    
+    Expects a file field named 'backup_file' in the request containing a .json backup. Validates the filename, then delegates processing to import_backup_file(file, guild_id). On success or failure the function flashes a user-facing message and redirects back to the guild backups page.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild to import the backup into.
+    
+    Returns:
+        werkzeug.wrappers.Response: A redirect response to the guild backups page. The response includes a flashed success or error message.
+    """
     debug_print(f"Entering import_backup route with guild_id: {guild_id}", level="all")
     file = request.files.get('backup_file')
     if not file or not file.filename.endswith('.json'):
@@ -2268,6 +3119,17 @@ def import_backup(guild_id):
 @login_required
 @guild_required
 def import_backup_url(guild_id):
+    """
+    Import a backup JSON from a public URL and register it for the specified guild.
+    
+    Validates the provided form field 'backup_url' (must be a non-empty HTTP/HTTPS URL), downloads the file, and registers it as a backup by calling import_backup_file_from_bytes. On success or failure the function sets a flash message and redirects back to the guild's backups page.
+    
+    Parameters:
+        guild_id (int | str): Identifier of the guild to associate the imported backup with.
+    
+    Returns:
+        A Flask redirect response to the guild_backups page for the given guild_id.
+    """
     debug_print(f"Entering import_backup_url route with guild_id: {guild_id}", level="all")
     backup_url = request.form.get('backup_url', '').strip()
     if not backup_url or not backup_url.startswith('http'):
@@ -2288,6 +3150,17 @@ def import_backup_url(guild_id):
 
 @app.route('/share/backup/<share_id>')
 def public_backup_download(share_id):
+    """
+    Serve a publicly shared backup file for a given share ID.
+    
+    Given a share_id, looks up the corresponding backup record and returns the backup file as an attachment if it exists. If no matching backup is found or the file is missing, returns a 404-style (message, status) response.
+    
+    Parameters:
+        share_id (str): Public share identifier for the backup.
+    
+    Returns:
+        A Flask response sending the backup file as an attachment on success, or a (message, status) tuple with HTTP 404 when the backup or file is not found.
+    """
     debug_print(f"Entering public_backup_download route with share_id: {share_id}", level="all")
     backup = get_backup_by_share_id(share_id)
     if not backup or not os.path.exists(backup['file_path']):
@@ -2298,6 +3171,24 @@ def public_backup_download(share_id):
 @login_required
 @guild_required
 def schedule_backup(guild_id):
+    """
+    Create, list, and preview scheduled backups for a guild.
+    
+    Handles both POST and GET:
+    - POST: validates form fields from the request, inserts a new schedule row into the `schedules` table, flashes a success message, attempts to notify the bot to reload schedules, and redirects back to the same page.
+    - GET: loads existing schedules for `guild_id`, computes each schedule's next local and UTC run times (approximating months as 30 days and years as 365 days), and renders the schedule management template with computed metadata and the list of timezones.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild for which schedules are managed.
+    
+    Side effects:
+    - Writes a new schedule to the database on POST.
+    - Attempts an HTTP POST to the bot API to trigger schedule reload (errors are logged but do not propagate).
+    - Uses Flask `flash` to set a user-visible message on successful creation.
+    
+    Returns:
+        A Flask response: a redirect after POST or a rendered template (schedule_backup.html) on GET containing `schedules` (with computed `next_backup_local`, `next_backup_utc`, and `seconds_until`) and `all_timezones`.
+    """
     debug_print(f"Entering schedule_backup route with guild_id: {guild_id}", level="all")
     if request.method == 'POST':
         start_date = request.form.get('start_date')
@@ -2386,6 +3277,18 @@ def schedule_backup(guild_id):
 @login_required
 @guild_required
 def delete_schedule(guild_id, schedule_id):
+    """
+    Delete a scheduled backup job for a guild and redirect back to the backup schedule page.
+    
+    Deletes the schedule row matching `schedule_id` and `guild_id` from the database. On success a success flash message is added; on failure the error is logged and an error flash is shown. The function always returns a redirect response to the schedule backup view for the given guild.
+    
+    Parameters:
+        guild_id (int|str): ID of the guild owning the schedule.
+        schedule_id (int|str): ID of the schedule to delete.
+    
+    Returns:
+        werkzeug.wrappers.Response: Redirect response to the schedule backup page for `guild_id`.
+    """
     debug_print(f"Entering delete_schedule route with guild_id: {guild_id}, schedule_id: {schedule_id}", level="all")
     try:
         with get_conn() as conn:
@@ -2400,6 +3303,18 @@ def delete_schedule(guild_id, schedule_id):
 @login_required
 @guild_required
 def toggle_schedule(guild_id, schedule_id):
+    """
+    Toggle the enabled state of a scheduled backup for a guild and redirect back to the schedule page.
+    
+    Looks up the schedule by schedule_id and guild_id; if found, flips its `enabled` boolean in the database and flashes a success message; if not found, flashes an error. Redirects to the schedule_backup view for the guild.
+    
+    Parameters:
+        guild_id (int|str): ID of the guild owning the schedule.
+        schedule_id (int|str): ID of the schedule to toggle.
+    
+    Returns:
+        Response: A Flask redirect response to the schedule_backup page for the given guild.
+    """
     debug_print(f"Entering toggle_schedule route with guild_id: {guild_id}, schedule_id: {schedule_id}", level="all")
     with get_conn() as conn:
         sched = conn.execute('SELECT enabled FROM schedules WHERE id = ? AND guild_id = ?', (schedule_id, guild_id)).fetchone()
@@ -2416,6 +3331,23 @@ def toggle_schedule(guild_id, schedule_id):
 @login_required
 @guild_required
 def warnings(guild_id):
+    """
+    Render the warned users page for a guild.
+    
+    Updates stored usernames from Discord, aggregates warning counts per user for the given guild,
+    and returns the rendered 'warned_users.html' template with the warnings list and guild info.
+    
+    Parameters:
+        guild_id (int | str): Discord guild ID to load warnings for.
+    
+    Returns:
+        A Flask response rendering 'warned_users.html' with keys:
+          - warnings: list of dicts with keys 'user_id', 'username', and 'count'
+          - guild_id, guild
+    
+    Errors:
+        Aborts with HTTP 500 if warnings cannot be retrieved.
+    """
     debug_print(f"Entering warnings route with guild_id: {guild_id}", level="all")
     try:
         # First try to update usernames from Discord API
@@ -2472,6 +3404,26 @@ def update_usernames_from_discord(guild_id):
 @login_required
 @guild_required
 def user_warnings(guild_id, user_id):
+    """
+    Display and manage a user's warnings for a guild (GET renders the page; POST updates or adds warnings).
+    
+    On GET: loads the guild (404 if not found) and renders the user_warnings.html template with the user's warnings.
+    On POST: enforces CSRF protection, updates any existing warning reasons present in the form (fields named "reason_<warning_id>"),
+    and optionally adds a new warning from form field "new_reason". Commits changes via the database helpers, flashes success or
+    security messages, and redirects back to the same user warnings page.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild whose warnings are being viewed or modified.
+        user_id (str|int): ID of the user whose warnings are being viewed or modified.
+    
+    Returns:
+        A Flask response: either a rendered template (GET) or a redirect after processing (POST).
+    
+    Side effects:
+        - Calls db.update_warning_reason and/or db.add_warning to persist changes.
+        - Flashes messages to the session for user feedback.
+        - May redirect the client after POST; CSRF failures flash an error and redirect without applying changes.
+    """
     debug_print(f"Entering user_warnings route with guild_id: {guild_id}, user_id: {user_id}", level="all")
     if request.method == 'POST':
         # Verify CSRF token first
@@ -2508,6 +3460,22 @@ def user_warnings(guild_id, user_id):
 @login_required
 @guild_required
 def delete_warning(guild_id, user_id, warning_id):
+    """
+    Delete a specific warning for a user in a guild, flash a success message, and redirect back to that user's warnings page.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild containing the warning; will raise a 404 if the guild is not found.
+        user_id (int | str): ID of the user whose warning will be removed.
+        warning_id (int | str): Identifier of the warning to delete.
+    
+    Returns:
+        werkzeug.wrappers.Response: A Flask redirect response to the user's warnings view.
+    
+    Side effects:
+        - Removes the warning record from persistent storage.
+        - Adds a success flash message.
+        - Triggers a redirect to the user_warnings page.
+    """
     debug_print(f"Entering delete_warning route with guild_id: {guild_id}, user_id: {user_id}, warning_id: {warning_id}", level="all")
     guild = get_guild_or_404(guild_id)
     db.remove_warning(guild_id, user_id, warning_id)
@@ -2520,6 +3488,26 @@ def delete_warning(guild_id, user_id, warning_id):
 @login_required
 @guild_required
 def warning_actions_config(guild_id):
+    """
+    Render and process the warning actions configuration page for a guild.
+    
+    GET: Renders the warning actions editor showing existing rules.
+    POST: Validates CSRF, parses up to 50 form rows of warning rules, and persists them:
+    - Each rule requires a numeric warning count and an action name.
+    - For timeout actions, a duration may be provided in formats like `45s`, `30m`, `1h`, `2d`, `1w` (seconds, minutes, hours, days, weeks). If parsing fails for a timeout duration, a default of 3600 seconds is used.
+    - Saves or updates rules via the database and removes any previously stored rules that were deleted from the submitted form.
+    On successful POST the user is redirected back to the same page and a success flash is shown; on failure a danger flash is shown and the error is logged.
+    
+    Side effects:
+    - Reads and writes warning action records through the `db` API (set_warning_action, remove_warning_action).
+    - Emits Flask flash messages and may return a redirect response.
+    
+    Parameters:
+        guild_id: Identifier of the guild whose warning actions are being managed.
+    
+    Returns:
+        A Flask response: either the rendered `warning_actions.html` template (GET or on error) or a redirect after successful update (POST).
+    """
     debug_print(f"Entering warning_actions_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     actions = db.get_warning_actions(guild_id)
@@ -2581,6 +3569,18 @@ def warning_actions_config(guild_id):
 @login_required
 @guild_required
 def spam_config(guild_id):
+    """
+    Render and process the spam configuration page for a guild.
+    
+    On GET: renders the spam configuration template populated with the current settings, text channels, and roles for the guild.
+    On POST: validates CSRF, parses and validates numeric form fields and list fields, enforces minimums (all numeric thresholds/windows must be >= 1), merges values with sensible defaults, updates the guild's spam configuration in the database, and redirects back to the same page while flashing success or error messages.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild whose spam settings are being viewed or updated.
+    
+    Returns:
+        A Flask response: on GET, the rendered "spam_config.html" template; on POST, a redirect back to the spam_config route (or the same template if validation fails).
+    """
     debug_print(f"Entering spam_config route with guild_id: {guild_id}", level="all")
     guild = get_guild_or_404(guild_id)
     config = db.get_spam_config(guild_id)
@@ -2649,6 +3649,11 @@ def spam_config(guild_id):
 @login_required
 @guild_required
 def custom_forms_dashboard(guild_id):
+    """
+    Render the custom forms dashboard for a guild.
+    
+    Fetches all custom forms that belong to the given guild plus global templates (is_template = 1), ordering templates first then by creation time, loads the guild (raises a 404 if not found), and returns the rendered 'form_dashboard.html' page populated with the guild, forms, guild_id, and FRONTEND_URL.
+    """
     debug_print(f"Entering custom_forms_dashboard route with guild_id: {guild_id}", level="all")
     forms = db.execute_query(
         'SELECT * FROM custom_forms WHERE guild_id = ? OR is_template = 1 ORDER BY is_template DESC, created_at DESC',
@@ -2662,6 +3667,25 @@ def custom_forms_dashboard(guild_id):
 @login_required
 @guild_required
 def create_custom_form(guild_id):
+    """
+    Create a new custom form (POST) or render the form builder page (GET) for a guild.
+    
+    On GET: loads prebuilt templates from web/static/other/prebuilt_templates.json, fetches the guild's text channels, and renders the form builder page.
+    
+    On POST: expects a JSON body with at least `name` and `config` keys (optional `description`). Creates a new custom_forms row with a generated UUID, the current session user's id as `created_by`, and returns JSON { "success": True, "form_id": "<uuid>" }.
+    
+    Parameters:
+        guild_id (str|int): ID of the guild the form belongs to.
+    
+    Side effects:
+        - Reads the prebuilt templates JSON file from disk.
+        - Inserts a row into the `custom_forms` database table.
+        - Relies on `session['user']['id']` to record the creator.
+    
+    Notes:
+        - The POST handler uses request.get_json(force=True) so the request body must be valid JSON.
+        - Does not perform explicit permission checks; caller should ensure the caller is authorized.
+    """
     debug_print(f"Entering create_custom_form route with guild_id: {guild_id}", level="all")
     with open(os.path.join('web', 'static', 'other', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
         prebuilt_templates = json.load(f)
@@ -2681,6 +3705,27 @@ def create_custom_form(guild_id):
 @login_required
 @guild_required
 def edit_custom_form(guild_id, form_id):
+    """
+    Render and handle edits to an existing custom form for a guild.
+    
+    For GET requests, renders the form builder page populated with the saved form, available prebuilt templates, and the guild's text channels.
+    For POST requests, expects a JSON body with keys:
+    - "name" (str): new form name
+    - "config" (dict/list): form configuration to store
+    - "description" (str, optional): form description
+    
+    On POST the form record is updated and a JSON success object is returned.
+    
+    Parameters:
+        guild_id: ID of the guild that owns the form.
+        form_id: ID of the custom form to edit.
+    
+    Returns:
+        A Flask response — either render_template(...) for GET or jsonify({'success': True}) for a successful POST.
+    
+    Raises:
+        Aborts with 404 if the requested form does not exist for the given guild.
+    """
     debug_print(f"Entering edit_custom_form route with guild_id: {guild_id}, form_id: {form_id}", level="all")
     with open(os.path.join('web', 'static', 'other', 'prebuilt_templates.json'), 'r', encoding='utf-8') as f:
         prebuilt_templates = json.load(f)
@@ -2705,6 +3750,18 @@ def edit_custom_form(guild_id, form_id):
 @login_required
 @guild_required
 def delete_custom_form(guild_id, form_id):
+    """
+    Delete a custom form for a guild, flash a success message, and redirect to the forms dashboard.
+    
+    Deletes the database row in `custom_forms` matching the given guild and form IDs, adds a user-facing flash message, and returns a redirect response to the guild's custom forms dashboard.
+    
+    Parameters:
+        guild_id (int or str): ID of the guild that owns the form.
+        form_id (int or str): ID of the form to delete.
+    
+    Returns:
+        Response: A Flask redirect response to the 'custom_forms_dashboard' for the given guild.
+    """
     debug_print(f"Entering delete_custom_form route with guild_id: {guild_id}, form_id: {form_id}", level="all")
     db.execute_query('DELETE FROM custom_forms WHERE id = ? AND guild_id = ?', (form_id, guild_id))
     flash('Form deleted.', 'success')
@@ -2732,6 +3789,28 @@ def delete_custom_form(guild_id, form_id):
 @app.route('/api/forms/<form_id>/submit', methods=['POST'])
 @login_required
 def submit_custom_form(form_id):
+    """
+    Handle submission of a custom form: validate limits, persist the submission, and proxy the submission to the bot API.
+    
+    This endpoint:
+    - Expects a JSON body with a "responses" mapping.
+    - Looks up the form by `form_id` and enforces the configured `max_submissions` per user.
+    - Inserts a new row into `form_submissions` (generates a UUID for the submission).
+    - Proxies the submission to the bot API (includes a server-issued JWT and a user mention).
+    - Returns the bot API response (status, headers, body) on success.
+    
+    Error behaviors:
+    - 404 if the form_id does not exist.
+    - 429 if the user has reached the form's `max_submissions`.
+    - 502 if the bot API responds but its response cannot be interpreted as expected.
+    - 500 for unexpected server-side errors.
+    
+    Parameters:
+        form_id (str): Identifier of the custom form to submit (from the route).
+    
+    Returns:
+        A Flask response: either the proxied bot API response (status, headers, body) or a JSON error response with an appropriate HTTP status code.
+    """
     debug_print(f"Entering submit_custom_form route with form_id: {form_id}", level="all")
     try:
         data = request.get_json(force=True)
@@ -2794,6 +3873,21 @@ def submit_custom_form(form_id):
 @login_required
 @guild_required
 def view_form_submissions(guild_id, form_id):
+    """
+    Render the submissions page for a specific form in a guild.
+    
+    Fetches form submissions for the given form_id and guild_id (ordered newest first) and returns the rendered HTML page.
+    
+    Parameters:
+        guild_id (int | str): ID of the guild whose form submissions to view.
+        form_id (int | str): ID of the form.
+    
+    Returns:
+        Response: Flask response object for the rendered 'form_submissions.html' template.
+    
+    Raises:
+        404: If the guild does not exist (propagated from get_guild_or_404).
+    """
     debug_print(f"Entering view_form_submissions route with guild_id: {guild_id}, form_id: {form_id}", level="all")
     guild = get_guild_or_404(guild_id)
     submissions = db.execute_query(
@@ -2806,6 +3900,14 @@ def view_form_submissions(guild_id, form_id):
 @app.route('/forms/<form_id>/fill', methods=['GET'])
 @login_required
 def public_form_fill(form_id):
+    """
+    Render the public form fill page for a given form ID.
+    
+    Looks up the form by id in the `custom_forms` table, parses its JSON `config`, and returns the rendered
+    'public_form_fill.html' template with `form` and `config` in the template context.
+    
+    If no form is found for the provided `form_id`, this route aborts with a 404.
+    """
     debug_print(f"Entering public_form_fill route with form_id: {form_id}", level="all")
     form = db.execute_query(
         'SELECT * FROM custom_forms WHERE id = ?',
@@ -2822,6 +3924,21 @@ def public_form_fill(form_id):
 @login_required
 @guild_required
 def export_guild_data(guild_id):
+    """
+    Create and return a ZIP archive containing exported data for a guild.
+    
+    Expects a JSON request body with an "options" key (list of export keys). For each option:
+    - If option == "backup-restore/backups": includes any backup files returned by get_backups(guild_id) as files under export/backup-restore/backups/.
+    - If option is a key in EXPORT_MAP: calls EXPORT_MAP[option](guild_id), serializes the returned object to JSON and stores it as export/<option> inside the ZIP.
+    
+    If no options are provided, returns a 400 JSON error response. Files that are missing on disk or that raise errors while being added are skipped. The response is an attachment named "export.zip" with MIME type application/zip.
+    
+    Parameters:
+        guild_id (int|str): Identifier of the guild to export.
+    
+    Returns:
+        Flask response: a downloadable ZIP file stream, or a 400 JSON error when no options are selected.
+    """
     options = request.json.get('options', [])
     if not options:
         return jsonify({'error': 'No export options selected.'}), 400
@@ -2856,6 +3973,41 @@ def export_guild_data(guild_id):
 @login_required
 @guild_required
 def import_guild_data(guild_id):
+    """
+    Import server data into the given guild from an uploaded ZIP produced by the export endpoint.
+    
+    This endpoint expects a multipart file field named "import_file" containing a ZIP archive whose entries are under the "export/" prefix. Recognized files inside the archive are applied to the database and filesystem for the specified guild_id (examples include):
+    - server-configuration/commands.json
+    - server-configuration/command-permissions.json
+    - server-configuration/blocked-words.json
+    - server-configuration/logging.json
+    - server-configuration/welcome-message.json
+    - server-configuration/goodbye-message.json
+    - server-configuration/auto-assign-role.json
+    - server-configuration/spam.json
+    - server-configuration/warning-actions.json
+    - server-configuration/role-menus.json
+    - leveling-system/leveling.json
+    - custom-forms/forms.json
+    - social-pings/twitch-pings.json
+    - social-pings/youtube-pings.json
+    - fun-miscellaneous/game-roles.json
+    - backup-restore/backup-schedules.json
+    - backup-restore/backups/*  (backup files are written to the local backups directory)
+    
+    Parameters:
+        guild_id: Identifier of the guild to import data into.
+    
+    Returns:
+        A Flask JSON response object:
+          - 400 with an error message if no file was uploaded or the uploaded file is not a ZIP.
+          - 200 JSON {"success": True} on completion.
+    
+    Side effects:
+        - Persists various records into the application's database via the db helper and direct SQL.
+        - Writes backup files from backup-restore/backups/ into the local "backups" directory.
+        - Skips individual files that fail to parse or apply (errors for individual entries are ignored; the import continues).
+    """
     if 'import_file' not in request.files:
         return jsonify({'error': 'No file uploaded.'}), 400
     file = request.files['import_file']
@@ -3001,11 +4153,28 @@ def import_guild_data(guild_id):
     return jsonify({'success': True})
 
 def random_schedule_id():
+    """
+    Generate a 5-digit random numeric schedule ID.
+    
+    Returns:
+        str: A string of exactly 5 numeric characters ('0'–'9'). Uses Python's non-cryptographic random generator and is intended only for unique identifiers (not for security-sensitive tokens).
+    """
     debug_print("Entering random_schedule_id", level="all")
     return ''.join(random.choices('0123456789', k=5))
 
 # Get text channels from Discord API
 def get_text_channels(guild_id):
+    """
+    Return the list of text channels for a Discord guild, using an in-memory cache.
+    
+    If a cached value exists for the given guild_id it is returned immediately. On cache miss the function requests the guild's channels from the Discord API, filters for text channels (type == 0), stores the result in the cache, and returns it. If an error occurs while fetching, the function logs the error and returns any previously cached channels for the guild or an empty list if none exist.
+    
+    Parameters:
+        guild_id (str|int): Discord guild (server) ID.
+    
+    Returns:
+        list: A list of channel objects (dicts) for text channels. 
+    """
     debug_print(f"Entering get_text_channels with guild_id: {guild_id}", level="all")
     """Fetch text channels with caching"""
     if guild_id in channel_cache:
@@ -3027,6 +4196,21 @@ def get_text_channels(guild_id):
 
 # Get roles from Discord API
 def get_roles(guild_id, force_refresh=False):
+    """
+    Return the list of roles for the given guild, using a short-lived cache.
+    
+    Fetches roles from the Discord API and caches the result in module-level `role_cache` (2-minute TTL). By default returns cached roles for a guild when available; set `force_refresh=True` to bypass the cache and fetch fresh data. The returned roles are sorted by `position` descending and exclude any role whose `id` equals the guild id.
+    
+    Parameters:
+        guild_id (int | str): Discord guild (server) ID. Numeric or string IDs are accepted.
+        force_refresh (bool): If True, ignore cached data and fetch from the API.
+    
+    Returns:
+        list[dict]: List of role objects as returned by Discord (filtered and sorted). On HTTP or other errors, returns the previously cached roles for the guild if present, otherwise an empty list.
+    
+    Side effects:
+        Updates the module-level `role_cache` with the fetched roles.
+    """
     debug_print(f"Entering get_roles with guild_id: {guild_id}, force_refresh: {force_refresh}", level="all")
     """Fetch roles for a guild with optional cache bypass"""
     if not force_refresh and guild_id in role_cache:
@@ -3055,6 +4239,25 @@ def get_roles(guild_id, force_refresh=False):
 
 # Get mutual guilds for a user
 def get_mutual_guilds(user_id, user_access_token=None):
+    """
+    Return the list of guilds the given user shares with the bot.
+    
+    If a user_access_token is not provided the function will look for one in the session. The function calls the Discord API to fetch the user's guilds and compares them to the bot's guild list from the database; guilds present in both are returned.
+    
+    Parameters:
+        user_id (str): Discord user ID whose mutual guilds to compute.
+        user_access_token (str, optional): OAuth2 access token for the user. If omitted, the session's stored token is used.
+    
+    Returns:
+        list[dict]: List of mutual guild objects with keys:
+            - id (str): Guild ID.
+            - name (str): Guild name (from Discord API).
+            - icon (str): Guild icon (sourced from the bot's stored guild record, empty string if unavailable).
+    
+    Notes:
+        - Returns an empty list if no access token is available or if the Discord API request fails (non-200 response).
+        - Performs an external HTTP request to Discord and reads guild data from the application's database.
+    """
     debug_print(f"Entering get_mutual_guilds with user_id: {user_id}, user_access_token: {user_access_token}", level="all")
     """
     Returns a list of guilds (servers) the user shares with the bot.
@@ -3092,6 +4295,17 @@ def get_mutual_guilds(user_id, user_access_token=None):
 
 @app.template_filter('get_username')
 def get_username_filter(user_id):
+    """
+    Return the stored username for a given Discord user ID.
+    
+    Looks up the user in the local `users` table and returns the `username` field if found; returns None when no matching record exists.
+    
+    Parameters:
+        user_id (int | str): Discord user ID to look up.
+    
+    Returns:
+        str | None: The username associated with `user_id`, or None if not present.
+    """
     debug_print(f"Entering get_username_filter with user_id: {user_id}", level="all")
     user = db.execute_query(
         'SELECT username FROM users WHERE user_id = ?',
@@ -3102,6 +4316,18 @@ def get_username_filter(user_id):
     
 @app.template_filter('get_channel_name')
 def get_channel_name_filter(channel_id, channels):
+    """
+    Return the display name for a channel given its ID.
+    
+    Searches the provided iterable of channel dicts (expected to contain 'id' and 'name' keys) and returns the matching channel's name. If no matching channel is found, returns None.
+    
+    Parameters:
+        channel_id: Channel identifier (any type that can be stringified for comparison).
+        channels: Iterable of dict-like objects with at least 'id' and 'name' keys.
+    
+    Returns:
+        The channel name (str) if found, otherwise None.
+    """
     debug_print(f"Entering get_channel_name_filter with channel_id: {channel_id}, channels: {channels}", level="all")
     for channel in channels:
         if str(channel['id']) == str(channel_id):
@@ -3110,6 +4336,25 @@ def get_channel_name_filter(channel_id, channels):
 
 @app.template_filter('datetimeformat')
 def datetimeformat(value, format='%Y-%m-%d %H:%M'):
+    """
+    Format a datetime-like value for display in templates.
+    
+    Accepts a datetime, a numeric POSIX timestamp (seconds or milliseconds), or an ISO/RFC-like datetime string.
+    If `format` is the literal 'relative', returns a human-friendly relative time (e.g. "just now", "3 minutes ago",
+    "2 hours ago", "5 days ago"). If `value` is falsy, returns 'unknown'. If string parsing fails, the original value
+    is returned.
+    
+    Parameters:
+        value (datetime|int|float|str): The value to format. Integers/floats are treated as POSIX timestamps;
+            very large numbers are assumed to be milliseconds and are converted to seconds. Strings are first
+            parsed with datetime.fromisoformat(), falling back to interpreting the string as a numeric timestamp.
+        format (str): A strftime-format string used to format datetimes, or the special value 'relative' to
+            produce a human-readable relative time.
+    
+    Returns:
+        str: Formatted date/time string, relative time string, 'unknown' for falsy input, or the original value
+        if parsing a string fails.
+    """
     debug_print(f"Entering datetimeformat with value: {value}, format: {format}", level="all")
     """
     Jinja2 filter to format a datetime, timestamp, or ISO string for display.
@@ -3165,17 +4410,48 @@ def datetimeformat(value, format='%Y-%m-%d %H:%M'):
 # Error Handlers
 @app.errorhandler(CSRFError)
 def handle_csrf_error(e):
+    """
+    Handle a CSRF validation error by notifying the user and redirecting to a safe page.
+    
+    Flashes a danger-level message informing the user that the security token expired, then returns a redirect response to the request referrer if available or to the guild selection page as a fallback.
+    
+    Parameters:
+        e: The CSRF error/exception object (unused except for logging).
+    
+    Returns:
+        A Flask redirect response to the referring page or to the 'select_guild' route.
+    """
     debug_print(f"Entering handle_csrf_error with error: {e}", level="all")
     flash('Security token expired. Please refresh the page and try again.', 'danger')
     return redirect(request.referrer or url_for('select_guild'))
 
 @app.errorhandler(401)
 def unauthorized(e):
+    """
+    Handle Unauthorized (401) errors by redirecting the client to the login page.
+    
+    Parameters:
+        e: The exception or error object provided by Flask's error handler (unused).
+    
+    Returns:
+        A Flask redirect response to the 'login' route.
+    """
     debug_print(f"Entering unauthorized error handler with error: {e}", level="all")
     return redirect(url_for('login'))
 
 @app.errorhandler(403)
 def forbidden(e):
+    """
+    Handle 403 Forbidden errors by rendering the error page with a user-facing message.
+    
+    Renders the 'error.html' template with `error_message` taken from the provided exception and a short `help_message`, and returns the rendered response with HTTP status 403.
+    
+    Parameters:
+        e: The exception or error object that triggered the 403; its string representation is shown to the user.
+    
+    Returns:
+        A tuple of (Flask response, int) where the response is the rendered error page and the int is 403.
+    """
     debug_print(f"Entering forbidden error handler with error: {e}", level="all")
     return render_template('error.html', 
                          error_message=str(e),
@@ -3183,6 +4459,17 @@ def forbidden(e):
 
 @app.errorhandler(404)
 def not_found(e):
+    """
+    Handle 404 Not Found errors by rendering the standard error template.
+    
+    Parameters:
+        e (Exception): The original error (typically a Flask/werkzeug HTTPException); its
+            .description attribute, if present, is used as the displayed error message.
+    
+    Returns:
+        tuple: (rendered_template, int) - the rendered 'error.html' with `error_message` and
+        `help_message` context, and an HTTP 404 status code.
+    """
     debug_print(f"Entering not_found error handler with error: {e}", level="all")
     error_message = getattr(e, 'description', None) or "The page you requested does not exist."
     return render_template('error.html', 
@@ -3191,6 +4478,15 @@ def not_found(e):
 
 @app.errorhandler(500)
 def internal_error(e):
+    """
+    Render the generic 500 Internal Server Error page.
+    
+    Parameters:
+        e (Exception): The caught exception object (used for logging/debugging; not shown to the user).
+    
+    Returns:
+        A tuple of (rendered template response, int): the 'error.html' page with a 500 HTTP status code.
+    """
     debug_print(f"Entering internal_error handler with error: {e}", level="all")
     return render_template('error.html',
                         error_message="Internal Server Error",

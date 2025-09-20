@@ -14,10 +14,20 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        No-op fallback for debug printing.
+        
+        Accepts any positional and keyword arguments but does nothing. Intended as a safe placeholder when a real `debug_print` implementation (from the bot) is unavailable so callers can call `debug_print(...)` without conditional checks.
+        """
         pass
 
 class ModerationCog(commands.Cog):
     def __init__(self, bot):
+        """
+        Initialize the ModerationCog, storing the bot reference and its database handle.
+        
+        Sets self.bot to the provided bot instance and self.db to bot.db for use by cog methods.
+        """
         debug_print(f"Entering ModerationCog.__init__ with bot: {bot}", level="all")
         self.bot = bot
         self.db = bot.db
@@ -26,6 +36,28 @@ class ModerationCog(commands.Cog):
     @command_permission_check("warn")
     @app_commands.describe(member="User to warn", reason="Reason for warning")
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        """
+        Issue a server warning to a member, record it in the database, optionally apply configured moderation actions (timeout, kick, ban), DM the member, log the event, and reply to the moderator.
+        
+        Details:
+        - Adds a warning record for the target user in the guild database and computes the new total warning count.
+        - Checks guild membership and role hierarchy before acting.
+        - If a warning-action is configured for the new warning count, attempts the action:
+          - timeout: applies a timeout for the configured duration (requires moderate_members).
+          - kick: kicks the member (requires kick_members).
+          - ban: bans the member (requires ban_members) and clears their warnings in the database.
+        - Sends a DM to the target with the reason, total warnings, and any action taken; best-effort DM is attempted and failures are reported to the moderator.
+        - Sends additional custom form DMs for warn/timeout/kick/ban where applicable.
+        - Logs the moderation event via log_event and responds to the invoking moderator with what occurred, including a note if the bot lacked the required permission for a configured action.
+        
+        Parameters:
+            interaction: The discord.Interaction that invoked the command.
+            member: The discord.Member being warned.
+            reason: The reason text for the warning.
+        
+        Returns:
+            None
+        """
         debug_print(f"Entering /warn with interaction: {interaction}, member: {member}, reason: {reason}", level="all")
         guild_id = str(interaction.guild.id)
         user_id = str(member.id)
@@ -164,6 +196,15 @@ class ModerationCog(commands.Cog):
     @command_permission_check("warnings")
     @app_commands.describe(member="User to check")
     async def view_warnings(self, interaction: discord.Interaction, member: discord.Member):
+        """
+        Show a member's recorded warnings to the invoking moderator as an ephemeral embed.
+        
+        Fetches warnings for the specified member from the cog's database and, if any exist, sends an ephemeral embed listing each warning with its date and reason. If no warnings are found, sends an ephemeral message stating that the member has no warnings.
+        
+        Notes:
+        - The displayed date is taken from the warning's `timestamp` field (first 10 characters).
+        - This function sends responses via the provided Interaction and does not return a value.
+        """
         debug_print(f"Entering /view_warnings with interaction: {interaction}, member: {member}", level="all")
         guild_id = str(interaction.guild.id)
         user_id = str(member.id)
@@ -199,6 +240,26 @@ class ModerationCog(commands.Cog):
         warning_number="Warning number to remove"
     )
     async def unwarn(self, interaction: discord.Interaction, member: discord.Member, warning_number: int):
+        """
+        Remove a specific warning from a guild member and adjust any associated moderation state.
+        
+        This command handler removes the warning at the given 1-based warning_number for the specified member from the bot's warnings database, updates the stored warning count, and — if the removed warning causes a previously-applied timeout action to no longer apply — attempts to clear the member's timeout. It logs the unwarn event to the guild log and replies to the invoking interaction with an ephemeral confirmation or error message.
+        
+        Parameters:
+            interaction: The Discord interaction that invoked the command.
+            member: The guild member whose warning will be removed.
+            warning_number (int): 1-based index of the warning to remove (must be between 1 and the member's current warning count).
+        
+        Side effects:
+            - Removes a warning record from persistent storage.
+            - May remove a timeout from the member if applicable and permitted.
+            - Sends an ephemeral response to the command invoker and logs the action to the guild logging system.
+        
+        Notes:
+            - If the member has no warnings or the warning_number is out of range, the handler responds ephemerally and does nothing.
+            - If the bot lacks permission to clear a timeout, it informs the invoker.
+            - Errors during removal are caught; the invoker receives a generic error message and a debug message is emitted.
+        """
         debug_print(f"Entering /unwarn with interaction: {interaction}, member: {member}, warning_number: {warning_number}", level="all")
         guild_id = str(interaction.guild.id)
         user_id = str(member.id)
@@ -271,6 +332,21 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(user="The user to ban", reason="The reason for the ban")
     @app_commands.checks.has_permissions(ban_members=True)
     async def ban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+        """
+        Ban a user from the guild, attempt to DM them the reason, and log the action.
+        
+        Defers the interaction, verifies the bot has ban permissions and that role hierarchy allows the ban
+        (if the target is a Member), sends a ban notification DM when possible, performs the guild ban,
+        and logs a "member_ban" event. Replies to the invoking moderator with an ephemeral summary that
+        indicates whether the DM was delivered and reports permission or execution failures.
+        
+        Parameters:
+            user (discord.User | discord.Member): The account to ban. If a Member, role-hierarchy checks are applied.
+            reason (str): Reason recorded for the ban (defaults to "No reason provided").
+        
+        Returns:
+            None
+        """
         debug_print(f"Entering /ban with interaction: {interaction}, user: {user}, reason: {reason}", level="all")
         try:
             await interaction.response.defer()
@@ -333,6 +409,19 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(user="The user to unban", reason="The reason for the unban")
     @app_commands.checks.has_permissions(ban_members=True)
     async def unban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+        """
+        Unban a user from the guild, notify the moderator, and log the action.
+        
+        Attempts to unban the provided user from the interaction's guild. Verifies the bot has the
+        ban_members permission and that the invoking moderator is higher than the target if the
+        target is a Member. Sends an ephemeral response to the moderator indicating success or that
+        the user was not banned, and records the unban in the moderation log.
+        
+        Parameters:
+            interaction (discord.Interaction): The command interaction (used for guild context and responses).
+            user (discord.User | discord.Member): The user to unban; may be a Member object if the user is in cache.
+            reason (str): Reason recorded for the unban (defaults to "No reason provided").
+        """
         debug_print(f"Entering /unban with interaction: {interaction}, user: {user}, reason: {reason}", level="all")
         if not interaction.guild.me.guild_permissions.ban_members:
             await interaction.response.send_message("I don't have permission to unban users.", ephemeral=True)
@@ -363,6 +452,19 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(member="The member to kick", reason="The reason for the kick")
     @app_commands.checks.has_permissions(kick_members=True)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        """
+        Kick a guild member, notify them, send a custom follow-up DM, and log the action.
+        
+        Performs permission and role-hierarchy checks before attempting the kick. If allowed, the command will:
+        - attempt to DM the member with a kick notice,
+        - kick the member from the guild with the provided reason,
+        - send a confirmation to the moderator (ephemeral),
+        - send a custom form DM via send_custom_form_dm,
+        - and log the action via log_event.
+        
+        Parameters:
+            reason (str): Human-readable reason recorded with the kick and shown to the user; defaults to "No reason provided".
+        """
         debug_print(f"Entering /kick with interaction: {interaction}, member: {member}, reason: {reason}", level="all")
         try:
             if not interaction.guild.me.guild_permissions.kick_members:
@@ -421,6 +523,19 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(member="The member to deafen", reason="The reason for deafening")
     @app_commands.checks.has_permissions(deafen_members=True)
     async def deafen(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        """
+        Deafen a guild member: applies a server-side deaf and notifies moderator and logs the action.
+        
+        Checks that the target is in a voice channel and that the bot has the `deafen_members` permission, then sets the member's voice state to deafened, sends an ephemeral confirmation to the command invoker, and logs the moderation event.
+        
+        Parameters:
+            interaction (discord.Interaction): The command interaction invoking the command.
+            member (discord.Member): The guild member to deafen.
+            reason (str): Optional reason recorded for the action (default: "No reason provided").
+        
+        Returns:
+            None
+        """
         debug_print(f"Entering /deafen with interaction: {interaction}, member: {member}, reason: {reason}", level="all")
         guild_id = str(interaction.guild.id)
         if not member.voice or not member.voice.channel:
@@ -449,6 +564,18 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(member="The member to undeafen", reason="The reason for undeffening")
     @app_commands.checks.has_permissions(deafen_members=True)
     async def undeafen(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        """
+        Undeafen a member in voice, notify the moderator, and log the action.
+        
+        If the target is not in a voice channel or the bot lacks the deafen_members permission,
+        an ephemeral error message is sent and no change is made. Otherwise the member's
+        deafen flag is cleared (audit reason set), the moderator is sent an ephemeral
+        confirmation, and a "member_undeafen" log event is emitted.
+        
+        Parameters:
+            member (discord.Member): The guild member to undeafen.
+            reason (str): Human-readable reason included in the audit entry and notifications.
+        """
         debug_print(f"Entering /undeafen with interaction: {interaction}, member: {member}, reason: {reason}", level="all")
         guild_id = str(interaction.guild.id)
         if not member.voice or not member.voice.channel:
@@ -486,6 +613,17 @@ class ModerationCog(commands.Cog):
         duration: str = "5m",
         reason: str = "No reason provided"
     ):
+        """
+        Timeout a guild member for a given duration.
+        
+        Attempts to DM the member, apply a Discord timeout (requires the bot to have the `moderate_members` permission),
+        log the action, and send a custom follow-up DM form.
+        
+        Parameters:
+            member: The guild Member to time out.
+            duration: Timeout length using the format `[number][m/h/d]` (e.g., `30m`, `2h`, `1d`). Maximum allowed is 4 weeks.
+            reason: Optional reason recorded for the timeout (displayed to the user and included in logs).
+        """
         debug_print(f"Entering /timeout with interaction: {interaction}, member: {member}, duration: {duration}, reason: {reason}", level="all")
         try:
             if not interaction.guild.me.guild_permissions.moderate_members:
@@ -555,6 +693,15 @@ class ModerationCog(commands.Cog):
         member: discord.Member,
         reason: str = "No reason provided"
     ):
+        """
+        Remove a member's timeout (server mute) and log the action.
+        
+        If the bot lacks the Moderate Members permission or the target is not timed out, the command replies ephemerally and returns without changing state. On success the member's timeout is cleared, a confirmation is sent to the invoking moderator, and a `member_untimeout` log event is created.
+        
+        Parameters:
+            member (discord.Member): The guild member whose timeout will be removed.
+            reason (str): Optional reason recorded for the untimeout and shown to the moderator. Defaults to "No reason provided".
+        """
         debug_print(f"Entering /untimeout with interaction: {interaction}, member: {member}, reason: {reason}", level="all")
         guild_id = str(interaction.guild.id)
         if not interaction.guild.me.guild_permissions.moderate_members:
@@ -584,6 +731,22 @@ class ModerationCog(commands.Cog):
     @app_commands.describe(user="The user to softban", reason="The reason for softban")
     @app_commands.checks.has_permissions(ban_members=True)
     async def softban(self, interaction: discord.Interaction, user: discord.User, reason: str = "No reason provided"):
+        """
+        Softban a user: briefly ban to purge messages, then immediately unban so they can rejoin.
+        
+        Performs the following actions when invoked by a moderator in a guild:
+        - Verifies the bot has the `ban_members` permission and that role hierarchy allows the action.
+        - Attempts to create a single-use rejoin invite for the channel; falls back to a staff-contact message if invite creation is forbidden.
+        - Sends the target a DM with the softban reason and the rejoin link (best-effort; DM failures are ignored).
+        - Adds a "Softban: <reason>" entry to the warnings database (best-effort; DB errors are logged).
+        - Bans the user with delete_message_days=7 to remove recent messages, then immediately unbans them.
+        - Logs the softban event to the configured guild log.
+        
+        Exceptions and error conditions:
+        - Sends an ephemeral response when the bot lacks guild ban permissions, when role hierarchy prevents the action, or when other Discord errors occur (Forbidden, NotFound).
+        - DM or invite creation failures do not stop the ban/unban step.
+        - Any unexpected exception results in an ephemeral error message to the invoker and a debug log.
+        """
         debug_print(f"Entering /softban with interaction: {interaction}, user: {user}, reason: {reason}", level="all")
         if not interaction.guild.me.guild_permissions.ban_members:
             await interaction.response.send_message("I don't have permission to ban users.", ephemeral=True)
@@ -667,4 +830,9 @@ class ModerationCog(commands.Cog):
             debug_print(f"[Softban Error]: {str(e)}")
 
 async def setup(bot):
+    """
+    Register the ModerationCog with the given bot.
+    
+    This async setup entrypoint adds an instance of ModerationCog to the bot via bot.add_cog(...).
+    """
     await bot.add_cog(ModerationCog(bot))
