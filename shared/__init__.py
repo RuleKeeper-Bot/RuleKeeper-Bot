@@ -8,11 +8,29 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        No-op fallback for debug printing.
+        
+        This function accepts any positional and keyword arguments like the built-in `print` but intentionally does nothing.
+        It is provided as a safe placeholder when a real `debug_print` implementation is not available so callers can invoke it without conditional checks.
+        """
         pass
 
 load_dotenv()
 
 def command_permission_check(command_name, is_custom=False):
+    """
+    Create a decorator that enforces per-guild, per-command permission checks for an async command callback.
+    
+    The returned decorator wraps an async command handler and, when invoked, resolves a `db` object from `self.db` or `self.bot.db`. If the DB is unavailable it sends an ephemeral internal error and aborts. It grants immediate access to the guild owner and to users with the Administrator guild permission. Otherwise it fetches permissions with `db.get_command_permissions(guild_id, command_name)` and allows the command only if the invoking user's ID or any of their role IDs appear in the returned `allow_users` or `allow_roles` lists. If no allow lists are configured the wrapper denies access by default and sends a standard ephemeral permission-denied message.
+    
+    Parameters:
+        command_name (str): Name used to look up the command's permission entry in the DB.
+        is_custom (bool): Optional flag for callers to indicate the command is custom (present for future or external use; does not alter current behavior).
+    
+    Returns:
+        Callable: A decorator that wraps an async command function (signature: async def func(self, interaction, ...)) and enforces the described permission checks.
+    """
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(self, interaction, *args, **kwargs):
@@ -45,6 +63,11 @@ def command_permission_check(command_name, is_custom=False):
 
 class Shared:
     def __init__(self):
+        """
+        Initialize the Shared helper.
+        
+        Reads the BOT_TOKEN environment variable and stores it as self.token; raises ValueError if the token is missing. Also sets self.bot to the module-level bot_instance.
+        """
         debug_print("Entered Shared.__init__", level="all")
         self.token = os.getenv('BOT_TOKEN')
         

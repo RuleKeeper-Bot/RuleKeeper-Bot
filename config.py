@@ -6,6 +6,11 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        No-op fallback for a debugging print function.
+        
+        Accepts any positional and keyword arguments and does nothing. Provided to preserve the signature of an optional `debug_print` implementation so callers can invoke it without conditional checks when a real debug facility is not available.
+        """
         pass
 
 load_dotenv()
@@ -40,22 +45,45 @@ class Config:
     }
 
     def __init__(self):
+        """
+        Initialize a Config instance.
+        
+        Sets dynamic configuration values derived from class attributes. Specifically, creates the instance attribute `DISCORD_REDIRECT_URI` by appending `/callback` to `FRONTEND_URL`.
+        """
         debug_print(f"Entering Config.__init__", level="all")
         # Initialize dynamic properties
         self.DISCORD_REDIRECT_URI = f"{self.FRONTEND_URL}/callback"
 
     @property
     def SQLALCHEMY_DATABASE_URI(self):
+        """
+        Return the SQLAlchemy database URI for the configured SQLite database.
+        
+        Constructs and returns a SQLite connection URI using the instance's DATABASE_PATH (e.g. "sqlite:////path/to/db").
+        Returns:
+            str: A SQLite URI suitable for SQLAlchemy's `create_engine` or Flask `SQLALCHEMY_DATABASE_URI`.
+        """
         debug_print(f"Accessing SQLALCHEMY_DATABASE_URI property")
         return f"sqlite:///{self.DATABASE_PATH}"
 
     @property
     def PERMITTED_GUILDS(self):
+        """
+        Return the list of permitted guild IDs from the PERMITTED_GUILDS environment variable.
+        
+        Reads the `PERMITTED_GUILDS` environment variable and splits it on commas, returning the resulting list of strings. If the variable is not set an empty string is used, producing [''] (i.e., a single empty string element). Values are returned as-is (no trimming or type conversion).
+        """
         debug_print(f"Accessing PERMITTED_GUILDS property")
         return os.getenv('PERMITTED_GUILDS', '').split(',')
 
     @staticmethod
     def verify_paths():
+        """
+        Ensure the configured SQLite database file exists.
+        
+        If the file at Config.DATABASE_PATH does not exist, create an empty file so SQLite can open it.
+        No return value.
+        """
         debug_print(f"Calling Config.verify_paths()", level="all")
         db_path = Config.DATABASE_PATH
         if not os.path.exists(db_path):

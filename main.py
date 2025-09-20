@@ -9,13 +9,31 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        Fallback debug printing function used when a real debug_print is not available.
+        
+        This no-op implementation accepts the same calling convention as built-in `print` (positional
+        and keyword arguments) so callers can invoke it unconditionally. All arguments are ignored
+        and the function returns None. Intended to provide a safe default when `bot.bot.debug_print`
+        cannot be imported.
+        """
         pass
 
 def run_bot():
+    """
+    Start and run the configured bot instance.
+    
+    This launches the global `bot_instance` using the module-level `BOT_TOKEN` and blocks the current process while the bot runs. Intended to be used as the target for a separate process; it does not return until the bot stops or raises.
+    """
     debug_print("Entering run_bot", level="all")
     bot_instance.run(BOT_TOKEN)
 
 def run_flask():
+    """
+    Start the Flask web application by importing the app and running it on 0.0.0.0:5000.
+    
+    Performs a dynamic import of `web.app.app` and calls `app.run(host="0.0.0.0", port=5000)`. This blocks the current process while the server runs and binds to all network interfaces on port 5000.
+    """
     debug_print("Entering run_flask", level="all")
     from web.app import app
     app.run(host="0.0.0.0", port=5000)

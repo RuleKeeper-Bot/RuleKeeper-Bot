@@ -16,44 +16,103 @@ try:
     from bot.bot import debug_print
 except ImportError:
     def debug_print(*args, **kwargs):
+        """
+        No-op fallback for an optional debug printing function.
+        
+        Accepts any positional and keyword arguments and intentionally does nothing.
+        Used as a drop-in replacement when a real `debug_print` implementation is not available.
+        """
         pass
 
 class ConfirmRestoreView(discord.ui.View):
     def __init__(self, timeout=30):
+        """
+        Initialize the ConfirmRestoreView.
+        
+        Parameters:
+            timeout (int): Time in seconds before the view stops automatically (default 30).
+        
+        Description:
+            Sets the view's interaction timeout and initializes `self.value` to None.
+            `self.value` will be set to True when the confirm button is pressed and left as
+            None if the view times out without confirmation.
+        """
         super().__init__(timeout=timeout)
         self.value = None
 
     @discord.ui.button(label="Restore from Backup", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        Handle the Confirm button click: mark the view as confirmed, stop the view, and defer the interaction response.
+        
+        Parameters:
+            interaction (discord.Interaction): The interaction triggered by the button click.
+            button (discord.ui.Button): The button that was pressed.
+        """
         self.value = True
         self.stop()
         await interaction.response.defer()  # Prevents "This interaction failed" message
 
 class ContinueCancelView(discord.ui.View):
     def __init__(self, timeout=60):
+        """
+        Initialize the ContinueCancelView.
+        
+        Parameters:
+            timeout (int | float): Optional view timeout in seconds (default 60). When reached the view will stop and become inactive.
+        
+        Initial state:
+            self.value is set to None and will be updated to True or False by the view's buttons.
+        """
         super().__init__(timeout=timeout)
         self.value = None
 
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.danger)
     async def continue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        Handle the "Continue" button: mark the view as confirmed, stop the view, and defer the interaction response.
+        
+        Sets self.value to True, calls self.stop() to end the view, and defers the interaction response so Discord does not display an automatic error message.
+        """
         self.value = True
         self.stop()
         await interaction.response.defer()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        Handle the "Cancel" button: mark the view as cancelled, stop it, and defer the interaction response.
+        
+        Sets self.value to False to indicate cancellation, stops the view so it stops listening for input, and defers the interaction response to prevent Discord from showing an "interaction failed" message.
+        """
         self.value = False
         self.stop()
         await interaction.response.defer()
 
 class BackupCog(commands.Cog):
     def __init__(self, bot):
+        """
+        Initialize the BackupCog and capture shared bot resources.
+        
+        Stores the provided bot instance on self.bot and the bot's database connection on self.db. Emits a debug print on construction.
+        """
         debug_print(f"Entering BackupCog.__init__ with bot: {bot}", level="all")
         self.bot = bot
         self.db = bot.db
     
     def get_permission_checks(self, guild):
-        """Return a list of permission check failure messages for the bot in the given guild."""
+        """
+        Return a list of human-readable permission or configuration warnings the bot needs to create or restore a guild backup.
+        
+        The returned list contains strings describing missing permissions or problematic server configuration that may prevent a full backup/restore. Messages cover:
+        - Required guild-level permissions (Manage Server, Manage Roles, View Audit Log, Manage Channels).
+        - Emoji/sticker-related permissions when the guild has emojis or stickers.
+        - A warning when one or more roles have the Administrator permission but the bot itself lacks Administrator.
+        - A suggestion if a role named "RuleKeeper" is not the highest role.
+        
+        Returns:
+            list[str]: Zero or more user-facing warning messages; empty if no issues detected.
+        """
         bot_member = guild.me
         perms = bot_member.guild_permissions
         checks = []
@@ -100,7 +159,11 @@ class BackupCog(commands.Cog):
         interaction: discord.Interaction,
         current: str
     ) -> list[app_commands.Choice[str]]:
-        """Autocomplete for backup IDs with info (local time, pretty label, timezone name)."""
+        """
+        Return up to 25 app command autocomplete choices for backup IDs in the current guild.
+        
+        Each choice value is the backup ID (string) and the choice label includes the ID, the backup's creation time converted to the guild's preferred timezone (or UTC if unavailable/invalid), the timezone name, and the backup file's basename. Matches are included when the user's current input is a substring of the backup ID. If the guild has no saved timezone preference the function falls back to UTC.
+        """
         guild_id = str(interaction.guild.id)
         with get_conn() as conn:
             backups = conn.execute(
@@ -174,6 +237,19 @@ class BackupCog(commands.Cog):
         current: str
     ) -> list[app_commands.Choice[str]]:
         # Show up to 25 matching timezones
+        """
+        Provide autocomplete suggestions for timezones.
+        
+        Performs a case-insensitive substring match of `current` against pytz's
+        `all_timezones` and returns up to 25 matching choices.
+        
+        Parameters:
+            current (str): Partial user input used to filter timezone names.
+        
+        Returns:
+            list[app_commands.Choice[str]]: Up to 25 timezone choices where each choice's
+            name and value are the timezone string (e.g., "America/New_York").
+        """
         matches = [tz for tz in all_timezones if current.lower() in tz.lower()]
         return [app_commands.Choice(name=tz, value=tz) for tz in matches[:25]]
     
@@ -181,6 +257,17 @@ class BackupCog(commands.Cog):
     @app_commands.command(name="create_backup", description="Create a server backup now")
     @command_permission_check("create_backup")
     async def create_backup(self, interaction: discord.Interaction):
+        """
+        Create a full guild backup and send progress/status to the invoking interaction.
+        
+        Prompts the user to sequentially bypass any detected permission issues (each must be explicitly continued or the operation is cancelled), then starts an asynchronous backup of the current guild. Progress is reported by editing an ephemeral follow-up message; on success the newest backup ID is reported and a `backup_created` event is logged. On failure the user is notified with the error message.
+        
+        Parameters:
+            interaction (discord.Interaction): The command interaction that initiated the backup (used to reply/drive the UI).
+        
+        Returns:
+            None
+        """
         debug_print(f"Entering /create_backup with interaction: {interaction}", level="all")
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -228,6 +315,12 @@ class BackupCog(commands.Cog):
         done = False
 
         async def progress_updater():
+            """
+            Background coroutine that monitors the `progress` mapping and updates `progress_msg` with a throttled progress display.
+            
+            Runs until the outer `done` flag becomes true. When `progress["val"]` changes, edits `progress_msg` to show
+            "Backup progress: {val}% - {step}". Edit exceptions are ignored to avoid cancelling the updater. Sleeps 0.5s between checks.
+            """
             last_val = -1
             while not done:
                 if progress["val"] != last_val:
@@ -241,6 +334,16 @@ class BackupCog(commands.Cog):
                 await asyncio.sleep(0.5)
 
         def set_progress(val, step_text=None):
+            """
+            Update the shared progress state used by the surrounding task.
+            
+            Parameters:
+                val: New progress value (e.g., a numeric progress percentage or step index).
+                step_text (str, optional): Human-readable description of the current step; when provided sets the `"step"` key.
+            
+            Side effects:
+                Mutates the outer `progress` mapping by setting `progress["val"]` and, if `step_text` is given, `progress["step"]`.
+            """
             progress["val"] = val
             if step_text:
                 progress["step"] = step_text
@@ -284,6 +387,20 @@ class BackupCog(commands.Cog):
     @app_commands.describe(backup_id="The backup ID to delete")
     @app_commands.autocomplete(backup_id=backup_id_autocomplete)
     async def delete_backup(self, interaction: discord.Interaction, backup_id: str):
+        """
+        Delete a stored backup by ID for the current guild.
+        
+        Looks up the backup for the invoking guild; if found, removes the backup file from disk (if present),
+        deletes the database record, sends an ephemeral confirmation to the command invoker, and logs a
+        "backup_deleted" event. If no matching backup is found, sends an ephemeral "Backup not found." reply.
+        
+        Parameters:
+            interaction: The Discord interaction that invoked the command (provides guild context and response).
+            backup_id: The backup identifier (string) to delete.
+        
+        Returns:
+            None
+        """
         debug_print(f"Entering /delete_backup with interaction: {interaction}, backup_id: {backup_id}", level="all")
         guild_id = str(interaction.guild.id)
         backup = get_backup(backup_id, guild_id)
@@ -311,6 +428,25 @@ class BackupCog(commands.Cog):
     @app_commands.describe(backup_id="The backup ID to restore")
     @app_commands.autocomplete(backup_id=backup_id_autocomplete)
     async def restore_backup(self, interaction: discord.Interaction, backup_id: str):
+        """
+        Restore a guild from a saved backup file, guiding the user through permission checks, confirmation, and progress reporting.
+        
+        This command handler locates the specified backup for the invoking guild, verifies the backup file exists on disk, prompts the user to bypass any missing-permission warnings (one-by-one), requires a final confirmation, and then runs the restore procedure while streaming progress to the user (via ephemeral followups and optional direct messages). On completion it notifies the user of success or failure and records a "backup_restored" event.
+        
+        Behavior notes:
+        - If the backup ID is not found or the file is missing, an ephemeral error is sent and the command returns.
+        - For each permission warning returned by get_permission_checks(guild) the user is prompted with a Continue/Cancel view; cancelling stops the restore.
+        - A 30s confirmation button is required before the actual restore begins.
+        - Progress updates are throttled and sent to the user's DM when possible; the implementation tolerates missing/deleted channels and DM failures.
+        - Any exceptions raised during restore are reported to the user (ephemeral followup or DM) and the function still attempts cleanup of progress messages.
+        
+        Parameters:
+        - interaction: The Discord Interaction that invoked the command.
+        - backup_id: The identifier of the backup to restore.
+        
+        Returns:
+        - None
+        """
         debug_print(f"Entering /restore_backup with interaction: {interaction}, backup_id: {backup_id}", level="all")
         guild = interaction.guild
         guild_id = str(guild.id)
@@ -389,6 +525,20 @@ class BackupCog(commands.Cog):
         last_progress = {"content": None, "time": 0}
 
         async def progress_callback(step_text):
+            """
+            Update the in-progress message with a new step text, throttled to avoid rapid edits.
+            
+            Parameters:
+                step_text (str): Short status text describing the current progress step.
+            
+            Behavior:
+                - If `msg2` is set, edits that message to "🔄 {step_text}" only when the text differs from the last sent content and at least 1 second has elapsed since the last update.
+                - On a successful edit, updates `last_progress["content"]` and `last_progress["time"]`, then awaits 2.5 seconds to further throttle updates.
+                - Any exceptions raised while editing are caught and ignored.
+            
+            Returns:
+                None
+            """
             if msg2:
                 now = time.monotonic()
                 # Only update if content changed and at least 1s since last update
@@ -503,6 +653,24 @@ class BackupCog(commands.Cog):
         start_time: str,
         timezone: str = "UTC"
     ):
+        """
+        Create a recurring backup schedule for the guild.
+        
+        Validates the provided timezone (IANA name) and start date/time, inserts a new schedule row into the schedules database table, reloads the in-memory schedules, sends an ephemeral confirmation to the user, and logs the creation.
+        
+        Parameters:
+            interaction (discord.Interaction): The command interaction (must be invoked in a guild).
+            frequency_value (int): Positive integer for the recurrence interval.
+            frequency_unit (str): Unit for the recurrence interval (e.g., minutes/hours/days).
+            start_date (str): Start date in YYYY-MM-DD format.
+            start_time (str): Start time in 24-hour HH:MM format.
+            timezone (str): IANA timezone name (defaults to "UTC").
+        
+        Behavior and side effects:
+            - If the timezone is invalid, replies ephemerally with an error and returns.
+            - If the date/time cannot be parsed or localized, replies ephemerally with an error and returns.
+            - On success, stores a new schedule with a generated 5-digit numeric schedule ID, calls load_schedules(), sends an ephemeral success message including the Schedule ID, and emits a "backup_schedule_created" log event.
+        """
         debug_print(f"Entering /schedule_backup with interaction: {interaction}, frequency_value: {frequency_value}, frequency_unit: {frequency_unit}, start_date: {start_date}, start_time: {start_time}, timezone: {timezone}", level="all")
         # Validate timezone
         try:
@@ -550,6 +718,17 @@ class BackupCog(commands.Cog):
     @app_commands.describe(schedule_id="The schedule ID to delete (see /list_backup)")
     @app_commands.autocomplete(schedule_id=schedule_id_autocomplete)
     async def delete_scheduled_backup(self, interaction: discord.Interaction, schedule_id: int):
+        """
+        Delete a scheduled backup for the current guild by its numeric ID.
+        
+        Checks for a schedule row matching the provided schedule_id and the invoking guild; if found the row is removed from the database, an ephemeral confirmation is sent to the user, and a `backup_schedule_deleted` event is logged. If no matching schedule exists, an ephemeral "Schedule not found." message is sent.
+        
+        Parameters:
+            schedule_id (int): Numeric identifier of the schedule to delete (must belong to the guild of the interaction).
+        
+        Returns:
+            None
+        """
         debug_print(f"Entering /delete_scheduled_backup with interaction: {interaction}, schedule_id: {schedule_id}", level="all")
         guild_id = str(interaction.guild.id)
         with get_conn() as conn:
@@ -573,6 +752,11 @@ class BackupCog(commands.Cog):
     @app_commands.command(name="list_backup", description="List all backups and schedules for this server")
     @command_permission_check("list_backup")
     async def list_backup(self, interaction: discord.Interaction):
+        """
+        List stored backups and scheduled backups for the current guild and send the result as ephemeral Discord messages.
+        
+        Fetches backups and schedules from the database, formats creation and schedule start times in the preferred timezone (falls back to UTC when missing or invalid), and splits the output into Discord-safe chunks (≤2000 characters). Sends the first chunk as the initial ephemeral interaction response and any remaining chunks as ephemeral follow-ups.
+        """
         debug_print(f"Entering /list_backup with interaction: {interaction}", level="all")
         guild_id = str(interaction.guild.id)
         # Get preferred timezone from latest schedule, fallback to UTC
@@ -626,6 +810,18 @@ class BackupCog(commands.Cog):
 
         # Split the message into chunks of 2000 characters or less
         def split_message(text, limit=2000):
+            """
+            Split a string into a list of messages no longer than `limit` characters, breaking only at newline boundaries.
+            
+            The input text is split on '\n' and lines are joined into chunks that do not exceed `limit` by length. Lines are preserved and not broken; if a single line is longer than `limit`, that line will be returned as a chunk that may exceed the limit.
+            
+            Parameters:
+                text (str): The input string to split.
+                limit (int): Maximum allowed characters per chunk (default 2000).
+            
+            Returns:
+                list[str]: A list of text chunks, each formed by joining whole lines and suitable for posting where a character limit applies.
+            """
             lines = text.split('\n')
             chunks = []
             current = ""
@@ -653,6 +849,11 @@ class BackupCog(commands.Cog):
     @app_commands.command(name="next_backup", description="Show when the next scheduled backup will run")
     @command_permission_check("next_backup")
     async def next_backup(self, interaction: discord.Interaction):
+        """
+        Compute the next scheduled backup for the current guild and reply ephemerally with when it will occur.
+        
+        Scans enabled schedules in the database for the invoking guild, parses each schedule's start date/time and frequency, advances each schedule from its start until it is in the future (months and years are approximated as 30 and 365 days respectively), selects the soonest upcoming time, and sends an ephemeral message with the scheduled UTC time and a compact human-readable time delta. Malformed schedule rows are skipped; if no enabled schedules exist or no valid next time can be determined, an appropriate ephemeral message is sent.
+        """
         debug_print(f"Entering /next_backup with interaction: {interaction}", level="all")
         guild_id = str(interaction.guild.id)
         now = datetime.utcnow()
@@ -707,4 +908,10 @@ class BackupCog(commands.Cog):
         await interaction.response.send_message(msg, ephemeral=True)
         
 async def setup(bot):
+    """
+    Register the BackupCog with the bot.
+    
+    This asynchronous setup hook adds the BackupCog to the provided bot so its commands,
+    views, and background behavior are registered.
+    """
     await bot.add_cog(BackupCog(bot))
