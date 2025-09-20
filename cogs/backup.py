@@ -708,7 +708,7 @@ class BackupCog(commands.Cog):
                 'INSERT INTO schedules (id, guild_id, start_date, start_time, timezone, frequency_value, frequency_unit, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 (schedule_id, guild_id, start_date, start_time, timezone, frequency_value, frequency_unit, 1)
             )
-        load_schedules()
+        await asyncio.to_thread(load_schedules)
         await interaction.response.send_message(
             f"Scheduled backups every {frequency_value} {frequency_unit} starting {start_date} {start_time} ({timezone}). Schedule ID: `{schedule_id}`",
             ephemeral=True
