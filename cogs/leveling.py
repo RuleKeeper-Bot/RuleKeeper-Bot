@@ -247,10 +247,12 @@ class LevelingCog(commands.Cog):
     async def xp_commands_error(self, interaction: discord.Interaction, error):
         debug_print(f"Entering /xp_commands_error with interaction: {interaction}, error: {error}", level="all")
         if isinstance(error, app_commands.CheckFailure):
-            await interaction.response.send_message(
-                "❌ You need administrator permissions to use this command!",
-                ephemeral=True
-            )
+            msg = "❌ You do not have permission to use this command."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
             
 async def setup(bot):
+
     await bot.add_cog(LevelingCog(bot))
