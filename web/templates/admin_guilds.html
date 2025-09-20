@@ -28,7 +28,6 @@
             top: 10px;
             right: 10px;
         }
-        /* Sidebar styles removed */
         .content-section {
             display: none;
         }
@@ -146,7 +145,7 @@
                                             </button>
                                         </form>
 
-                                        <a href="{{ url_for('guild_dashboard', guild_id=guild.id) }}" class="btn btn-primary btn-sm" style="margin:0; margin-left:-5px; margin-right:5px; padding-bottom:10px;">
+                                        <a href="{{ url_for('guild_dashboard', guild_id=guild.id) }}" class="btn btn-primary btn-sm" style="margin:0; margin-left:-5px; margin-right:5px; padding-bottom:10px; max-height:30px;">
                                             <i class="bi bi-gear"></i> Settings
                                         </a>
                                     </div>

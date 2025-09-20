@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Command Permissions</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <style>
+        .form-section {
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            background: #fff;
+        }
+        .form-section .card-header,
+        .form-section h4 {
+            background: none !important;
+            color: #212529 !important;
+            border: none;
+            padding-left: 0;
+            padding-right: 0;
+            margin-bottom: 1rem;
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .form-section .form-label {
+            font-weight: 500;
+        }
+        .form-section .input-group,
+        .form-section .form-control,
+        .form-section .form-select {
+            border-radius: 6px;
+        }
+        .form-section .btn {
+            border-radius: 6px;
+        }
+        .role-color-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+            border: 1px solid #dee2e6;
+        }
+        .command-header {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .command-type-badge {
+            font-size: 0.85em;
+            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 6px;
+            margin-left: 0.5em;
+        }
+        .command-type-badge.custom {
+            background: #e0e7ff;
+            color: #2f3e9e;
+        }
+        .command-type-badge.builtin {
+            background: #e6f4ea;
+            color: #1b5e20;
+        }
+        .perm-select {
+            min-width: 180px;
+        }
+        .perm-section-label {
+            font-weight: 500;
+            margin-bottom: 0.2rem;
+        }
+        .perm-help {
+            font-size: 0.92em;
+            color: #888;
+        }
+        .perm-divider {
+            border-top: 1px solid #eaeaea;
+            margin: 1.5rem 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>Command Permissions - {{ guild.name }}</h2>
+            <a href="{{ url_for('guild_dashboard', guild_id=guild_id) }}" class="btn btn-secondary">
+                <i class="bi bi-arrow-left"></i> Back to Dashboard
+            </a>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+
+        <!-- Bulk Actions -->
+        <div class="mb-3 d-flex flex-wrap gap-2 align-items-center">
+            <button type="button" class="btn btn-outline-success btn-sm" id="enable-all-btn">
+                <i class="bi bi-check2-all"></i> Enable All (Allow All Roles/Users)
+            </button>
+            <button type="button" class="btn btn-outline-danger btn-sm" id="disable-all-btn">
+                <i class="bi bi-x-circle"></i> Disable All (Deny All Roles/Users)
+            </button>
+            <span class="ms-3">Bulk by:</span>
+            <select id="bulk-type-select" class="form-select form-select-sm w-auto">
+                <option value="command">Command</option>
+                <option value="role">Role</option>
+                <option value="user">User</option>
+            </select>
+            <div id="bulk-search-dropdown-container" class="d-flex flex-column w-auto" style="min-width: 220px;">
+                <input type="text" id="bulk-search-input" class="form-control form-control-sm mb-1" placeholder="Search...">
+                <select id="bulk-value-dropdown" class="form-select form-select-sm">
+                    <!-- Options will be populated by JS -->
+                </select>
+            </div>
+            <button type="button" class="btn btn-outline-primary btn-sm" id="bulk-allow-btn">Allow</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="bulk-deny-btn">Deny</button>
+        </div>
+
+        <form method="POST" action="{{ url_for('command_permissions', guild_id=guild_id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <div class="d-grid gap-2 mt-4">
+                <button type="submit" class="btn btn-primary btn-lg" style="margin-bottom: 50px;">
+                    <i class="bi bi-save"></i> Save All Changes
+                </button>
+            </div>
+
+            <div class="row">
+                <!-- Built-in Commands Column -->
+                <div class="col-lg-6">
+                    <div class="form-section">
+                        <h4><i class="bi bi-shield-lock"></i> Built-in Command Permissions</h4>
+                        <div class="mb-4">
+                            <input type="text" class="form-control" id="builtin-command-search" placeholder="Search built-in commands...">
+                        </div>
+                        <div id="builtin-commands-list">
+                            {% for cmd in commands if not cmd.is_custom %}
+                                {% set prefix = cmd.name ~ '_builtin' %}
+                                <div class="command-block mb-4">
+                                    <div class="command-header">
+                                        <i class="bi bi-terminal"></i>
+                                        <span class="command-name">{{ cmd.name }}</span>
+                                        <span class="command-type-badge builtin">Built-in</span>
+                                    </div>
+                                    <div class="row g-3 align-items-end">
+                                        <div class="col-md-6">
+                                            <label class="perm-section-label">Allow Roles</label>
+                                            <div style="display: flex; flex-direction: column; height: 180px; border: 1px solid #eee; border-radius: 6px; padding: 6px; background: #fafbfc;">
+                                                <input type="text" class="form-control mb-2 role-search" placeholder="Search roles..." data-target="{{prefix}}_allow_roles_list" style="flex: 0 0 auto;">
+                                                <div id="{{prefix}}_allow_roles_list" style="flex: 1 1 0; overflow-y: auto;">
+                                                    <!-- Add @everyone as the first role -->
+                                                    <div class="form-check">
+                                                        <input class="form-check-input" type="checkbox" name="{{prefix}}_allow_roles" value="everyone"
+                                                            id="{{prefix}}_allow_roles_everyone"
+                                                            {% if 'everyone' in permissions[cmd.name].allow_roles or guild_id in permissions[cmd.name].allow_roles %}checked{% endif %}>
+                                                        <label class="form-check-label" for="{{prefix}}_allow_roles_everyone">
+                                                            everyone
+                                                        </label>
+                                                    </div>
+                                                    {% for role in roles %}
+                                                        <div class="form-check">
+                                                            <input class="form-check-input" type="checkbox" name="{{prefix}}_allow_roles" value="{{role.id}}"
+                                                                id="{{prefix}}_allow_roles_{{role.id}}"
+                                                                {% if role.id in permissions[cmd.name].allow_roles %}checked{% endif %}>
+                                                            <label class="form-check-label" for="{{prefix}}_allow_roles_{{role.id}}">
+                                                                {{ role.name }}
+                                                            </label>
+                                                        </div>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+                                            <div class="perm-help">These roles can use this command (if set)</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="perm-section-label">Allow Users</label>
+                                            <div style="display: flex; flex-direction: column; height: 180px; border: 1px solid #eee; border-radius: 6px; padding: 6px; background: #fafbfc;">
+                                                <input type="text" class="form-control mb-2 user-search" placeholder="Search users..." data-target="{{prefix}}_allow_users_list" style="flex: 0 0 auto;">
+                                                <div id="{{prefix}}_allow_users_list" style="flex: 1 1 0; overflow-y: auto;">
+                                                    {% for user in users %}
+                                                        <div class="form-check">
+                                                            <input class="form-check-input" type="checkbox" name="{{prefix}}_allow_users" value="{{user.id}}"
+                                                                id="{{prefix}}_allow_users_{{user.id}}"
+                                                                {% if user.id in permissions[cmd.name].allow_users %}checked{% endif %}>
+                                                            <label class="form-check-label" for="{{prefix}}_allow_users_{{user.id}}">
+                                                                {{ user.name }}
+                                                            </label>
+                                                        </div>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+                                            <div class="perm-help">These users can use this command (if set)</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% if not loop.last %}
+                                    <div class="perm-divider"></div>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Custom Commands Column -->
+                <div class="col-lg-6">
+                    <div class="form-section">
+                        <h4><i class="bi bi-shield-lock"></i> Custom Command Permissions</h4>
+                        <div class="mb-4">
+                            <input type="text" class="form-control" id="custom-command-search" placeholder="Search custom commands...">
+                        </div>
+                        <div id="custom-commands-list">
+                            {% for cmd in commands if cmd.is_custom %}
+                                {% set prefix = cmd.name ~ '_custom' %}
+                                <div class="command-block mb-4">
+                                    <div class="command-header">
+                                        <i class="bi bi-terminal"></i>
+                                        <span class="command-name">{{ cmd.name }}</span>
+                                        <span class="command-type-badge custom">Custom</span>
+                                    </div>
+                                    <div class="row g-3 align-items-end">
+                                        <div class="col-md-6">
+                                            <label class="perm-section-label">Allow Roles</label>
+                                            <div style="display: flex; flex-direction: column; height: 180px; border: 1px solid #eee; border-radius: 6px; padding: 6px; background: #fafbfc;">
+                                                <input type="text" class="form-control mb-2 role-search" placeholder="Search roles..." data-target="{{prefix}}_allow_roles_list" style="flex: 0 0 auto;">
+                                                <div id="{{prefix}}_allow_roles_list" style="flex: 1 1 0; overflow-y: auto;">
+                                                    <!-- Add @everyone as the first role -->
+                                                    <div class="form-check">
+                                                        <input class="form-check-input" type="checkbox" name="{{prefix}}_allow_roles" value="everyone"
+                                                            id="{{prefix}}_allow_roles_everyone"
+                                                            {% if 'everyone' in permissions[cmd.name].allow_roles %}checked{% endif %}>
+                                                        <label class="form-check-label" for="{{prefix}}_allow_roles_everyone">
+                                                            everyone
+                                                        </label>
+                                                    </div>
+                                                    {% for role in roles %}
+                                                        <div class="form-check">
+                                                            <input class="form-check-input" type="checkbox" name="{{prefix}}_allow_roles" value="{{role.id}}"
+                                                                id="{{prefix}}_allow_roles_{{role.id}}"
+                                                                {% if role.id in permissions[cmd.name].allow_roles %}checked{% endif %}>
+                                                            <label class="form-check-label" for="{{prefix}}_allow_roles_{{role.id}}">
+                                                                {{ role.name }}
+                                                            </label>
+                                                        </div>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+                                            <div class="perm-help">These roles can use this command (if set)</div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label class="perm-section-label">Allow Users</label>
+                                            <div style="display: flex; flex-direction: column; height: 180px; border: 1px solid #eee; border-radius: 6px; padding: 6px; background: #fafbfc;">
+                                                <input type="text" class="form-control mb-2 user-search" placeholder="Search users..." data-target="{{prefix}}_allow_users_list" style="flex: 0 0 auto;">
+                                                <div id="{{prefix}}_allow_users_list" style="flex: 1 1 0; overflow-y: auto;">
+                                                    {% for user in users %}
+                                                        <div class="form-check">
+                                                            <input class="form-check-input" type="checkbox" name="{{prefix}}_allow_users" value="{{user.id}}"
+                                                                id="{{prefix}}_allow_users_{{user.id}}"
+                                                                {% if user.id in permissions[cmd.name].allow_users %}checked{% endif %}>
+                                                            <label class="form-check-label" for="{{prefix}}_allow_users_{{user.id}}">
+                                                                {{ user.name }}
+                                                            </label>
+                                                        </div>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+                                            <div class="perm-help">These users can use this command (if set)</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% if not loop.last %}
+                                    <div class="perm-divider"></div>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-grid gap-2 mt-4">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-save"></i> Save All Changes
+                </button>
+            </div>
+        </form>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    // Wait for DOM and all checkboxes to be rendered
+    window.addEventListener("load", function() {
+        function setupSearch(inputClass) {
+            document.querySelectorAll(inputClass).forEach(function(input) {
+                input.addEventListener("input", function() {
+                    var searchTerm = this.value.toLowerCase();
+                    var targetId = this.getAttribute("data-target");
+                    var list = document.getElementById(targetId);
+                    if (!list) return;
+                    list.querySelectorAll(".form-check").forEach(function(item) {
+                        var text = item.querySelector(".form-check-label").innerText.toLowerCase();
+                        if (text.includes(searchTerm)) {
+                            item.style.display = "";
+                        } else {
+                            item.style.display = "none";
+                        }
+                    });
+                });
+            });
+        }
+        setupSearch(".role-search");
+        setupSearch(".user-search");
+
+        // Helper to filter command blocks and hide dividers
+        function filterCommandBlocks(listSelector, searchInputSelector) {
+            var searchInput = document.getElementById(searchInputSelector);
+            if (!searchInput) return;
+            searchInput.addEventListener("input", function() {
+                var searchTerm = this.value.toLowerCase();
+                var blocks = Array.from(document.querySelectorAll(listSelector + " .command-block"));
+                var dividers = Array.from(document.querySelectorAll(listSelector + " .perm-divider"));
+
+                // Hide/show blocks based on search
+                blocks.forEach(function(block) {
+                    var name = block.querySelector(".command-name").innerText.toLowerCase();
+                    if (name.includes(searchTerm)) {
+                        block.style.display = "";
+                    } else {
+                        block.style.display = "none";
+                    }
+                });
+
+                // Hide all dividers first
+                dividers.forEach(function(div) { div.style.display = "none"; });
+
+                // Show divider only between two visible blocks
+                var visibleBlocks = blocks.filter(function(block) { return block.style.display !== "none"; });
+                for (var i = 0; i < visibleBlocks.length - 1; i++) {
+                    var next = visibleBlocks[i].nextElementSibling;
+                    while (next && !next.classList.contains("perm-divider")) next = next.nextElementSibling;
+                    if (next && next.classList.contains("perm-divider")) {
+                        next.style.display = "";
+                    }
+                }
+            });
+        }
+
+        filterCommandBlocks("#builtin-commands-list", "builtin-command-search");
+        filterCommandBlocks("#custom-commands-list", "custom-command-search");
+
+        // Bulk enable/disable all
+        document.getElementById('enable-all-btn').addEventListener('click', function() {
+            document.querySelectorAll('.command-block input[type="checkbox"]').forEach(function(cb) {
+                cb.checked = true;
+            });
+        });
+        document.getElementById('disable-all-btn').addEventListener('click', function() {
+            document.querySelectorAll('.command-block input[type="checkbox"]').forEach(function(cb) {
+                cb.checked = false;
+            });
+        });
+
+        // Bulk by type (command/role/user) with dropdown
+        // Gather all commands, roles, users for dropdowns
+        function getAllOptions() {
+            var allCommands = Array.from(document.querySelectorAll('.command-block .command-name')).map(function(el) {
+                return { value: el.innerText.trim(), label: el.innerText.trim() };
+            });
+            var allRoles = Array.from(document.querySelectorAll('input[type="checkbox"][name$="_allow_roles"]')).map(function(cb) {
+                var label = cb.parentElement.querySelector('label');
+                var labelText = label ? label.innerText.trim() : '';
+                return { value: cb.value, label: labelText };
+            }).filter(function(r, idx, arr) {
+                // Remove duplicates by value
+                return arr.findIndex(x => x.value === r.value) === idx;
+            });
+            var allUsers = Array.from(document.querySelectorAll('input[type="checkbox"][name$="_allow_users"]')).map(function(cb) {
+                var label = cb.parentElement.querySelector('label');
+                var labelText = label ? label.innerText.trim() : '';
+                return { value: cb.value, label: labelText };
+            }).filter(function(u, idx, arr) {
+                return arr.findIndex(x => x.value === u.value) === idx;
+            });
+            return { allCommands, allRoles, allUsers };
+        }
+
+        var bulkTypeSelect = document.getElementById('bulk-type-select');
+        var bulkDropdown = document.getElementById('bulk-value-dropdown');
+        var bulkSearchInput = document.getElementById('bulk-search-input');
+
+        function updateBulkDropdown() {
+            var opts = getAllOptions();
+            var type = bulkTypeSelect.value;
+            var options = [];
+            if (type === 'command') {
+                options = opts.allCommands;
+            } else if (type === 'role') {
+                options = opts.allRoles;
+            } else if (type === 'user') {
+                options = opts.allUsers;
+            }
+            var search = bulkSearchInput.value.trim().toLowerCase();
+            var filtered = options.filter(function(opt) {
+                return opt.label.toLowerCase().includes(search) || opt.value.toLowerCase().includes(search);
+            });
+            bulkDropdown.innerHTML = '';
+            filtered.forEach(function(opt) {
+                var option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label || opt.value;
+                bulkDropdown.appendChild(option);
+            });
+        }
+
+        bulkTypeSelect.addEventListener('change', function() {
+            bulkSearchInput.value = '';
+            updateBulkDropdown();
+        });
+        bulkSearchInput.addEventListener('input', updateBulkDropdown);
+        // Initial load (after DOM and checkboxes are ready)
+        updateBulkDropdown();
+
+        function getBulkTargets(type, value) {
+            if (!value) return [];
+            if (type === 'command') {
+                // Find all checkboxes for a command name
+                var blocks = Array.from(document.querySelectorAll('.command-block'));
+                var targets = [];
+                blocks.forEach(function(block) {
+                    var name = block.querySelector('.command-name').innerText.trim().toLowerCase();
+                    if (name === value.toLowerCase()) {
+                        block.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+                            targets.push(cb);
+                        });
+                    }
+                });
+                return targets;
+            } else if (type === 'role') {
+                // Find all checkboxes for a role id
+                var targets = [];
+                document.querySelectorAll('input[type="checkbox"][name$="_allow_roles"]').forEach(function(cb) {
+                    if (cb.value === value) {
+                        targets.push(cb);
+                    }
+                });
+                return targets;
+            } else if (type === 'user') {
+                // Find all checkboxes for a user id
+                var targets = [];
+                document.querySelectorAll('input[type="checkbox"][name$="_allow_users"]').forEach(function(cb) {
+                    if (cb.value === value) {
+                        targets.push(cb);
+                    }
+                });
+                return targets;
+            }
+            return [];
+        }
+
+        document.getElementById('bulk-allow-btn').addEventListener('click', function() {
+            var type = bulkTypeSelect.value;
+            var value = bulkDropdown.value;
+            var targets = getBulkTargets(type, value);
+            targets.forEach(function(cb) { cb.checked = true; });
+        });
+        document.getElementById('bulk-deny-btn').addEventListener('click', function() {
+            var type = bulkTypeSelect.value;
+            var value = bulkDropdown.value;
+            var targets = getBulkTargets(type, value);
+            targets.forEach(function(cb) { cb.checked = false; });
+        });
+    });
+    </script>
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+        <p>
+            &copy; 2025 RuleKeeper. All rights reserved. |
+            <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+            <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+            <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+        </p>
+    </footer>
+</body>
+</html>

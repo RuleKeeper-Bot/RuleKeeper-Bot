@@ -4,15 +4,24 @@ from discord.ext import commands
 import logging
 import traceback
 from bot.bot import get_level_data, save_level_data, get_level_config, calculate_xp_for_level, calculate_level, calculate_progress, calculate_xp_with_boost, handle_level_up
+from shared import command_permission_check
+try:
+    from bot.bot import debug_print
+except ImportError:
+    def debug_print(*args, **kwargs):
+        pass
 
 class LevelingCog(commands.Cog):
     def __init__(self, bot):
+        debug_print(f"Entering LevelingCog.__init__ with bot: {bot}", level="all")
         self.bot = bot
         self.db = bot.db
 
     @app_commands.command(name="level", description="Check your current level and XP")
+    @command_permission_check("level")
     @app_commands.guild_only()
     async def level(self, interaction: discord.Interaction, user: discord.Member = None):
+        debug_print(f"Entering /level with interaction: {interaction}, user: {user}", level="all")
         """Show level profile with Discord integration"""
         try:
             user = user or interaction.user
@@ -68,9 +77,10 @@ class LevelingCog(commands.Cog):
                 ephemeral=True
             )
 
-    # ---------- Leaderboard Command ----------
     @app_commands.command(name="leaderboard", description="Show the server level leaderboard")
+    @command_permission_check("leaderboard")
     async def leaderboard(self, interaction: discord.Interaction):
+        debug_print(f"Entering /leaderboard with interaction: {interaction}", level="all")
         guild_id = str(interaction.guild.id)
         
         cursor = self.db.conn.execute('''
@@ -101,14 +111,20 @@ class LevelingCog(commands.Cog):
            
         await interaction.response.send_message(embed=embed)
 
-    # ---------- Set XP Command ----------
-    @app_commands.command(name="setxp", description="Set a user's XP (Admin only)")
+    @app_commands.command(name="setxp", description="Set a user's XP")
+    @command_permission_check("setxp")
     @app_commands.describe(user="User to modify", xp="New XP value to set")
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_xp(self, interaction: discord.Interaction, user: discord.User, xp: int):
+        debug_print(f"Entering /set_xp with interaction: {interaction}, user: {user}, xp: {xp}", level="all")
         guild_id = str(interaction.guild.id)
         user_id = str(user.id)
-        
+        # Ensure we have a Member object for .roles and other member attributes
+        if not isinstance(user, discord.Member) and interaction.guild is not None:
+            try:
+                user = await interaction.guild.fetch_member(user.id)
+            except Exception:
+                pass  # fallback to User if not found
+
         self.db.conn.execute('''
             INSERT OR REPLACE INTO user_levels 
             (guild_id, user_id, xp, username)
@@ -123,16 +139,14 @@ class LevelingCog(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ---------- Add XP Command ----------
-
     @app_commands.command(name="addxp", description="Add XP to a user")
+    @command_permission_check("addxp")
     @app_commands.describe(
         user="The user to add XP to",
         xp="The amount of XP to add"
     )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def add_xp(self, interaction: discord.Interaction, user: discord.Member, xp: int):
+        debug_print(f"Entering /add_xp with interaction: {interaction}, user: {user}, xp: {xp}", level="all")
         """Add XP to a user and handle level progression"""
         if xp <= 0:
             await interaction.response.send_message("❌ XP amount must be positive!", ephemeral=True)
@@ -192,14 +206,12 @@ class LevelingCog(commands.Cog):
             logging.error(f"AddXP error: {str(e)}")
             traceback.print_exc()
 
-    # ---------- Set Level Command ----------
-
-    @app_commands.command(name="setlevel", description="Set a user's level (Admin only)")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.command(name="setlevel", description="Set a user's level")
+    @command_permission_check("setlevel")
     @app_commands.describe(user="User to modify", level="New level (0-1000)")
     async def setlevel(self, interaction: discord.Interaction, user: discord.Member, level: app_commands.Range[int, 0, 1000]):
-        """Set a user's level (Admin)"""
+        debug_print(f"Entering /setlevel with interaction: {interaction}, user: {user}, level: {level}", level="all")
+        """Set a user's level"""
         try:
             # Immediately acknowledge the interaction
             await interaction.response.defer(ephemeral=True)
@@ -233,6 +245,7 @@ class LevelingCog(commands.Cog):
     @set_xp.error
     @setlevel.error
     async def xp_commands_error(self, interaction: discord.Interaction, error):
+        debug_print(f"Entering /xp_commands_error with interaction: {interaction}, error: {error}", level="all")
         if isinstance(error, app_commands.CheckFailure):
             await interaction.response.send_message(
                 "❌ You need administrator permissions to use this command!",
