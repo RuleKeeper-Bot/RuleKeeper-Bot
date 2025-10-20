@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage IP Bans</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+        
+        .container-fluid {
+            min-height: 100vh;
+        }
+        
+        /* Limit full-height to the top-level layout row only */
+        .page-row {
+            min-height: 100vh;
+        }
+        
+        .sidebar {
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 100;
+            padding: 0;
+            box-shadow: inset -1px 0 0 rgba(0, 0, 0, .1);
+            overflow-y: auto;
+        }
+        
+        main {
+            margin-left: 16.666667%; /* Matches col-md-2 width */
+        }
+        
+        @media (max-width: 767.98px) {
+            .sidebar {
+                position: relative;
+            }
+            
+            main {
+                margin-left: 0;
+            }
+        }
+        
+        .card {
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075);
+        }
+        
+        .table code {
+            background-color: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        
+        .btn-group-sm > .btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+        }
+    </style>
+    {% include 'dark_mode_include.html' %}
+</head>
+<body>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="container-fluid">
+        <div class="row page-row">
+            <!-- Sidebar -->
+            <nav class="col-md-2 d-none d-md-block bg-light sidebar">
+                <div class="sidebar-sticky pt-3">
+                    <h6 class="sidebar-heading d-flex justify-content-between align-items-center px-3 mb-3 text-muted">
+                        <span>Admin Panel</span>
+                    </h6>
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_dashboard') }}">
+                                <i class="bi bi-speedometer2 me-2"></i>
+                                Dashboard
+                            </a>
+                        </li>
+                        {% if is_head_admin() %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_bot_admins') }}">
+                                <i class="bi bi-people-fill me-2"></i>
+                                Manage Bot Admins
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active" href="{{ url_for('manage_ip_bans') }}">
+                                <i class="bi bi-shield-x me-2"></i>
+                                IP Bans
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active" href="{{ url_for('manage_user_guild_bans') }}">
+                                <i class="bi bi-person-x me-2"></i>
+                                User & Guild Bans
+                            </a>
+                        </li>
+                        {% endif %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_guilds') }}">
+                                <i class="bi bi-discord me-2"></i>
+                                Manage Guilds
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_announcements') }}">
+                                <i class="bi bi-megaphone me-2"></i>
+                                Announcements
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_audit_log') }}">
+                                <i class="bi bi-clock-history me-2"></i>
+                                Audit Log
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('settings') }}">
+                                <i class="bi bi-gear me-2"></i>
+                                Settings
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <!-- Main Content -->
+            <main role="main" class="col-md-9 ml-sm-auto col-lg-10 px-4 py-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2"><i class="bi bi-shield-x me-2"></i>IP Ban Management</h1>
+                    <div class="btn-toolbar mb-2 mb-md-0">
+                        <div class="btn-group mr-2">
+                            <span class="btn btn-sm btn-outline-secondary">
+                                Logged in as: <strong>{{ 'Head Admin' if is_head_admin() else 'Bot Admin' }}</strong>
+                            </span>
+                        </div>
+                        <div class="btn-group">
+                            <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-primary btn-sm me-2">
+                                <i class="bi bi-arrow-left"></i> Back to Dashboard
+                            </a>
+                            <a href="{{ url_for('logout_admin') }}" class="btn btn-danger btn-sm">
+                                <i class="bi bi-box-arrow-right"></i> Logout
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Add New IP Ban -->
+                <div class="card mb-4">
+                    <div class="card-header bg-danger text-white">
+                        <h5 class="mb-0"><i class="bi bi-ban"></i> Add IP Ban</h5>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST" action="{{ url_for('manage_ip_bans') }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="action" value="add">
+                            
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="mb-3">
+                                        <label for="ip_address" class="form-label">IP Address *</label>
+                                        <input type="text" class="form-control" id="ip_address" name="ip_address" 
+                                               placeholder="192.168.1.1" required>
+                                        <small class="text-muted">Enter IPv4 or IPv6 address</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-5">
+                                    <div class="mb-3">
+                                        <label for="reason" class="form-label">Reason *</label>
+                                        <input type="text" class="form-control" id="reason" name="reason" 
+                                               placeholder="Reason for ban" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="mb-3">
+                                        <label for="expires_at" class="form-label">Expires At (Optional)</label>
+                                        <input type="datetime-local" class="form-control" id="expires_at" name="expires_at">
+                                        <small class="text-muted">Leave empty for permanent ban</small>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-danger">
+                                <i class="bi bi-ban"></i> Ban IP Address
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Active Bans -->
+                <div class="card mb-4">
+                    <div class="card-header bg-dark text-white">
+                        <h5 class="mb-0"><i class="bi bi-shield-alt"></i> Active IP Bans ({{ bans|length }})</h5>
+                    </div>
+                    <div class="card-body">
+                        {% if bans %}
+                            <div class="table-responsive">
+                                <table class="table table-striped table-hover">
+                                    <thead>
+                                        <tr>
+                                            <th>IP Address</th>
+                                            <th>Reason</th>
+                                            <th>Banned By</th>
+                                            <th>Banned At</th>
+                                            <th>Expires At</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for ban in bans %}
+                                            <tr>
+                                                <td><code>{{ ban.ip_address }}</code></td>
+                                                <td>{{ ban.reason }}</td>
+                                                <td>{{ ban.banned_by }}</td>
+                                                <td>{{ ban.banned_at }}</td>
+                                                <td>
+                                                    {% if ban.expires_at %}
+                                                        {{ ban.expires_at }}
+                                                    {% else %}
+                                                        <span class="badge bg-warning">Permanent</span>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    <form method="POST" action="{{ url_for('manage_ip_bans') }}" 
+                                                          style="display: inline;">
+                                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                        <input type="hidden" name="action" value="remove">
+                                                        <input type="hidden" name="ban_id" value="{{ ban.id }}">
+                                                        <button type="submit" class="btn btn-sm btn-success"
+                                                                onclick="return confirm('Are you sure you want to unban this IP address?');">
+                                                            <i class="bi bi-check"></i> Unban
+                                                        </button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        {% else %}
+                            <div class="alert alert-info mb-0">
+                                <i class="bi bi-info-circle"></i> No active IP bans found.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Recently Expired Bans -->
+                {% if expired_bans %}
+                    <div class="card">
+                        <div class="card-header bg-secondary text-white">
+                            <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recently Expired Bans</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>IP Address</th>
+                                            <th>Reason</th>
+                                            <th>Banned At</th>
+                                            <th>Expired At</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for ban in expired_bans %}
+                                            <tr class="text-muted">
+                                                <td><code>{{ ban.ip_address }}</code></td>
+                                                <td>{{ ban.reason }}</td>
+                                                <td>{{ ban.banned_at }}</td>
+                                                <td>{{ ban.expires_at }}</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                {% endif %}
+
+                <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+                    <p>
+                        &copy; 2025 RuleKeeper. All rights reserved. |
+                        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+                        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+                        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+                    </p>
+                </footer>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

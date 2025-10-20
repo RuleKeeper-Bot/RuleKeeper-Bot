@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .sidebar {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-right: 1px solid #dee2e6;
+            height: 100vh;
+            position: sticky;
+            margin-bottom: -48px;
+            top: 0;
+        }
+        .sidebar-section {
+            margin-bottom: 25px;
+        }
+        .sidebar-link {
+            display: block;
+            padding: 10px 15px;
+            border-radius: 5px;
+            color: #212529;
+            text-decoration: none;
+            transition: background-color 0.2s;
+        }
+        .sidebar-link:hover, .sidebar-link.active {
+            background-color: #e9ecef;
+        }
+        .content-section {
+            display: none;
+        }
+        .content-section.active {
+            display: block;
+        }
+        @media (max-width: 991.98px) {
+            .sidebar {
+                height: auto;
+                position: static;
+                border-right: none;
+            }
+        }
+    </style>
+    {% include 'dark_mode_include.html' %}
+</head>
+<body>
+<div class="container-fluid">
+    <div class="row">
+        <!-- Sidebar -->
+        <div class="col-md-3 col-lg-2 sidebar d-md-block">
+            <div class="sidebar-section">
+                <h5>Settings</h5>
+                {% if is_admin %}
+                <div class="alert alert-primary py-2 px-2 mb-3">
+                    <small>
+                        <i class="bi bi-shield-check me-1"></i>
+                        {% if is_head_admin %}
+                            <strong>Head Admin Mode</strong>
+                        {% else %}
+                            <strong>Admin Mode</strong>
+                        {% endif %}
+                        <br>
+                        <span class="text-muted">Enhanced access enabled</span>
+                    </small>
+                </div>
+                {% endif %}
+                <div class="d-flex flex-column">
+                    <a href="#security" class="sidebar-link active" id="security-link">
+                        <i class="bi bi-shield-lock me-2"></i>Security
+                    </a>
+                    <a href="#announcements" class="sidebar-link" id="announcements-link">
+                        <i class="bi bi-megaphone me-2"></i>Announcements
+                    </a>
+                    <a href="#import-export" class="sidebar-link" id="import-export-link">
+                        <i class="bi bi-upload me-2"></i>Import & Export
+                    </a>
+                    {% if is_admin %}
+                    <a href="#admin-tools" class="sidebar-link" id="admin-tools-link">
+                        <i class="bi bi-gear-fill me-2"></i>Admin Tools
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        <!-- Main Content -->
+        <div class="col-md-9 col-lg-10">
+            <div class="container mt-4">
+                <!-- Security Section -->
+                <div id="security" class="content-section active">
+                    <h3 class="section-title">Security</h3>
+                    
+                    <!-- Flash Messages -->
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                                    {{ message }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+                    
+                    <!-- MFA Setup -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <strong>Multi-Factor Authentication (MFA)</strong>
+                            {% if mfa_methods.any_enabled %}
+                                <span class="badge bg-success ms-2">
+                                    <i class="bi bi-shield-check"></i> 
+                                    {% if mfa_methods.totp_enabled and mfa_methods.email_enabled %}
+                                        Both Methods Enabled
+                                    {% elif mfa_methods.totp_enabled %}
+                                        TOTP Enabled
+                                    {% elif mfa_methods.email_enabled %}
+                                        Email Enabled
+                                    {% endif %}
+                                </span>
+                            {% else %}
+                                <span class="badge bg-warning text-dark ms-2">
+                                    <i class="bi bi-shield-exclamation"></i> Disabled
+                                </span>
+                            {% endif %}
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted mb-3">
+                                <i class="bi bi-info-circle me-1"></i>
+                                Multi-Factor Authentication adds an extra layer of security to your account. You can enable one or both methods for maximum security.
+                            </p>
+                            {% if mfa_error %}
+                                <div class="alert alert-danger">{{ mfa_error }}</div>
+                            {% endif %}
+                            
+                            <!-- TOTP (Authenticator App) Section -->
+                            <div class="card mb-3">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <strong><i class="bi bi-phone me-2"></i>Authenticator App (TOTP)</strong>
+                                        {% if mfa_methods.totp_enabled %}
+                                            <span class="badge bg-success ms-2">Enabled</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary ms-2">Disabled</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <p class="text-muted mb-2">Use apps like Google Authenticator, Authy, or Microsoft Authenticator to generate time-based codes.</p>
+                                    {% if mfa_methods.totp_enabled %}
+                                        <div class="alert alert-success">
+                                            <i class="bi bi-shield-check me-2"></i>
+                                            <strong>TOTP MFA is enabled.</strong> Your account is protected with authenticator app verification.
+                                        </div>
+                                        <form method="POST" action="{{ url_for('settings') }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="disable_totp" value="1">
+                                            <button type="submit" class="btn btn-outline-danger btn-sm" 
+                                                    onclick="return confirm('Are you sure you want to disable Authenticator App MFA?')">
+                                                <i class="bi bi-shield-x me-2"></i>Disable TOTP
+                                            </button>
+                                        </form>
+                                    {% else %}
+                                        <form method="POST" action="{{ url_for('settings') }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="enable_totp" value="1">
+                                            <button type="submit" class="btn btn-primary">
+                                                <i class="bi bi-shield-plus me-2"></i>Enable Authenticator App
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            
+                            <!-- Email MFA Section -->
+                            <div class="card mb-3">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <strong><i class="bi bi-envelope me-2"></i>Email Verification</strong>
+                                        {% if mfa_methods.email_enabled %}
+                                            <span class="badge bg-success ms-2">Enabled</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary ms-2">Disabled</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <p class="text-muted mb-2">Receive verification codes via email for additional security.</p>
+                                    {% if mfa_methods.email_enabled %}
+                                        <div class="alert alert-success">
+                                            <i class="bi bi-shield-check me-2"></i>
+                                            <strong>Email MFA is enabled.</strong> Your account is protected with email verification.
+                                        </div>
+                                        <form method="POST" action="{{ url_for('settings') }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="disable_email" value="1">
+                                            <button type="submit" class="btn btn-outline-danger btn-sm" 
+                                                    onclick="return confirm('Are you sure you want to disable Email MFA?')">
+                                                <i class="bi bi-shield-x me-2"></i>Disable Email MFA
+                                            </button>
+                                        </form>
+                                    {% else %}
+                                        <form method="POST" action="{{ url_for('settings') }}">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <div class="mb-3">
+                                                <label for="email" class="form-label">Email Address</label>
+                                                <input type="email" class="form-control" id="email" name="email" placeholder="Enter your email" required>
+                                            </div>
+                                            <input type="hidden" name="enable_email" value="1">
+                                            <button type="submit" class="btn btn-primary">
+                                                <i class="bi bi-shield-plus me-2"></i>Enable Email MFA
+                                            </button>
+                                        </form>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            
+                            <!-- Global MFA Controls -->
+                            {% if mfa_methods.any_enabled %}
+                                <hr class="my-3">
+                                <div class="alert alert-warning">
+                                    <i class="bi bi-exclamation-triangle me-2"></i>
+                                    <strong>Danger Zone:</strong> Disable all MFA methods (not recommended)
+                                </div>
+                                <form method="POST" action="{{ url_for('settings') }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="disable_all_mfa" value="1">
+                                    <button type="submit" class="btn btn-danger btn-sm" 
+                                            onclick="return confirm('Are you sure you want to disable ALL Multi-Factor Authentication? This will make your account less secure.')">
+                                        <i class="bi bi-shield-x me-2"></i>Disable All MFA
+                                    </button>
+                                </form>
+                            {% endif %}
+                        </div>
+                    </div>
+                    
+                    
+                    <!-- Data Deletion -->
+                    {% if not is_admin and not is_head_admin %}
+                    <div id="delete-data" class="management-section">
+                        <h3 class="section-title">Delete Data</h3>
+                        <div class="alert alert-danger mt-4">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            <strong>Warning:</strong> This action is <u>irreversible</u>. Deleting all server data will remove all configuration, user data, and history for this server from the database.
+                        </div>
+                        <div class="card">
+                            <div class="card-body">
+                                <!-- Guild Selection -->
+                                <form method="GET" action="" id="guild-select-form-security">
+                                    <label for="guild-select-security" class="form-label">
+                                        Select Guild
+                                    </label>
+                                    <select class="form-select" id="guild-select-security" name="guild_id">
+                                        {% for guild in guilds %}
+                                        <option value="{{ guild.id }}" {% if guild.id|string == selected_guild_id|string %}selected{% endif %}>{{ guild.name }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </form>
+                                <hr>
+                                <!-- Delete All Server Data Button -->
+                                <form id="delete-server-data-form" method="POST" action="{{ url_for('remove_all_guild_data', guild_id=selected_guild_id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="button" class="btn btn-danger" id="delete-server-data-btn">
+                                        <i class="bi bi-trash"></i> Delete All Server Data
+                                    </button>
+                                </form>
+                                <small class="text-danger d-block mt-2">
+                                    This will remove <b>all</b> data for this server from the database. This cannot be undone.
+                                </small>
+                                <hr>
+                                <!-- Delete All User Data by User ID -->
+                                <form id="delete-user-data-form" method="POST" action="{{ url_for('remove_all_user_data', guild_id=selected_guild_id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <div class="mb-2">
+                                        <label for="user-id-input" class="form-label">User ID to Delete Data For:</label>
+                                        <input type="text" class="form-control" id="user-id-input" name="user_id" placeholder="Enter Discord User ID" required>
+                                    </div>
+                                    <button type="button" class="btn btn-warning" id="delete-user-data-btn">
+                                        <i class="bi bi-person-x"></i> Delete All Data for User
+                                    </button>
+                                </form>
+                                <small class="text-danger d-block mt-2">
+                                    This will remove <b>all</b> data for the specified user in this server. This cannot be undone.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <!-- Announcements Section -->
+                <div id="announcements" class="content-section">
+                    <h3 class="section-title">Announcements</h3>
+                    
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>About Announcements:</strong> Bot administrators can send important announcements to your server. Configure which channel should receive these messages below.
+                    </div>
+
+                    <!-- Guild Selection for Announcements -->
+                    <form method="GET" action="" id="guild-select-form-announcements" class="mb-4">
+                        <label for="guild-select-announcements" class="form-label">
+                            Select Guild
+                            {% if is_admin %}
+                            <span class="badge bg-primary ms-2">Admin: All Bot Guilds</span>
+                            {% endif %}
+                        </label>
+                        <select class="form-select" id="guild-select-announcements" name="guild_id">
+                            {% for guild in guilds %}
+                            <option value="{{ guild.id }}" {% if guild.id|string == selected_guild_id|string %}selected{% endif %}>{{ guild.name }}</option>
+                            {% endfor %}
+                        </select>
+                        {% if is_admin %}
+                        <div class="form-text">
+                            <i class="bi bi-info-circle me-1"></i>
+                            As an admin, you can configure announcements for any server where the bot is present.
+                        </div>
+                        {% endif %}
+                    </form>
+
+                    <!-- Announcement Configuration -->
+                    <div class="card mb-4">
+                        <div class="card-header">
+                            <strong>Announcement Channel Configuration</strong>
+                        </div>
+                        <div class="card-body">
+                            {% if selected_guild_id %}
+                            <form method="POST" action="{{ url_for('settings') }}?guild_id={{ selected_guild_id }}" class="needs-validation" novalidate>
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="hidden" name="action" value="update_announcement_config">
+                                
+                                <div class="mb-3">
+                                    <label for="announcement-channel" class="form-label">Announcement Channel</label>
+                                    <select class="form-select" id="announcement-channel" name="announcement_channel_id">
+                                        <option value="">Select a channel...</option>
+                                        {% for channel in channels %}
+                                            <option value="{{ channel.id }}" 
+                                                {% if announcement_config and channel.id|string == announcement_config.channel_id|string %}selected{% endif %}>
+                                                # {{ channel.name }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                    <div class="form-text">
+                                        Bot administrators can send announcements to this channel from the admin dashboard.
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3">
+                                    <label for="announcement-role" class="form-label">Default Announcement Role (Optional)</label>
+                                    <select class="form-select" id="announcement-role" name="announcement_role_id">
+                                        <option value="">No role ping</option>
+                                        {% for role in roles %}
+                                            <option value="{{ role.id }}" 
+                                                {% if announcement_config and role.id|string == announcement_config.role_id|string %}selected{% endif %}>
+                                                {{ role.name }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                    <div class="form-text">
+                                        This role will be pinged when bot administrators send announcements to all servers. Leave empty for no ping.
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3 form-check">
+                                    <input type="checkbox" class="form-check-input" id="announcement-enabled" 
+                                           name="announcement_enabled" value="1"
+                                           {% if not announcement_config or announcement_config.enabled %}checked{% endif %}>
+                                    <label class="form-check-label" for="announcement-enabled">
+                                        Enable announcements for this server
+                                    </label>
+                                </div>
+                                
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-check-circle"></i> Update Announcement Settings
+                                </button>
+                            </form>
+                            {% else %}
+                            <p class="text-muted">Please select a guild above to configure announcement settings.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Import/Export Section -->
+                <div id="import-export" class="management-section content-section">
+                    <h3 class="section-title">Import / Export</h3>
+                    <!-- Guild Selection for Import/Export -->
+                    <form method="GET" class="mb-3" id="guild-form-import-export">
+                        <label for="guild-select-import-export" class="form-label">
+                            Select Guild
+                            {% if is_admin %}
+                            <span class="badge bg-primary ms-2">Admin: All Bot Guilds</span>
+                            {% endif %}
+                        </label>
+                        <select class="form-select" id="guild-select-import-export" name="guild_id">
+                            {% for guild in guilds %}
+                            <option value="{{ guild.id }}" {% if guild.id == selected_guild_id %}selected{% endif %}>{{ guild.name }}</option>
+                            {% endfor %}
+                        </select>
+                        {% if is_admin %}
+                        <div class="form-text">
+                            <i class="bi bi-info-circle me-1"></i>
+                            As an admin, you can import/export data for any server where the bot is present.
+                        </div>
+                        {% endif %}
+                    </form>
+                    <div class="mb-3">
+                        <button type="button" class="btn btn-sm btn-outline-primary me-2" id="select-all-btn">Select All</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="deselect-all-btn">Deselect All</button>
+                    </div>
+                    <form id="export-form" method="POST" enctype="multipart/form-data">
+                        <div class="accordion" id="exportAccordion">
+                            <!-- Server Configuration -->
+                            <div class="accordion-item">                                    
+                                <h2 class="accordion-header" id="headingServerConfig">
+                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseServerConfig" aria-expanded="true" aria-controls="collapseServerConfig">
+                                        Server Configuration
+                                    </button>
+                                </h2>
+                                <div id="collapseServerConfig" class="accordion-collapse collapse show" aria-labelledby="headingServerConfig" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body">
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/commands.json" id="export-commands"><label class="form-check-label" for="export-commands">Commands</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/command-permissions.json" id="export-command-permissions"><label class="form-check-label" for="export-command-permissions">Command Permissions</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/blocked-words.json" id="export-blocked-words"><label class="form-check-label" for="export-blocked-words">Blocked Words</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/logging.json" id="export-logging"><label class="form-check-label" for="export-logging">Logging</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/welcome-message.json" id="export-welcome-message"><label class="form-check-label" for="export-welcome-message">Welcome Message</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/goodbye-message.json" id="export-goodbye-message"><label class="form-check-label" for="export-goodbye-message">Goodbye Message</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/auto-assign-role.json" id="export-auto-assign-role"><label class="form-check-label" for="export-auto-assign-role">Auto Assign Role</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/spam.json" id="export-spam"><label class="form-check-label" for="export-spam">Spam</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/warning-actions.json" id="export-warning-actions"><label class="form-check-label" for="export-warning-actions">Warning Actions</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="server-configuration/role-menus.json" id="export-role-menus"><label class="form-check-label" for="export-role-menus">Role Menus</label></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Leveling System -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="headingLeveling">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseLeveling" aria-expanded="false" aria-controls="collapseLeveling">
+                                        Leveling System
+                                    </button>
+                                </h2>
+                                <div id="collapseLeveling" class="accordion-collapse collapse" aria-labelledby="headingLeveling" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body">
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="leveling-system/leveling.json" id="export-leveling"><label class="form-check-label" for="export-leveling">Leveling</label></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Moderation -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="headingModeration">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseModeration" aria-expanded="false" aria-controls="collapseModeration">
+                                        Moderation
+                                    </button>
+                                </h2>
+                                <div id="collapseModeration" class="accordion-collapse collapse" aria-labelledby="headingModeration" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body text-muted">
+                                        <em>No exportable data in this section yet.</em>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Custom Forms -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="headingCustomForms">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseCustomForms" aria-expanded="false" aria-controls="collapseCustomForms">
+                                        Custom Forms
+                                    </button>
+                                </h2>
+                                <div id="collapseCustomForms" class="accordion-collapse collapse" aria-labelledby="headingCustomForms" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body">
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="custom-forms/forms.json" id="export-forms"><label class="form-check-label" for="export-forms">Forms</label></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Social Pings -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="headingSocialPings">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseSocialPings" aria-expanded="false" aria-controls="collapseSocialPings">
+                                        Social Pings
+                                    </button>
+                                </h2>
+                                <div id="collapseSocialPings" class="accordion-collapse collapse" aria-labelledby="headingSocialPings" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body">
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="social-pings/twitch-pings.json" id="export-twitch-pings"><label class="form-check-label" for="export-twitch-pings">Twitch Pings</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="social-pings/youtube-pings.json" id="export-youtube-pings"><label class="form-check-label" for="export-youtube-pings">YouTube Pings</label></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Fun/Miscellaneous -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="headingFunMisc">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFunMisc" aria-expanded="false" aria-controls="collapseFunMisc">
+                                        Fun/Miscellaneous
+                                    </button>
+                                </h2>
+                                <div id="collapseFunMisc" class="accordion-collapse collapse" aria-labelledby="headingFunMisc" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body">
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="fun-miscellaneous/game-roles.json" id="export-game-roles"><label class="form-check-label" for="export-game-roles">Game Roles</label></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Backup/Restore -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="headingBackupRestore">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseBackupRestore" aria-expanded="false" aria-controls="collapseBackupRestore">
+                                        Backup/Restore
+                                    </button>
+                                </h2>
+                                <div id="collapseBackupRestore" class="accordion-collapse collapse" aria-labelledby="headingBackupRestore" data-bs-parent="#exportAccordion">
+                                    <div class="accordion-body">
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="backup-restore/backups" id="export-backups"><label class="form-check-label" for="export-backups">Backups (all backup files)</label></div>
+                                        <div class="form-check"><input class="form-check-input export-option" type="checkbox" name="export_options" value="backup-restore/backup-schedules.json" id="export-backup-schedules"><label class="form-check-label" for="export-backup-schedules">Backup Schedules</label></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <button type="submit" class="btn btn-success me-2" id="export-btn"><i class="bi bi-download me-1"></i>Export Selected</button>
+                            <label class="btn btn-primary mb-0" for="import-file-input"><i class="bi bi-upload me-1"></i>Import Zip</label>
+                            <input type="file" id="import-file-input" name="import_file" accept=".zip" style="display:none;">
+                        </div>
+                    </form>
+                    <div id="import-export-status" class="mt-3"></div>
+                </div>
+                
+                <!-- Admin Tools Section -->
+                {% if is_admin %}
+                <div id="admin-tools" class="content-section">
+                    <h3 class="section-title">
+                        <i class="bi bi-shield-check me-2"></i>Admin Tools
+                        {% if is_head_admin %}
+                            <span class="badge bg-danger ms-2">Head Admin</span>
+                        {% else %}
+                            <span class="badge bg-primary ms-2">Bot Admin</span>
+                        {% endif %}
+                    </h3>
+                    
+                    <div class="alert alert-warning">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        <strong>Admin Access:</strong> You have access to manage settings and data for all servers where the bot is present. Use these tools responsibly.
+                    </div>
+
+                    <!-- Admin Guild Selection -->
+                    <form method="GET" action="" id="guild-select-form-admin" class="mb-4">
+                        <label for="guild-select-admin" class="form-label">Select Any Bot Guild</label>
+                        <select class="form-select" id="guild-select-admin" name="guild_id">
+                            {% for guild in guilds %}
+                            <option value="{{ guild.id }}" {% if guild.id|string == selected_guild_id|string %}selected{% endif %}>{{ guild.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">
+                            As an admin, you can manage any server where the bot is present.
+                        </div>
+                    </form>
+
+                    <!-- Admin Data Management -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-danger text-white">
+                            <strong><i class="bi bi-database-x me-2"></i>Admin Data Management</strong>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-danger">
+                                <i class="bi bi-exclamation-triangle me-2"></i>
+                                <strong>Danger Zone:</strong> These actions are <u>irreversible</u> and will permanently delete data from the database.
+                            </div>
+                            
+                            <!-- Delete All Server Data Button -->
+                            <div class="mb-4">
+                                <h6>Delete All Server Data</h6>
+                                <p class="text-muted">Remove all configuration, user data, and history for the selected server.</p>
+                                <form id="admin-delete-server-data-form" method="POST" action="{{ url_for('remove_all_guild_data', guild_id=selected_guild_id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="button" class="btn btn-danger" id="admin-delete-server-data-btn">
+                                        <i class="bi bi-trash"></i> Delete All Server Data
+                                    </button>
+                                </form>
+                                <small class="text-danger d-block mt-2">
+                                    This will remove <b>all</b> data for the selected server from the database.
+                                </small>
+                            </div>
+                            
+                            <hr>
+                            
+                            <!-- Delete User Data by User ID -->
+                            <div class="mb-4">
+                                <h6>Delete User Data</h6>
+                                <p class="text-muted">Remove all data for a specific user in the selected server.</p>
+                                <form id="admin-delete-user-data-form" method="POST" action="{{ url_for('remove_all_user_data', guild_id=selected_guild_id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <div class="mb-2">
+                                        <label for="admin-user-id-input" class="form-label">User ID:</label>
+                                        <input type="text" class="form-control" id="admin-user-id-input" name="user_id" placeholder="Enter Discord User ID" required>
+                                    </div>
+                                    <button type="button" class="btn btn-warning" id="admin-delete-user-data-btn">
+                                        <i class="bi bi-person-x"></i> Delete All Data for User
+                                    </button>
+                                </form>
+                                <small class="text-danger d-block mt-2">
+                                    This will remove <b>all</b> data for the specified user in the selected server.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Admin User Management -->
+                    {% if can_manage_settings %}
+                    <div class="card mb-4">
+                        <div class="card-header bg-primary text-white">
+                            <strong><i class="bi bi-people-fill me-2"></i>User MFA Management</strong>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted">As an admin with Settings privileges, you can manage Multi-Factor Authentication for any user.</p>
+                            
+                            <div class="mb-3">
+                                <label for="admin-target-user-id" class="form-label">User ID to Manage:</label>
+                                <input type="text" class="form-control" id="admin-target-user-id" placeholder="Enter Discord User ID" required>
+                            </div>
+                            
+                            <div class="btn-group" role="group">
+                                <button type="button" class="btn btn-outline-warning" id="admin-disable-user-mfa-btn">
+                                    <i class="bi bi-shield-x me-2"></i>Disable User's MFA
+                                </button>
+                                <button type="button" class="btn btn-outline-info" id="admin-view-user-mfa-btn">
+                                    <i class="bi bi-shield-check me-2"></i>View User's MFA Status
+                                </button>
+                            </div>
+                            
+                            <div id="admin-mfa-status" class="mt-3"></div>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #444; font-size: 0.9rem; color: #aaa;">
+	  <p>
+		&copy; 2025 RuleKeeper. All rights reserved. |
+		<a href="/privacy-policy" style="color: #6ea8fe; text-decoration: none;">Privacy Policy</a> |
+		<a href="/terms-of-service" style="color: #6ea8fe; text-decoration: none;">Terms of Service</a> |
+		<a href="/end-user-license-agreement" style="color: #6ea8fe; text-decoration: none;">End User License Agreement</a>
+	  </p>
+	</footer>
+<script>
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        const csrfToken = '{{ csrf_token() }}';
+
+        // --- Section Switching ---
+        const sidebarLinks = document.querySelectorAll('.sidebar-link');
+        const contentSections = document.querySelectorAll('.content-section');
+
+        function showSection() {
+            const hash = window.location.hash || '#security'; // Default to #security
+
+            contentSections.forEach(section => {
+                if ('#' + section.id === hash) {
+                    section.classList.add('active');
+                } else {
+                    section.classList.remove('active');
+                }
+            });
+
+            sidebarLinks.forEach(link => {
+                if (link.getAttribute('href') === hash) {
+                    link.classList.add('active');
+                } else {
+                    link.classList.remove('active');
+                }
+            });
+        }
+
+        sidebarLinks.forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const targetHash = this.getAttribute('href');
+                // Update hash, which will trigger the 'hashchange' event listener
+                if (window.location.hash !== targetHash) {
+                    window.location.hash = targetHash;
+                }
+            });
+        });
+
+        window.addEventListener('hashchange', showSection);
+        showSection(); // Initial call to show the correct section on page load
+
+        // --- Guild Selection & Data Deletion ---
+        const guildSelectSecurity = document.getElementById('guild-select-security');
+        const guildSelectAnnouncements = document.getElementById('guild-select-announcements');
+        const deleteServerForm = document.getElementById('delete-server-data-form');
+        const deleteUserForm = document.getElementById('delete-user-data-form');
+
+        function updateDeleteActions() {
+            if (guildSelectSecurity) {
+                const selectedGuildId = guildSelectSecurity.value;
+                if (deleteServerForm) deleteServerForm.action = `/api/${selectedGuildId}/remove-all-data`;
+                if (deleteUserForm) deleteUserForm.action = `/api/${selectedGuildId}/remove-all-user-data`;
+            }
+        }
+
+        if (guildSelectSecurity) {
+            guildSelectSecurity.addEventListener('change', function() {
+                const selectedGuildId = this.value;
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('guild_id', selectedGuildId);
+                window.location.href = currentUrl.toString();
+            });
+        }
+
+        if (guildSelectAnnouncements) {
+            guildSelectAnnouncements.addEventListener('change', function() {
+                const selectedGuildId = this.value;
+                // Navigate to the new URL with the correct guild_id to ensure server renders correct config
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('guild_id', selectedGuildId);
+                currentUrl.hash = '#announcements';
+                window.location.href = currentUrl.toString();
+            });
+        }
+
+        // Function to load both channels and roles for a specific guild
+        async function loadChannelsAndRolesForGuild(guildId) {
+            if (!guildId) return;
+            
+            // Load channels and roles in parallel
+            await Promise.all([
+                loadChannelsForGuild(guildId),
+                loadRolesForGuild(guildId)
+            ]);
+        }
+
+        // Function to load channels for a specific guild
+        async function loadChannelsForGuild(guildId) {
+            const channelSelect = document.getElementById('announcement-channel');
+            if (!channelSelect || !guildId) return;
+
+            try {
+                // Show loading state
+                channelSelect.innerHTML = '<option value="">Loading channels...</option>';
+                channelSelect.disabled = true;
+
+                // Fetch channels from the backend
+                const response = await fetch(`/api/${guildId}/channels`, {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch channels');
+                }
+
+                const data = await response.json();
+                
+                // Clear and populate the channel dropdown
+                channelSelect.innerHTML = '<option value="">Select a channel...</option>';
+                
+                if (data.channels && data.channels.length > 0) {
+                    data.channels.forEach(channel => {
+                        const option = document.createElement('option');
+                        option.value = channel.id;
+                        option.textContent = `# ${channel.name}`;
+                        channelSelect.appendChild(option);
+                    });
+                }
+
+                // Re-enable the select
+                channelSelect.disabled = false;
+
+            } catch (error) {
+                console.error('Error loading channels:', error);
+                channelSelect.innerHTML = '<option value="">Error loading channels</option>';
+                channelSelect.disabled = false;
+            }
+        }
+
+        // Function to load roles for a specific guild
+        async function loadRolesForGuild(guildId) {
+            const roleSelect = document.getElementById('announcement-role');
+            if (!roleSelect || !guildId) return;
+
+            try {
+                // Show loading state
+                roleSelect.innerHTML = '<option value="">Loading roles...</option>';
+                roleSelect.disabled = true;
+
+                // Fetch roles from the bot API
+                const response = await fetch(`/api/${guildId}/roles`, {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch roles');
+                }
+
+                const data = await response.json();
+                
+                // Clear and populate the role dropdown
+                roleSelect.innerHTML = '<option value="">No role ping</option>';
+                
+                if (data.roles && data.roles.length > 0) {
+                    data.roles.forEach(role => {
+                        const option = document.createElement('option');
+                        option.value = role.id;
+                        option.textContent = role.name;
+                        roleSelect.appendChild(option);
+                    });
+                }
+
+                // Re-enable the select
+                roleSelect.disabled = false;
+
+            } catch (error) {
+                console.error('Error loading roles:', error);
+                roleSelect.innerHTML = '<option value="">Error loading roles</option>';
+                roleSelect.disabled = false;
+            }
+        }
+
+        updateDeleteActions(); // Initial call
+
+        // Load channels and roles for the initially selected guild in announcements section
+        const initialGuildId = guildSelectAnnouncements?.value;
+        if (initialGuildId && window.location.hash === '#announcements') {
+            loadChannelsAndRolesForGuild(initialGuildId);
+        }
+
+        // --- Import/Export ---
+        const guildSelectImportExport = document.getElementById('guild-select-import-export');
+        let currentGuildId = guildSelectImportExport.value;
+
+        guildSelectImportExport.addEventListener('change', function() {
+            currentGuildId = this.value;
+        });
+
+        document.getElementById('select-all-btn').addEventListener('click', () => {
+            document.querySelectorAll('.export-option').forEach(opt => opt.checked = true);
+        });
+
+        document.getElementById('deselect-all-btn').addEventListener('click', () => {
+            document.querySelectorAll('.export-option').forEach(opt => opt.checked = false);
+        });
+
+        const importFileInput = document.getElementById('import-file-input');
+        const importExportStatus = document.getElementById('import-export-status');
+
+        importFileInput.addEventListener('change', async function() {
+            if (this.files.length > 0 && currentGuildId) {
+                importExportStatus.innerHTML = `<div class='alert alert-info'>Importing...</div>`;
+                const formData = new FormData();
+                formData.append('import_file', this.files[0]);
+                try {
+                    const res = await fetch(`/api/${currentGuildId}/import`, {
+                        method: 'POST',
+                        headers: { 'X-CSRFToken': csrfToken },
+                        body: formData
+                    });
+                    const data = await res.json();
+                    const alertType = res.ok ? 'success' : 'danger';
+                    importExportStatus.innerHTML = `<div class='alert alert-${alertType}'>${data.message || data.error}</div>`;
+                } catch (err) {
+                    importExportStatus.innerHTML = `<div class='alert alert-danger'>Import failed: ${err}</div>`;
+                }
+            }
+        });
+
+        document.getElementById('export-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            if (!currentGuildId) return;
+
+            const checked = Array.from(document.querySelectorAll('.export-option:checked')).map(x => x.value);
+            if (!checked.length) {
+                importExportStatus.innerHTML = `<div class='alert alert-warning'>Please select at least one option to export.</div>`;
+                return;
+            }
+
+            importExportStatus.innerHTML = `<div class='alert alert-info'>Exporting...</div>`;
+            try {
+                const res = await fetch(`/api/${currentGuildId}/export`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': csrfToken
+                    },
+                    body: JSON.stringify({ options: checked })
+                });
+
+                if (!res.ok) {
+                    const data = await res.json();
+                    importExportStatus.innerHTML = `<div class='alert alert-danger'>Export failed: ${data.error || res.statusText}</div>`;
+                    return;
+                }
+
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = 'export.zip';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.remove();
+                importExportStatus.innerHTML = `<div class='alert alert-success'>Export complete.</div>`;
+            } catch (err) {
+                importExportStatus.innerHTML = `<div class='alert alert-danger'>Export failed: ${err}</div>`;
+            }
+        });
+
+        // --- Confirmation Dialogs ---
+        
+        // Only set up delete dialogs if the elements exist (non-admin users)
+        const deleteServerBtn = document.getElementById('delete-server-data-btn');
+        const deleteUserBtn = document.getElementById('delete-user-data-btn');
+        
+        if (deleteServerBtn) {
+            deleteServerBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (confirm('Are you absolutely sure you want to delete ALL data for this server? This cannot be undone.')) {
+                    if (confirm('This is your last chance! Deleting all server data is permanent. Proceed?')) {
+                        deleteServerForm.submit();
+                    }
+                }
+            });
+        } else {
+            console.log('delete-server-data-btn not found (likely admin user)');
+        }
+
+        if (deleteUserBtn) {
+            deleteUserBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                const userId = document.getElementById('user-id-input').value.trim();
+                if (!userId) {
+                    alert('Please enter a valid User ID.');
+                    return;
+                }
+                if (confirm(`Are you sure you want to delete ALL data for user ID ${userId}? This cannot be undone.`)) {
+                    if (confirm('This is your last chance! Deleting all user data is permanent. Proceed?')) {
+                        deleteUserForm.submit();
+                    }
+                }
+            });
+        } else {
+            console.log('delete-user-data-btn not found (likely admin user)');
+        }
+
+        // --- Admin Tools ---
+        const adminToolsSection = document.getElementById('admin-tools');
+        
+        {% if is_admin %}
+        const guildSelectAdmin = document.getElementById('guild-select-admin');
+        const adminDeleteServerForm = document.getElementById('admin-delete-server-data-form');
+        const adminDeleteUserForm = document.getElementById('admin-delete-user-data-form');
+
+        function updateAdminDeleteActions() {
+            if (guildSelectAdmin) {
+                const selectedGuildId = guildSelectAdmin.value;
+                if (adminDeleteServerForm) adminDeleteServerForm.action = `/api/${selectedGuildId}/remove-all-data`;
+                if (adminDeleteUserForm) adminDeleteUserForm.action = `/api/${selectedGuildId}/remove-all-user-data`;
+            }
+        }
+
+        if (guildSelectAdmin) {
+            guildSelectAdmin.addEventListener('change', function() {
+                const selectedGuildId = this.value;
+                const currentUrl = new URL(window.location.href);
+                currentUrl.searchParams.set('guild_id', selectedGuildId);
+                currentUrl.hash = '#admin-tools';
+                window.location.href = currentUrl.toString();
+            });
+        }
+
+        // Admin delete server data
+        const adminDeleteServerBtn = document.getElementById('admin-delete-server-data-btn');
+        if (adminDeleteServerBtn) {
+            adminDeleteServerBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (confirm('⚠️ ADMIN ACTION ⚠️\n\nAre you absolutely sure you want to delete ALL data for this server?\n\nThis action cannot be undone and will affect all users in this server.')) {
+                    if (confirm('🚨 FINAL WARNING 🚨\n\nThis is your last chance! Deleting all server data is permanent and irreversible.\n\nProceed with deletion?')) {
+                        adminDeleteServerForm.submit();
+                    }
+                }
+            });
+        }
+
+        // Admin delete user data
+        const adminDeleteUserBtn = document.getElementById('admin-delete-user-data-btn');
+        if (adminDeleteUserBtn) {
+            adminDeleteUserBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                const userId = document.getElementById('admin-user-id-input').value.trim();
+                if (!userId) {
+                    alert('Please enter a valid User ID.');
+                    return;
+                }
+                if (confirm(`⚠️ ADMIN ACTION ⚠️\n\nAre you sure you want to delete ALL data for user ID ${userId}?\n\nThis cannot be undone.`)) {
+                    if (confirm('🚨 FINAL WARNING 🚨\n\nThis is your last chance! Deleting all user data is permanent.\n\nProceed with deletion?')) {
+                        adminDeleteUserForm.submit();
+                    }
+                }
+            });
+        }
+
+        {% if can_manage_settings %}
+        console.log('Loading MFA management functionality for admin with settings permission');
+        
+        // Admin MFA Management
+        const adminDisableMfaBtn = document.getElementById('admin-disable-user-mfa-btn');
+        const adminViewMfaBtn = document.getElementById('admin-view-user-mfa-btn');
+        const adminMfaStatus = document.getElementById('admin-mfa-status');
+        const adminTargetUserInput = document.getElementById('admin-target-user-id');
+
+        if (adminViewMfaBtn) {
+            adminViewMfaBtn.addEventListener('click', async function() {
+                const userId = document.getElementById('admin-target-user-id').value.trim();
+                
+                if (!userId) {
+                    alert('Please enter a valid User ID.');
+                    return;
+                }
+                
+                // Validate that it looks like a Discord User ID (numeric, 17-19 digits)
+                if (!/^\d{17,19}$/.test(userId)) {
+                    alert('Please enter a valid Discord User ID (numeric, 17-19 digits).\n\nExample: 123456789012345678');
+                    return;
+                }
+
+                adminMfaStatus.innerHTML = '<div class="alert alert-info">Checking MFA status...</div>';
+
+                try {
+                    const response = await fetch(`/admin/api/users/${userId}/mfa-status`, {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken
+                        }
+                    });
+
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        const methods = data.mfa_methods;
+                        let statusHtml = '<div class="alert alert-success"><h6>MFA Status for User ID: ' + userId + '</h6>';
+                        statusHtml += '<ul class="mb-0">';
+                        statusHtml += '<li>TOTP (Authenticator): ' + (methods.totp_enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>') + '</li>';
+                        statusHtml += '<li>Email MFA: ' + (methods.email_enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>') + '</li>';
+                        statusHtml += '</ul></div>';
+                        adminMfaStatus.innerHTML = statusHtml;
+                    } else {
+                        adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${data.error || 'Failed to check MFA status'}</div>`;
+                    }
+                } catch (error) {
+                    console.error('Error checking MFA status:', error);
+                    adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+                }
+            });
+        } else {
+            console.error('admin-view-user-mfa-btn element not found');
+        }
+
+        if (adminDisableMfaBtn) {
+            adminDisableMfaBtn.addEventListener('click', async function() {
+                const userId = document.getElementById('admin-target-user-id').value.trim();
+                
+                if (!userId) {
+                    alert('Please enter a valid User ID.');
+                    return;
+                }
+                
+                // Validate that it looks like a Discord User ID (numeric, 17-19 digits)
+                if (!/^\d{17,19}$/.test(userId)) {
+                    alert('Please enter a valid Discord User ID (numeric, 17-19 digits).\n\nExample: 123456789012345678');
+                    return;
+                }
+
+                if (!confirm(`⚠️ HEAD ADMIN ACTION ⚠️\n\nAre you sure you want to disable ALL MFA for user ID ${userId}?\n\nThis will reduce their account security.`)) {
+                    return;
+                }
+
+                adminMfaStatus.innerHTML = '<div class="alert alert-warning">Disabling MFA...</div>';
+
+                try {
+                    const response = await fetch(`/admin/api/users/${userId}/disable-mfa`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken
+                        }
+                    });
+
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        adminMfaStatus.innerHTML = `<div class="alert alert-success">Successfully disabled all MFA for user ID: ${userId}</div>`;
+                    } else {
+                        adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${data.error || 'Failed to disable MFA'}</div>`;
+                    }
+                } catch (error) {
+                    console.error('Error disabling MFA:', error);
+                    adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+                }
+            });
+        } else {
+            console.error('admin-disable-user-mfa-btn element not found');
+        }
+        {% endif %}
+
+        updateAdminDeleteActions(); // Initial call
+        {% endif %}
+        
+        // --- Alternative Admin Tools (if is_admin is not set for admins with settings permission) ---
+        {% if can_manage_settings and not is_admin %}
+        console.log('Loading alternative MFA management for admin with settings permission');
+        // Admin MFA Management
+        const adminDisableMfaBtn = document.getElementById('admin-disable-user-mfa-btn');
+        const adminViewMfaBtn = document.getElementById('admin-view-user-mfa-btn');
+        const adminMfaStatus = document.getElementById('admin-mfa-status');
+
+        if (adminViewMfaBtn) {
+            adminViewMfaBtn.addEventListener('click', async function() {
+                const userId = document.getElementById('admin-target-user-id').value.trim();
+                if (!userId) {
+                    alert('Please enter a valid User ID.');
+                    return;
+                }
+
+                adminMfaStatus.innerHTML = '<div class="alert alert-info">Checking MFA status...</div>';
+
+                try {
+                    const response = await fetch(`/admin/api/users/${userId}/mfa-status`, {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken
+                        }
+                    });
+
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        const methods = data.mfa_methods;
+                        let statusHtml = '<div class="alert alert-success"><h6>MFA Status for User ID: ' + userId + '</h6>';
+                        statusHtml += '<ul class="mb-0">';
+                        statusHtml += '<li>TOTP (Authenticator): ' + (methods.totp_enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>') + '</li>';
+                        statusHtml += '<li>Email MFA: ' + (methods.email_enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>') + '</li>';
+                        statusHtml += '</ul></div>';
+                        adminMfaStatus.innerHTML = statusHtml;
+                    } else {
+                        adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${data.error || 'Failed to check MFA status'}</div>`;
+                    }
+                } catch (error) {
+                    console.error('Error checking MFA status:', error);
+                    adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+                }
+            });
+        } else {
+            console.error('admin-view-user-mfa-btn element not found (Head Admin)');
+        }
+
+        if (adminDisableMfaBtn) {
+            adminDisableMfaBtn.addEventListener('click', async function() {
+                const userId = document.getElementById('admin-target-user-id').value.trim();
+                if (!userId) {
+                    alert('Please enter a valid User ID.');
+                    return;
+                }
+
+                if (!confirm(`⚠️ HEAD ADMIN ACTION ⚠️\n\nAre you sure you want to disable ALL MFA for user ID ${userId}?\n\nThis will reduce their account security.`)) {
+                    return;
+                }
+
+                adminMfaStatus.innerHTML = '<div class="alert alert-warning">Disabling MFA...</div>';
+
+                try {
+                    const response = await fetch(`/admin/api/users/${userId}/disable-mfa`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken
+                        }
+                    });
+
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        adminMfaStatus.innerHTML = `<div class="alert alert-success">Successfully disabled all MFA for user ID: ${userId}</div>`;
+                    } else {
+                        adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${data.error || 'Failed to disable MFA'}</div>`;
+                    }
+                } catch (error) {
+                    console.error('Error disabling MFA:', error);
+                    adminMfaStatus.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+                }
+            });
+        } else {
+            console.error('admin-disable-user-mfa-btn element not found (Head Admin)');
+        }
+        {% endif %}
+    });
+</script>
+</body>
+</html>

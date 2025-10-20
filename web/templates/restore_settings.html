@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Restore Settings</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .config-card {
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .info-box {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .form-check {
+            padding: 12px 12px 12px 44px;
+            margin-bottom: 10px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            position: relative;
+        }
+        .form-check-input {
+            position: absolute;
+            left: 45px;
+            top: 50%;
+            transform: translateY(-50%);
+            margin-top: 0;
+        }
+        .excluded-roles-section {
+            background: #fff9e6;
+            border: 1px solid #ffe066;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .role-checkbox {
+            padding: 8px 8px 8px 56px;
+            margin-bottom: 6px;
+            background: transparent;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            position: relative;
+        }
+        .role-checkbox input[type="checkbox"] {
+            position: absolute;
+            left: 45px;
+            top: 50%;
+            transform: translateY(-50%);
+            margin-top: 0;
+        }
+        .roles-container {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 8px 8px 8px 0;
+            background: transparent;
+        }
+    </style>
+    {% include 'dark_mode_include.html' %}
+</head>
+<body>
+    <div class="container mt-4">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h2><i class="bi bi-arrow-repeat"></i> Restore Settings</h2>
+                <p class="text-muted">Configure automatic data restoration when members rejoin {{ guild.name }}</p>
+            </div>
+            <div>
+                <a href="{{ url_for('guild_dashboard', guild_id=guild.guild_id) }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left"></i> Back to Dashboard
+                </a>
+            </div>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- Info Box -->
+        <div class="info-box">
+            <h6><i class="bi bi-info-circle-fill"></i> How It Works</h6>
+            <p class="mb-0">When a member leaves your server, their roles, XP/level, and nickname are saved. If they rejoin, this data can be automatically restored based on the settings below.</p>
+        </div>
+
+        <div class="row">
+            <div class="col-12">
+                <div class="card config-card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-gear-fill"></i> Restoration Options
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <form method="post">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                            
+                            <!-- Restore Roles -->
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="restore_roles" name="restore_roles" value="1" {% if settings.restore_roles %}checked{% endif %}>
+                                <label class="form-check-label" for="restore_roles">
+                                    <strong><i class="bi bi-shield-fill-check"></i> Restore Roles</strong>
+                                    <br>
+                                    <small class="text-muted">Automatically reassign roles the member had before leaving</small>
+                                </label>
+                            </div>
+
+                            <!-- Restore XP & Level -->
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="restore_xp" name="restore_xp" value="1" {% if settings.restore_xp %}checked{% endif %}>
+                                <label class="form-check-label" for="restore_xp">
+                                    <strong><i class="bi bi-star-fill"></i> Restore XP & Level</strong>
+                                    <br>
+                                    <small class="text-muted">Restore the member's experience points and level</small>
+                                </label>
+                            </div>
+
+                            <!-- Restore Nickname -->
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="restore_nickname" name="restore_nickname" value="1" {% if settings.restore_nickname %}checked{% endif %}>
+                                <label class="form-check-label" for="restore_nickname">
+                                    <strong><i class="bi bi-person-badge-fill"></i> Restore Nickname</strong>
+                                    <br>
+                                    <small class="text-muted">Restore the member's server nickname</small>
+                                </label>
+                            </div>
+
+                            <!-- Excluded Roles Section -->
+                            <div class="excluded-roles-section">
+                                <h6><i class="bi bi-x-circle-fill"></i> Excluded Roles</h6>
+                                <p class="text-muted mb-3">Select roles that should <strong>never</strong> be restored, even if a member had them before leaving.</p>
+                                
+                                {% if role_choices %}
+                                    <div class="mb-2">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleAllRoles(true)">
+                                            <i class="bi bi-check-square"></i> Select All
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleAllRoles(false)">
+                                            <i class="bi bi-square"></i> Deselect All
+                                        </button>
+                                    </div>
+                                {% endif %}
+                                
+                                <div class="roles-container">
+                                    {% if role_choices %}
+                                        {% for role_id, role_name in role_choices %}
+                                            <div class="form-check role-checkbox">
+                                                <input class="form-check-input role-exclude-checkbox" type="checkbox" name="excluded_roles" 
+                                                       id="role_{{ role_id }}" value="{{ role_id }}" 
+                                                       {% if role_id in settings.excluded_roles %}checked{% endif %}>
+                                                <label class="form-check-label" for="role_{{ role_id }}">
+                                                    {{ role_name }}
+                                                </label>
+                                            </div>
+                                        {% endfor %}
+                                    {% else %}
+                                        <p class="text-muted mb-0"><i class="bi bi-info-circle"></i> No roles available</p>
+                                    {% endif %}
+                                </div>
+                                <small class="form-text text-muted d-block mt-2">
+                                    <i class="bi bi-info-circle"></i> Check the roles that should never be restored automatically.
+                                </small>
+                            </div>
+
+                            <!-- Save Button -->
+                            <div class="mt-4">
+                                <button type="submit" class="btn btn-primary btn-lg">
+                                    <i class="bi bi-check-circle"></i> Save Settings
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+        <p>
+            &copy; 2025 RuleKeeper. All rights reserved. |
+            <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+            <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+            <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+        </p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function toggleAllRoles(checked) {
+            const checkboxes = document.querySelectorAll('.role-exclude-checkbox');
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = checked;
+            });
+        }
+    </script>
+</body>
+</html>

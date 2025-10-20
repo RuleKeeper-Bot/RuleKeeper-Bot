@@ -10,6 +10,7 @@ import sqlite3
 import json
 import time
 from shared import command_permission_check
+from shared.colors import red
 try:
     from bot.bot import debug_print
 except ImportError:
@@ -40,8 +41,14 @@ class ModerationCog(commands.Cog):
 
         # Check role hierarchy
         if interaction.guild.me.top_role <= member.top_role:
+             await interaction.response.send_message(
+                 "I cannot moderate this user because their role is equal to or higher than mine.",
+                 ephemeral=True
+             )
+             return
+        if hasattr(interaction.user, "top_role") and interaction.user.top_role <= member.top_role:
             await interaction.response.send_message(
-                "I cannot moderate this user because their role is equal to or higher than mine.",
+                "You can't warn someone with an equal or higher role than you.",
                 ephemeral=True
             )
             return
@@ -109,9 +116,10 @@ class ModerationCog(commands.Cog):
                         await member.ban(reason=f"Reached {warning_count} warnings")
                         action_text = "User banned"
                         # Clear warnings after ban
-                        self.db.conn.execute('DELETE FROM warnings WHERE guild_id = ? AND user_id = ?', 
-                                      (guild_id, user_id))
-                        self.db.conn.commit()
+                        self.db.execute_query(
+                            'DELETE FROM warnings WHERE guild_id = ? AND user_id = ?',
+                            (guild_id, user_id)
+                        )
                         await send_custom_form_dm(member, interaction.guild, "ban")
                     except discord.Forbidden:
                         missing_permission = "ban"
@@ -125,10 +133,10 @@ class ModerationCog(commands.Cog):
         try:
             await member.send(embed=dm_embed)
         except discord.Forbidden:
-            await interaction.followup.send(
-                "Couldn't DM user warning details", 
-                ephemeral=True
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Couldn't DM user warning details", ephemeral=True)
+            else:
+                await interaction.followup.send("Couldn't DM user warning details", ephemeral=True)
 
         await send_custom_form_dm(member, interaction.guild, "warn")
 
@@ -264,7 +272,7 @@ class ModerationCog(commands.Cog):
                 "An error occurred while removing the warning.",
                 ephemeral=True
             )
-            debug_print(f"[Warning Error]: {str(e)}")
+            debug_print(red(f"[Warning Error]: {str(e)}"))
             
     @app_commands.command(name="ban", description="Ban a user from the server")
     @command_permission_check("ban")
@@ -326,7 +334,7 @@ class ModerationCog(commands.Cog):
             await interaction.followup.send("❌ Missing permissions to ban this user", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ Ban failed: {str(e)}", ephemeral=True)
-            debug_print(f"[Ban Error] {str(e)}")
+            debug_print(red(f"[Ban Error] {str(e)}"))
 
     @app_commands.command(name="unban", description="Unban a user from the server")
     @command_permission_check("unban")
@@ -414,7 +422,7 @@ class ModerationCog(commands.Cog):
             await interaction.response.send_message("I don't have permission to kick this user.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
-            debug_print(f"[Kick Error]: {str(e)}")
+            debug_print(red(f"[Kick Error]: {str(e)}"))
 
     @app_commands.command(name="deafen", description="Deafen a user in voice channels")
     @command_permission_check("deafen")
@@ -541,7 +549,7 @@ class ModerationCog(commands.Cog):
             await interaction.response.send_message("I don't have permission to timeout this member.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
-            debug_print(f"[Timeout Error]: {str(e)}")
+            debug_print(red(f"[Timeout Error]: {str(e)}"))
 
     @app_commands.command(name="untimeout", description="Remove timeout from a user")
     @command_permission_check("untimeout")
@@ -639,7 +647,7 @@ class ModerationCog(commands.Cog):
                     reason=f"Softban: {reason}"
                 )
             except Exception as e:
-                debug_print(f"[Softban Error]: {str(e)}")
+                debug_print(red(f"[Softban Error]: {str(e)}"))
             # Ban to delete messages (7 days worth)
             await interaction.guild.ban(user, reason=reason, delete_message_days=7)
             # Unban immediately
@@ -664,7 +672,7 @@ class ModerationCog(commands.Cog):
             await interaction.response.send_message("I don't have permission to ban/unban this user.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
-            debug_print(f"[Softban Error]: {str(e)}")
+            debug_print(red(f"[Softban Error]: {str(e)}"))
 
 async def setup(bot):
     await bot.add_cog(ModerationCog(bot))

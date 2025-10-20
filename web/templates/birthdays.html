@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ guild.name }} - Birthdays</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <!-- FullCalendar CSS -->
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/main.min.css' rel='stylesheet' />
+    <style>
+        .birthday-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+        .birthday-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .view-toggle {
+            margin-bottom: 20px;
+        }
+        .calendar-container {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .list-container {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .birthday-month-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin: 15px 0 10px 0;
+            font-weight: bold;
+        }
+        .birthday-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: between;
+            align-items: center;
+        }
+        .birthday-info {
+            flex-grow: 1;
+        }
+        .birthday-actions {
+            display: flex;
+            gap: 5px;
+        }
+        .upcoming-birthdays {
+            background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .fc-event {
+            cursor: pointer;
+        }
+        .today-birthday {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ffa500 100%) !important;
+            color: white !important;
+            font-weight: bold;
+        }
+    </style>
+    {% include 'dark_mode_include.html' %}
+</head>
+<body>
+    <!-- CSRF Token for AJAX requests -->
+    <input type="hidden" id="csrf_token" value="{{ csrf_token() }}">
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-12">
+                <div class="container mt-4">
+                    <!-- Header -->
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <div>
+                            <h2><i class="bi bi-gift"></i> Birthday Management</h2>
+                            <p class="text-muted">Manage birthdays for {{ guild.name }}</p>
+                        </div>
+                        <div>
+                            <a href="{{ url_for('guild_dashboard', guild_id=guild.guild_id) }}" class="btn btn-outline-secondary">
+                                <i class="bi bi-arrow-left"></i> Back to Dashboard
+                            </a>
+                        </div>
+                    </div>
+
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                                    {{ message }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+
+                    <!-- Upcoming Birthdays Alert -->
+                    <div id="upcomingBirthdays" class="upcoming-birthdays" style="display: none;">
+                        <h5><i class="bi bi-gift"></i> Upcoming Birthdays</h5>
+                        <div id="upcomingList"></div>
+                    </div>
+
+                    <!-- View Toggle -->
+                    <div class="view-toggle">
+                        <div class="btn-group" role="group">
+                            <input type="radio" class="btn-check" name="viewType" id="listView" value="list" checked>
+                            <label class="btn btn-outline-primary" for="listView">
+                                <i class="bi bi-list-ul"></i> List View
+                            </label>
+                            
+                            <input type="radio" class="btn-check" name="viewType" id="calendarView" value="calendar">
+                            <label class="btn btn-outline-primary" for="calendarView">
+                                <i class="bi bi-calendar3"></i> Calendar View
+                            </label>
+                        </div>
+                        <div class="float-end">
+                            <a href="{{ url_for('birthday_configuration', guild_id=guild.guild_id) }}" class="btn btn-outline-secondary">
+                                <i class="bi bi-gear"></i> Configuration
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- List View -->
+                    <div id="listViewContainer" class="list-container">
+                        <div id="birthdaysList">
+                            {% if birthdays %}
+                                {% set current_month = namespace(value=0) %}
+                                {% for birthday in birthdays %}
+                                    {% if birthday.birthday_month != current_month.value %}
+                                        {% set current_month.value = birthday.birthday_month %}
+                                        <div class="birthday-month-header">
+                                            {% set month_names = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] %}
+                                            {{ month_names[birthday.birthday_month] }}
+                                        </div>
+                                    {% endif %}
+                                    <div class="birthday-item" data-user-id="{{ birthday.user_id }}">
+                                        <div class="birthday-info">
+                                            <h6 class="mb-1">{{ birthday.username }}</h6>
+                                            <p class="mb-0 text-muted">
+                                                {% set month_names = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] %}
+                                                {{ month_names[birthday.birthday_month] }} {{ birthday.birthday_day }}
+                                                {% if birthday.birthday_year %}
+                                                    {{ birthday.birthday_year }}
+                                                    <span class="badge bg-info">Age: {{ current_year - birthday.birthday_year }}</span>
+                                                {% endif %}
+                                            </p>
+                                        </div>
+                                        <div class="birthday-actions">
+                                            <button class="btn btn-sm btn-outline-primary edit-birthday-btn" 
+                                                    data-user-id="{{ birthday.user_id }}"
+                                                    data-username="{{ birthday.username }}"
+                                                    data-month="{{ birthday.birthday_month }}"
+                                                    data-day="{{ birthday.birthday_day }}"
+                                                    data-year="{{ birthday.birthday_year or '' }}">
+                                                <i class="bi bi-pencil"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-danger delete-birthday-btn" 
+                                                    data-user-id="{{ birthday.user_id }}"
+                                                    data-username="{{ birthday.username }}">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <div class="text-center py-5">
+                                    <i class="bi bi-gift display-4 text-muted"></i>
+                                    <h4 class="text-muted mt-3">No Birthdays Added</h4>
+                                    <p class="text-muted">Get started by adding your first birthday!</p>
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Calendar View -->
+                    <div id="calendarViewContainer" class="calendar-container" style="display: none;">
+                        <div id="calendar"></div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Birthday Modal -->
+    <div class="modal fade" id="editBirthdayModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form id="editBirthdayForm">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Edit Birthday</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="editUserId">
+                        <div class="mb-3">
+                            <label for="editUsername" class="form-label">User</label>
+                            <input type="text" class="form-control" id="editUsername" readonly>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <label for="editMonth" class="form-label">Month</label>
+                                <select class="form-select" id="editMonth" required>
+                                    <option value="1">January</option>
+                                    <option value="2">February</option>
+                                    <option value="3">March</option>
+                                    <option value="4">April</option>
+                                    <option value="5">May</option>
+                                    <option value="6">June</option>
+                                    <option value="7">July</option>
+                                    <option value="8">August</option>
+                                    <option value="9">September</option>
+                                    <option value="10">October</option>
+                                    <option value="11">November</option>
+                                    <option value="12">December</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="editDay" class="form-label">Day</label>
+                                <select class="form-select" id="editDay" required>
+                                    {% for day in range(1, 32) %}
+                                    <option value="{{ day }}">{{ day }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <label for="editYear" class="form-label">Year (Optional)</label>
+                            <input type="number" class="form-control" id="editYear" min="1900" max="{{ current_year }}" placeholder="Leave blank if you don't want to show age">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Update Birthday</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal fade" id="deleteBirthdayModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Delete Birthday</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Are you sure you want to delete <strong id="deleteUsername"></strong>'s birthday?</p>
+                    <input type="hidden" id="deleteUserId">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- FullCalendar JS -->
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar/index.global.min.js'></script>
+    
+    <script>
+        let calendar;
+        let birthdays = {{ birthdays | tojson }};
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize calendar
+            initializeCalendar();
+            
+            // Load upcoming birthdays
+            loadUpcomingBirthdays();
+            
+            // Restore previous view selection
+            const savedView = localStorage.getItem('birthdayView') || 'list';
+            document.getElementById(savedView + 'View').checked = true;
+            toggleView(savedView);
+            
+            // View toggle
+            document.querySelectorAll('input[name="viewType"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    localStorage.setItem('birthdayView', this.value);
+                    toggleView(this.value);
+                });
+            });
+            
+            // Edit birthday form
+            document.getElementById('editBirthdayForm').addEventListener('submit', handleEditBirthday);
+            
+            // Edit birthday buttons
+            document.addEventListener('click', function(e) {
+                if (e.target.classList.contains('edit-birthday-btn') || e.target.closest('.edit-birthday-btn')) {
+                    const btn = e.target.classList.contains('edit-birthday-btn') ? e.target : e.target.closest('.edit-birthday-btn');
+                    showEditModal(btn);
+                }
+            });
+            
+            // Delete birthday buttons
+            document.addEventListener('click', function(e) {
+                if (e.target.classList.contains('delete-birthday-btn') || e.target.closest('.delete-birthday-btn')) {
+                    const btn = e.target.classList.contains('delete-birthday-btn') ? e.target : e.target.closest('.delete-birthday-btn');
+                    showDeleteModal(btn);
+                }
+            });
+            
+            // Confirm delete
+            document.getElementById('confirmDeleteBtn').addEventListener('click', handleDeleteBirthday);
+        });
+
+        function initializeCalendar() {
+            const calendarEl = document.getElementById('calendar');
+            
+            // Check if FullCalendar is available
+            if (typeof FullCalendar === 'undefined') {
+                console.error('FullCalendar library failed to load');
+                calendarEl.innerHTML = '<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> Calendar view is currently unavailable. Please use list view.</div>';
+                // Hide calendar view option
+                document.getElementById('calendarView').disabled = true;
+                document.querySelector('label[for="calendarView"]').classList.add('disabled');
+                return;
+            }
+            
+            calendar = new FullCalendar.Calendar(calendarEl, {
+                initialView: 'dayGridMonth',
+                headerToolbar: {
+                    left: 'prev,next today',
+                    center: 'title',
+                    right: 'dayGridMonth,listMonth'
+                },
+                events: birthdays.map(birthday => {
+                    const today = new Date();
+                    let birthdayDate = new Date(today.getFullYear(), birthday.birthday_month - 1, birthday.birthday_day);
+                    
+                    // If birthday already passed this year, show next year too
+                    let events = [{
+                        title: birthday.username,
+                        start: birthdayDate.toISOString().split('T')[0],
+                        backgroundColor: isToday(birthdayDate) ? '#ff6b6b' : '#007bff',
+                        borderColor: isToday(birthdayDate) ? '#ff6b6b' : '#007bff',
+                        extendedProps: {
+                            userId: birthday.user_id,
+                            username: birthday.username,
+                            month: birthday.birthday_month,
+                            day: birthday.birthday_day,
+                            year: birthday.birthday_year
+                        }
+                    }];
+                    
+                    return events;
+                }).flat(),
+                eventClick: function(info) {
+                    const props = info.event.extendedProps;
+                    // You could show a modal with birthday details here
+                    alert(`${props.username}'s Birthday: ${getMonthName(props.month)} ${props.day}${props.year ? ', ' + props.year : ''}`);
+                }
+            });
+        }
+
+        function toggleView(viewType) {
+            if (viewType === 'calendar') {
+                // Check if calendar is available
+                if (typeof FullCalendar === 'undefined' || !calendar) {
+                    alert('Calendar view is currently unavailable. Please use list view.');
+                    document.getElementById('listView').checked = true;
+                    return;
+                }
+                document.getElementById('listViewContainer').style.display = 'none';
+                document.getElementById('calendarViewContainer').style.display = 'block';
+                calendar.render();
+            } else {
+                document.getElementById('listViewContainer').style.display = 'block';
+                document.getElementById('calendarViewContainer').style.display = 'none';
+            }
+        }
+
+        function loadUpcomingBirthdays() {
+            fetch(`/api/{{ guild.guild_id }}/birthdays/upcoming?days=7`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.birthdays && data.birthdays.length > 0) {
+                        const upcomingDiv = document.getElementById('upcomingBirthdays');
+                        const listDiv = document.getElementById('upcomingList');
+                        
+                        listDiv.innerHTML = data.birthdays.map(birthday => {
+                            const dateStr = `${getMonthName(birthday.birthday_month)} ${birthday.birthday_day}`;
+                            return `<span class="badge bg-warning me-2">${birthday.username} - ${dateStr}</span>`;
+                        }).join('');
+                        
+                        upcomingDiv.style.display = 'block';
+                    }
+                })
+                .catch(error => console.error('Error loading upcoming birthdays:', error));
+        }
+
+        function showEditModal(btn) {
+            document.getElementById('editUserId').value = btn.dataset.userId;
+            document.getElementById('editUsername').value = btn.dataset.username;
+            document.getElementById('editMonth').value = btn.dataset.month;
+            document.getElementById('editDay').value = btn.dataset.day;
+            document.getElementById('editYear').value = btn.dataset.year;
+            
+            new bootstrap.Modal(document.getElementById('editBirthdayModal')).show();
+        }
+
+        function showDeleteModal(btn) {
+            document.getElementById('deleteUserId').value = btn.dataset.userId;
+            document.getElementById('deleteUsername').textContent = btn.dataset.username;
+            
+            new bootstrap.Modal(document.getElementById('deleteBirthdayModal')).show();
+        }
+
+        function handleEditBirthday(e) {
+            e.preventDefault();
+            
+            const userId = document.getElementById('editUserId').value;
+            const formData = {
+                username: document.getElementById('editUsername').value,
+                month: document.getElementById('editMonth').value,
+                day: document.getElementById('editDay').value,
+                year: document.getElementById('editYear').value || null
+            };
+
+            const csrfToken = document.getElementById('csrf_token').value;
+            fetch(`/api/{{ guild.guild_id }}/birthdays/${userId}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(document.getElementById('editBirthdayModal')).hide();
+                    location.reload(); // Refresh the page
+                } else {
+                    alert('Error updating birthday: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error updating birthday');
+            });
+        }
+
+        function handleDeleteBirthday() {
+            const userId = document.getElementById('deleteUserId').value;
+
+            const csrfToken = document.getElementById('csrf_token').value;
+            fetch(`/api/{{ guild.guild_id }}/birthdays/${userId}`, {
+                method: 'DELETE',
+                headers: {
+                    'X-CSRFToken': csrfToken
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    bootstrap.Modal.getInstance(document.getElementById('deleteBirthdayModal')).hide();
+                    location.reload(); // Refresh the page
+                } else {
+                    alert('Error deleting birthday: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error deleting birthday');
+            });
+        }
+
+        function isToday(date) {
+            const today = new Date();
+            return date.toDateString() === today.toDateString();
+        }
+
+        function getMonthName(monthNumber) {
+            const months = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+            return months[monthNumber - 1];
+        }
+    </script>
+
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+        <p>
+            &copy; 2025 RuleKeeper. All rights reserved. |
+            <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+            <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+            <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+        </p>
+    </footer>
+</body>
+</html>

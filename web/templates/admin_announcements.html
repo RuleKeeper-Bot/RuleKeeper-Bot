@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Announcements</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .dashboard-card {
+            transition: transform 0.2s;
+            min-height: 150px;
+        }
+        .dashboard-card:hover {
+            transform: translateY(-5px);
+        }
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+        }
+		.audit-log-table {
+            font-size: 0.9rem;
+        }
+        
+        .audit-log-table thead th {
+            background-color: #2c3e50;
+            color: white;
+            position: sticky;
+            top: 0;
+        }
+        
+        .audit-log-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .changes-badge {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .changes-badge:hover {
+            transform: scale(1.1);
+        }
+        
+        .user-id {
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .timestamp-col {
+            width: 160px;
+        }
+        
+        .action-col {
+            width: 150px;
+        }
+        
+        .popover {
+            max-width: 500px;
+            box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15);
+        }
+        
+        .popover-header {
+            background-color: #2c3e50;
+            color: white;
+            border-bottom: none;
+        }
+        
+        .popover-body {
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            background-color: #f8f9fa;
+        }
+    </style>
+    {% include 'dark_mode_include.html' %}
+</head>
+<body>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <nav class="col-md-2 d-none d-md-block bg-light sidebar">
+                <div class="sidebar-sticky pt-3">
+                    <h6 class="sidebar-heading d-flex justify-content-between align-items-center px-3 mb-3 text-muted">
+                        <span>Admin Panel</span>
+                    </h6>
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_dashboard') }}">
+                                <i class="bi bi-speedometer2 me-2"></i>
+                                Dashboard
+                            </a>
+                        </li>
+                        {% if is_head_admin() %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_bot_admins') }}">
+                                <i class="bi bi-people-fill me-2"></i>
+                                Manage Bot Admins
+                            </a>
+                        </li>
+                        {% endif %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_ip_bans') }}">
+                                <i class="bi bi-shield-x me-2"></i>
+                                IP Bans
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_guilds') }}">
+                                <i class="bi bi-discord me-2"></i>
+                                Manage Guilds
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active" href="{{ url_for('admin_announcements') }}">
+                                <i class="bi bi-megaphone me-2"></i>
+                                Announcements
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_audit_log') }}">
+                                <i class="bi bi-clock-history me-2"></i>
+                                Audit Log
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('settings') }}">
+                                <i class="bi bi-gear me-2"></i>
+                                Settings
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <!-- Main Content -->
+            <main role="main" class="col-md-9 ml-sm-auto col-lg-10 px-4 py-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2"><i class="bi bi-megaphone me-2"></i>Announcements</h1>
+                    <div class="btn-toolbar mb-2 mb-md-0">
+                        <div class="btn-group mr-2">
+                            <span class="btn btn-sm btn-outline-secondary">
+                                Logged in as: <strong>{{ 'Head Admin' if is_head_admin() else 'Bot Admin' }}</strong>
+                            </span>
+                        </div>
+                        <div class="btn-group">
+                            <a href="{{ url_for('logout_admin') }}" class="btn btn-danger btn-sm">
+                                <i class="bi bi-box-arrow-right"></i> Logout
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Announcements Card -->
+                <div class="card shadow-sm">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0"><i class="bi bi-megaphone me-2"></i>Send Announcements</h5>
+                    </div>
+                    <div class="card-body">
+                        {% if can_send_announcements %}
+                        <div class="alert alert-info mb-4">
+                            <i class="bi bi-info-circle me-2"></i>
+                            <strong>About Announcements:</strong> Send important messages to servers that have configured announcement channels. 
+                            You can target all servers at once or send to a specific server.
+                        </div>
+                        
+                        <form id="announcement-form">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="announcement-target" class="form-label">Send To</label>
+                                    <select class="form-select" id="announcement-target" name="target_type" required>
+                                        <option value="">Select announcement scope...</option>
+                                        <option value="all">All Servers (with announcement channels)</option>
+                                        <option value="specific">Specific Server</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6 mb-3" id="server-select-container" style="display: none;">
+                                    <label for="announcement-server" class="form-label">Select Server</label>
+                                    <select class="form-select" id="announcement-server" name="guild_id">
+                                        <option value="">Loading servers...</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="announcement-message" class="form-label">Announcement Message</label>
+                                <textarea class="form-control" id="announcement-message" name="message" rows="6" 
+                                          placeholder="Enter your announcement message here..." required maxlength="2000"></textarea>
+                                <div class="form-text">
+                                    <span id="char-count">0</span>/2000 characters
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="announcement-preview" checked>
+                                    <label class="form-check-label" for="announcement-preview">
+                                        Preview message before sending
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="d-flex gap-2">
+                                <button type="submit" class="btn btn-primary btn-lg">
+                                    <i class="bi bi-send"></i> Send Announcement
+                                </button>
+                                <button type="button" class="btn btn-secondary" onclick="clearAnnouncementForm()">
+                                    <i class="bi bi-trash"></i> Clear
+                                </button>
+                            </div>
+                        </form>
+                        
+                        <!-- Announcement Status -->
+                        <div id="announcement-status" class="mt-4"></div>
+                        
+                        <!-- Preview Modal -->
+                        <div class="modal fade" id="previewModal" tabindex="-1">
+                            <div class="modal-dialog">
+                                <div class="modal-content">
+                                    <div class="modal-header">
+                                        <h5 class="modal-title">Preview Announcement</h5>
+                                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                    </div>
+                                    <div class="modal-body">
+                                        <div class="card">
+                                            <div class="card-body">
+                                                <h6 class="card-subtitle mb-2 text-muted">Bot Announcement</h6>
+                                                <p class="card-text" id="preview-message"></p>
+                                            </div>
+                                        </div>
+                                        <div class="mt-3">
+                                            <strong>Target:</strong> <span id="preview-target"></span>
+                                        </div>
+                                    </div>
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                        <button type="button" class="btn btn-primary" onclick="confirmSendAnnouncement()">
+                                            <i class="bi bi-send"></i> Send Now
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        {% else %}
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            You don't have permission to send announcements. Contact the head admin to enable this privilege.
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Recent Announcements -->
+                {% if recent_announcements %}
+                <div class="card mt-4 shadow-sm">
+                    <div class="card-header bg-secondary text-white">
+                        <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Recent Announcements</h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>Target</th>
+                                        <th>Message</th>
+                                        <th>Sent By</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for announcement in recent_announcements %}
+                                    <tr>
+                                        <td class="text-muted">{{ announcement.sent_at|datetimeformat('%Y-%m-%d %H:%M') }}</td>
+                                        <td>
+                                            {% if announcement.guild_id %}
+                                                <span class="badge bg-info">Specific Server</span>
+                                            {% else %}
+                                                <span class="badge bg-primary">All Servers</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-truncate" style="max-width: 300px;">{{ announcement.message_content }}</td>
+                                        <td>{{ announcement.sent_by }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+                
+                <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+                    <p>
+                        &copy; 2025 RuleKeeper. All rights reserved. |
+                        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+                        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+                        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+                    </p>
+                </footer>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    const csrfToken = '{{ csrf_token() }}';
+    
+    // Announcement functionality
+    let formData = {}
+
+    document.addEventListener('DOMContentLoaded', function() {
+        initializeAnnouncementForm()
+    })
+
+    function initializeAnnouncementForm() {
+        const targetSelect = document.getElementById('announcement-target')
+        const serverContainer = document.getElementById('server-select-container')
+        const serverSelect = document.getElementById('announcement-server')
+        const messageTextarea = document.getElementById('announcement-message')
+        const charCount = document.getElementById('char-count')
+        const form = document.getElementById('announcement-form')
+
+        if (!targetSelect) return
+
+        // Handle target change
+        targetSelect.addEventListener('change', function() {
+            if (this.value === 'specific') {
+                serverContainer.style.display = 'block'
+                loadServers()
+            } else {
+                serverContainer.style.display = 'none'
+            }
+        })
+
+        // Handle character count
+        if (messageTextarea) {
+            messageTextarea.addEventListener('input', function() {
+                charCount.textContent = this.value.length
+            })
+        }
+
+        // Handle form submission
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault()
+                handleAnnouncementSubmit()
+            })
+        }
+    }
+
+    function loadServers() {
+        const serverSelect = document.getElementById('announcement-server')
+        if (!serverSelect) return
+
+        serverSelect.innerHTML = '<option value="">Loading servers...</option>'
+        
+        fetch('/admin/api/guilds')
+            .then(response => response.json())
+            .then(data => {
+                serverSelect.innerHTML = '<option value="">Select a server...</option>'
+                data.forEach(guild => {
+                    const option = document.createElement('option')
+                    option.value = guild.id
+                    option.textContent = guild.name
+                    serverSelect.appendChild(option)
+                })
+            })
+            .catch(error => {
+                console.error('Error loading servers:', error)
+                serverSelect.innerHTML = '<option value="">Error loading servers</option>'
+            })
+    }
+
+    function handleAnnouncementSubmit() {
+        const targetType = document.getElementById('announcement-target').value
+        const message = document.getElementById('announcement-message').value.trim()
+        const guildId = document.getElementById('announcement-server').value
+        const preview = document.getElementById('announcement-preview').checked
+
+        if (!targetType || !message) {
+            showAnnouncementStatus('Please fill in all required fields.', 'danger')
+            return
+        }
+
+        if (targetType === 'specific' && !guildId) {
+            showAnnouncementStatus('Please select a server for specific announcements.', 'danger')
+            return
+        }
+
+        formData = {
+            target_type: targetType,
+            message: message,
+            guild_id: guildId
+        }
+
+        if (preview) {
+            showPreviewModal()
+        } else {
+            sendAnnouncement()
+        }
+    }
+
+    function showPreviewModal() {
+        // Format the preview message
+        const previewMessageContent = `📢 **Bot Announcement**\n\n${formData.message}`
+        
+        // Preserve newlines by converting them to <br> tags
+        const previewMessage = previewMessageContent.replace(/\n/g, '<br>')
+        document.getElementById('preview-message').innerHTML = previewMessage
+        
+        let targetText = ''
+        if (formData.target_type === 'all') {
+            targetText = 'All servers with announcement channels configured'
+        } else {
+            const serverSelect = document.getElementById('announcement-server')
+            targetText = `Specific server: ${serverSelect.options[serverSelect.selectedIndex].text}`
+        }
+        document.getElementById('preview-target').textContent = targetText
+
+        new bootstrap.Modal(document.getElementById('previewModal')).show()
+    }
+
+    function confirmSendAnnouncement() {
+        bootstrap.Modal.getInstance(document.getElementById('previewModal')).hide()
+        sendAnnouncement()
+    }
+
+    function sendAnnouncement() {
+        const statusDiv = document.getElementById('announcement-status')
+        statusDiv.innerHTML = '<div class="alert alert-info"><i class="bi bi-hourglass-split me-2"></i>Sending announcement...</div>'
+
+        fetch('/admin/api/send-announcement', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(formData)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showAnnouncementStatus(data.message || 'Announcement sent successfully!', 'success')
+                clearAnnouncementForm()
+                // Refresh page to show the new announcement in recent list
+                setTimeout(() => {
+                    window.location.reload()
+                }, 2000)
+            } else {
+                showAnnouncementStatus(data.error || 'Failed to send announcement.', 'danger')
+            }
+        })
+        .catch(error => {
+            console.error('Error sending announcement:', error)
+            showAnnouncementStatus('Network error occurred while sending announcement.', 'danger')
+        })
+    }
+
+    function showAnnouncementStatus(message, type) {
+        const statusDiv = document.getElementById('announcement-status')
+        statusDiv.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show">
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>`
+    }
+
+    function clearAnnouncementForm() {
+        document.getElementById('announcement-target').value = ''
+        document.getElementById('announcement-message').value = ''
+        document.getElementById('announcement-server').value = ''
+        document.getElementById('server-select-container').style.display = 'none'
+        document.getElementById('char-count').textContent = '0'
+    }
+    </script>
+</body>
+</html>

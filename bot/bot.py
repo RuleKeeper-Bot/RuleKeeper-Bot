@@ -40,6 +40,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import Config
 from database import Database
 from backups.backups import add_backup, get_backups, get_backup, init_db, get_conn
+from shared.colors import red, maroon, yellow
+from shared.version_check import check_for_update
 
 
 # -------------------- Runtime Config -----------------
@@ -66,9 +68,9 @@ def debug_print(*args, level="some", **kwargs):
 # ------------------- APScheduler Stuff -------------------
 def job_listener(event):
     if event.exception:
-        debug_print(f"[APSCHEDULER] Job {event.job_id} raised an exception: {event.exception}")
+        debug_print(red(f"[APSCHEDULER] Job {event.job_id} raised an exception: {event.exception}"))
     elif event.code == EVENT_JOB_MISSED:
-        debug_print(f"[APSCHEDULER] Job {event.job_id} MISSED!")
+        debug_print(red(f"[APSCHEDULER] Job {event.job_id} MISSED!"))
     else:
         debug_print(f"[APSCHEDULER] Job {event.job_id} executed successfully.")
 
@@ -138,7 +140,7 @@ async def scheduled_backup_job(guild_id):
                 set_backup_progress(guild_id, val, step_text)
             await save_guild_backup(guild, set_progress=set_progress)
     except Exception as e:
-        debug_print(f"Exception in scheduled_backup_job: {e}")
+        debug_print(red(f"Exception in scheduled_backup_job: {e}"))
 
 def load_schedules():
     with get_conn() as conn:
@@ -208,6 +210,297 @@ def load_schedules():
             
             time.sleep(1)
 
+def schedule_minecraft_action_wrapper(schedule_id):
+    """Wrapper for minecraft server actions to handle event loop"""
+    debug_print(f"🔄 WRAPPER CALLED for schedule {schedule_id}")
+    
+    loop = get_event_loop()
+    if loop and loop.is_running():
+        debug_print(f"✅ Loop found, scheduling coroutine for {schedule_id}")
+        asyncio.run_coroutine_threadsafe(scheduled_minecraft_action_job(schedule_id), loop)
+    else:
+        debug_print(red("❌ No running event loop for scheduled minecraft action!"))
+
+async def scheduled_minecraft_action_job(schedule_id):
+    """Execute a scheduled minecraft server action"""
+    try:
+        debug_print(f"🚀 EXECUTING SCHEDULED MINECRAFT ACTION for schedule {schedule_id}")
+        
+        # Get schedule details
+        schedule = db.get_minecraft_schedule(schedule_id)
+        if not schedule:
+            debug_print(red(f"❌ Schedule {schedule_id} not found"))
+            return
+        
+        debug_print(f"📋 Schedule details: {schedule}")
+        
+        if not schedule['enabled']:
+            debug_print(f"⏸️ Schedule {schedule_id} is disabled, skipping")
+            return
+        
+        # Import crafty manager
+        from shared.crafty_api import CraftyManager
+        crafty_manager = CraftyManager(db)
+        
+        # Get server details
+        server = db.get_crafty_server(schedule['crafty_server_id'])
+        if not server:
+            debug_print(f"Server {schedule['crafty_server_id']} not found for schedule {schedule_id}", level="all")
+            db.log_minecraft_schedule_execution(schedule_id, False, error_message="Server not found")
+            return
+        
+        # Get instance details
+        instance = db.get_crafty_instance(server['crafty_instance_id'])
+        if not instance:
+            debug_print(f"Instance {server['crafty_instance_id']} not found for schedule {schedule_id}", level="all")
+            db.log_minecraft_schedule_execution(schedule_id, False, error_message="Instance not found")
+            return
+        
+        success = False
+        player_count = None
+        error_message = None
+        
+        try:
+            # Get client for the instance
+            client = await crafty_manager.get_client(instance['id'])
+            if not client:
+                error_message = "Failed to get API client"
+                debug_print(red(f"Failed to get API client for instance {instance['id']}"), level="all")
+                db.log_minecraft_schedule_execution(schedule_id, False, error_message=error_message)
+                return
+            
+            async with client:
+                # Check player count if required
+                debug_print(f"Schedule {schedule_id}: check_player_count={schedule.get('check_player_count')}, action={schedule.get('action')}", level="all")
+                if schedule.get('check_player_count') and schedule.get('action') in ['stop', 'restart']:
+                    debug_print(f"Checking player count for schedule {schedule_id}", level="all")
+                    
+                    # Get current player count
+                    has_zero_players, current_player_count = await client.is_server_idle(
+                        server['server_id'], 
+                        schedule['min_idle_minutes']
+                    )
+                    player_count = current_player_count
+                    
+                    # If we can't determine player count, treat it as if the server is offline (0 players)
+                    if current_player_count is None:
+                        debug_print(f"Schedule {schedule_id}: Unable to determine player count, treating as offline (0 players)", level="all")
+                        has_zero_players = True
+                        current_player_count = 0
+                        player_count = 0
+                    
+                    # Track idle time
+                    crafty_server_id = server['id']
+                    import time
+                    current_time = int(time.time())
+                    
+                    if has_zero_players:
+                        # Server has 0 players - check if we've been tracking idle time
+                        idle_since = db.get_server_idle_since(crafty_server_id)
+                        
+                        if idle_since is None:
+                            # First time seeing 0 players, start tracking
+                            debug_print(f"Schedule {schedule_id}: Server just became idle, starting idle timer", level="all")
+                            db.set_server_idle_since(crafty_server_id, current_time)
+                            error_message = f"Server idle for 0 minutes (need {schedule['min_idle_minutes']} minutes)"
+                            debug_print(red(f"Schedule {schedule_id}: {error_message}", level="all"))
+                            db.log_minecraft_schedule_execution(schedule_id, False, 
+                                                               player_count=0, 
+                                                               error_message=error_message)
+                            return
+                        else:
+                            # We've been tracking, check if enough time has passed
+                            idle_minutes = (current_time - idle_since) / 60
+                            debug_print(f"Schedule {schedule_id}: Server has been idle for {idle_minutes:.1f} minutes", level="all")
+                            
+                            if idle_minutes < schedule['min_idle_minutes']:
+                                error_message = f"Server idle for {idle_minutes:.1f} minutes (need {schedule['min_idle_minutes']} minutes)"
+                                debug_print(red(f"Schedule {schedule_id}: {error_message}", level="all"))
+                                db.log_minecraft_schedule_execution(schedule_id, False, 
+                                                                   player_count=0, 
+                                                                   error_message=error_message)
+                                return
+                            
+                            # Enough time has passed, proceed with action
+                            debug_print(f"Schedule {schedule_id}: Server has been idle for {idle_minutes:.1f} minutes, proceeding with {schedule['action']}", level="all")
+                    else:
+                        # Server has players, clear idle tracking
+                        debug_print(f"Schedule {schedule_id}: Server has {current_player_count} players, not idle", level="all")
+                        db.set_server_idle_since(crafty_server_id, None)
+                        error_message = f"Server not idle, {current_player_count} players online"
+                        db.log_minecraft_schedule_execution(schedule_id, False, 
+                                                           player_count=current_player_count, 
+                                                           error_message=error_message)
+                        return
+                else:
+                    # Get current player count for logging purposes
+                    try:
+                        player_count = await client.get_player_count(server['server_id'])
+                    except Exception as e:
+                        debug_print(red(f"Failed to get player count for logging: {e}", level="all"))
+                        player_count = None
+                
+                # Execute the action
+                debug_print(f"Executing {schedule['action']} on server {server['server_id']}", level="all")
+                
+                if schedule['action'] == 'start':
+                    success = await client.start_server(server['server_id'])
+                elif schedule['action'] == 'stop':
+                    success = await client.stop_server(server['server_id'])
+                    # Verify the server actually stopped
+                    if success:
+                        await asyncio.sleep(10)  # Wait 10 seconds for the stop to take effect
+                        try:
+                            stats = await client._make_request('GET', f'/servers/{server["server_id"]}/stats')
+                            server_data = stats.get('data', {}) if stats else {}
+                            is_running = server_data.get('running', False)
+                            
+                            debug_print(f"Stop verification for {server['server_name']}: running={is_running}", level="all")
+                            
+                            if is_running:
+                                debug_print(red(f"⚠️ Server {server['server_name']} reports as still running after stop command", level="all"))
+                                error_message = "Server still running after stop command"
+                                success = False
+                            else:
+                                debug_print(f"✅ Verified server {server['server_name']} stopped successfully", level="all")
+                        except Exception as e:
+                            debug_print(red(f"⚠️ Could not verify server stop status: {e} - treating as failed", level="all"))
+                            error_message = f"Could not verify stop: {str(e)}"
+                            success = False  # If we can't verify, don't clear idle tracking
+                elif schedule['action'] == 'restart':
+                    success = await client.restart_server(server['server_id'])
+                else:
+                    error_message = f"Unknown action: {schedule['action']}"
+                    debug_print(red(f"Schedule {schedule_id}: {error_message}", level="all"))
+                
+                if success:
+                    debug_print(f"Successfully executed {schedule['action']} on server {server['server_name']}", level="all")
+                    
+                    # Clear idle tracking after successful stop/restart
+                    if schedule.get('check_player_count') and schedule.get('action') in ['stop', 'restart']:
+                        crafty_server_id = server['id']
+                        db.set_server_idle_since(crafty_server_id, None)
+                        debug_print(f"Cleared idle tracking for server {crafty_server_id} after {schedule['action']}", level="all")
+                else:
+                    error_message = f"Failed to execute {schedule['action']}"
+                    debug_print(red(f"Schedule {schedule_id}: {error_message}", level="all"))
+        
+        except Exception as e:
+            error_message = str(e)
+            debug_print(red(f"Exception in scheduled minecraft action {schedule_id}: {e}"), level="all")
+            import traceback
+            debug_print(red(f"Traceback: {traceback.format_exc()}"), level="all")
+        
+        # Log the execution
+        db.log_minecraft_schedule_execution(schedule_id, success, 
+                                          player_count=player_count, 
+                                          error_message=error_message)
+        
+    except Exception as e:
+        debug_print(red(f"Exception in scheduled_minecraft_action_job: {e}"), level="all")
+
+def load_minecraft_schedules():
+    """Load and schedule all enabled minecraft server schedules"""
+    try:
+        debug_print("🔍 Loading minecraft server schedules")
+        schedules = db.get_enabled_minecraft_schedules()
+        
+        debug_print(f"📋 Found {len(schedules)} enabled minecraft schedules")
+        
+        for sched in schedules:
+            try:
+                debug_print(f"📅 Processing schedule {sched['id']}: {sched}")
+                
+                start_time = sched['start_time']
+                start_date = sched['start_date']
+                tz_str = sched['timezone'] if sched['timezone'] else 'UTC'
+                
+                if start_time == "24:00":
+                    dt = datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=1)
+                    start_date = dt.strftime("%Y-%m-%d")
+                    start_time = "00:00"
+                
+                freq_unit = str(sched['frequency_unit']).lower()
+                freq_val = int(sched['frequency_value'])
+                job_id = f"minecraft_{sched['guild_id']}_{sched['id']}"
+                
+                # Convert local time + timezone to UTC
+                try:
+                    local_tz = timezone(tz_str)
+                except Exception:
+                    debug_print(f"[WARNING] Invalid timezone '{tz_str}', defaulting to UTC", level="all")
+                    local_tz = utc
+                
+                local_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+                local_dt = local_tz.localize(local_dt)
+                first_run = local_dt.astimezone(utc)
+                now = utc.localize(datetime.utcnow())
+                
+                debug_print(f"⏰ Schedule timing for {sched['id']}: local_dt={local_dt}, first_run={first_run}, now={now}", level="all")
+                
+                # Remove any existing job with the same ID
+                try:
+                    scheduler.remove_job(job_id)
+                    debug_print(f"🗑️ Removed existing job {job_id}", level="all")
+                except Exception:
+                    debug_print(f"ℹ️ No existing job {job_id} to remove", level="all")
+                
+                # Determine interval and advance first_run if needed
+                interval_args = {}
+                if freq_unit == "minutes":
+                    interval_args["minutes"] = freq_val
+                    interval = timedelta(minutes=freq_val)
+                elif freq_unit == "hours":
+                    interval_args["hours"] = freq_val
+                    interval = timedelta(hours=freq_val)
+                elif freq_unit == "days":
+                    interval_args["days"] = freq_val
+                    interval = timedelta(days=freq_val)
+                elif freq_unit == "weeks":
+                    interval_args["weeks"] = freq_val
+                    interval = timedelta(weeks=freq_val)
+                elif freq_unit == "months":
+                    interval_args["weeks"] = freq_val * 4  # Approximate
+                    interval = timedelta(weeks=freq_val * 4)
+                elif freq_unit == "years":
+                    interval_args["weeks"] = freq_val * 52  # Approximate
+                    interval = timedelta(weeks=freq_val * 52)
+                else:
+                    debug_print(f"[WARNING] Unknown frequency unit: {freq_unit}, defaulting to days", level="all")
+                    interval_args["days"] = freq_val
+                    interval = timedelta(days=freq_val)
+                
+                # Advance first_run to the next valid future time if needed
+                original_first_run = first_run
+                iterations = 0
+                while first_run <= now:
+                    first_run += interval
+                    iterations += 1
+                
+                if iterations > 0:
+                    debug_print(f"🔄 Advanced schedule {sched['id']} from {original_first_run} to {first_run} ({iterations} iterations)", level="all")
+                else:
+                    debug_print(f"✅ Schedule {sched['id']} already in future: {first_run}", level="all")
+                
+                # Schedule the job
+                scheduler.add_job(
+                    schedule_minecraft_action_wrapper,
+                    'interval',
+                    start_date=first_run,
+                    args=[sched['id']],
+                    id=job_id,
+                    **interval_args
+                )
+
+                debug_print(f"✅ Scheduled minecraft action: {sched['action']} for server {sched['server_name']} (schedule {sched['id']}) - Next run: {first_run}", level="all")
+                time.sleep(0.2)  # Small delay to prevent overwhelming
+                
+            except Exception as e:
+                debug_print(red(f"Error scheduling minecraft action {sched['id']}: {e}"), level="all")
+    
+    except Exception as e:
+        debug_print(red(f"Error loading minecraft schedules: {e}"), level="all")
+
 # -------------------- Base Directory Stuff -----------------
 if getattr(sys, 'frozen', False):
     # PyInstaller bundle: cogs are in sys._MEIPASS
@@ -225,7 +518,7 @@ try:
     db.validate_schema()
     debug_print("✅ Database schema validation passed")
 except RuntimeError as e:
-    debug_print(f"❌ Database schema validation failed: {str(e)}")
+    debug_print(red(f"❌ Database schema validation failed: {str(e)}"))
     raise
 
 # -------------------- API and Frontend URLs -----------------
@@ -234,6 +527,15 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5000')  # Default for
 
 # -------------------- Load Secrets --------------------
 BOT_TOKEN = os.getenv('BOT_TOKEN')
+
+# -------------------- Version --------------------
+version_file_path = Path(__file__).parent.parent / "version.txt"
+try:
+    with open(version_file_path, "r", encoding="utf-8") as vf:
+        VERSION = vf.read().strip()
+except Exception as e:
+    VERSION = None
+    debug_print(red(f"Failed to read version.txt: {e}"))
 
 # -------------------- Caching --------------------
 level_config_cache = TTLCache(maxsize=100, ttl=300)  # 10 minutes
@@ -256,6 +558,7 @@ def load_log_config(guild_id):
         "member_unwarn": True,
         "member_ban": True,
         "member_unban": True,
+        "member_nickname_change": True,
         "role_create": True,
         "role_delete": True,
         "role_update": True,
@@ -454,7 +757,7 @@ def get_blocked_words(guild_id: int) -> list:
     try:
         return db.get_blocked_words(str(guild_id))
     except Exception as e:
-        debug_print(f"Error getting blocked words: {str(e)}")
+        debug_print(red(f"Error getting blocked words: {str(e)}"))
         return []
 
 def get_blocked_embed(guild_id: int) -> dict:
@@ -476,7 +779,7 @@ def get_blocked_embed(guild_id: int) -> dict:
             db.conn.commit()
         return embed
     except Exception as e:
-        debug_print(f"Error getting blocked embed: {str(e)}")
+        debug_print(red(f"Error getting blocked embed: {str(e)}"))
         return {
             "title": "Blocked Word Detected!",
             "description": "You have used a word that is not allowed.",
@@ -544,13 +847,13 @@ class PingAnnouncer:
             async with aiohttp.ClientSession() as session:
                 async with session.get(api_url, timeout=10) as resp:
                     if resp.status != 200:
-                        debug_print(f"[YouTubeAPI] playlistItems.list failed for {channel_id}: {resp.status}")
+                        debug_print(red(f"[YouTubeAPI] playlistItems.list failed for {channel_id}: {resp.status}"))
                         return []
                     data = await resp.json()
             items = data.get("items", [])
             return [item["snippet"]["resourceId"]["videoId"] for item in items if "snippet" in item and "resourceId" in item["snippet"]]
         except Exception as e:
-            debug_print(f"[YouTubeAPI] Error fetching recent video IDs for {channel_id}: {e}")
+            debug_print(red(f"[YouTubeAPI] Error fetching recent video IDs for {channel_id}: {e}"))
             return []
 
     async def pubsub_subscribe(self, channel_id):
@@ -568,7 +871,7 @@ class PingAnnouncer:
                 if resp.status == 202:
                     debug_print(f"[PubSub] Subscription request sent for channel {channel_id}")
                 else:
-                    debug_print(f"[PubSub] Failed to subscribe {channel_id}: {resp.status}")
+                    debug_print(red(f"[PubSub] Failed to subscribe {channel_id}: {resp.status}"))
                     debug_print(await resp.text())
 
     async def pubsub_unsubscribe(self, channel_id):
@@ -586,7 +889,7 @@ class PingAnnouncer:
                 if resp.status == 202:
                     debug_print(f"[PubSub] Unsubscribe request sent for channel {channel_id}")
                 else:
-                    debug_print(f"[PubSub] Failed to unsubscribe {channel_id}: {resp.status}")
+                    debug_print(red(f"[PubSub] Failed to unsubscribe {channel_id}: {resp.status}"))
                     debug_print(await resp.text())
 
     async def unsubscribe_all_pubsub_channels(self):
@@ -674,7 +977,7 @@ class PingAnnouncer:
                     )
                     self.last_youtube_video[ann['id']] = video_id
         except Exception as e:
-            debug_print(f"[PubSub] Error parsing notification: {e}")
+            debug_print(red(f"[PubSub] Error parsing notification: {e}"))
         return web.Response(text="OK")
 
     @tasks.loop(minutes=10)
@@ -702,7 +1005,7 @@ class PingAnnouncer:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(api_url, timeout=10) as resp:
                             if resp.status != 200:
-                                debug_print(f"[YouTubeAPI] playlistItems.list failed for {yt_channel_id}: {resp.status}")
+                                debug_print(red(f"[YouTubeAPI] playlistItems.list failed for {yt_channel_id}: {resp.status}"))
                                 continue
                             data = await resp.json()
                     items = data.get("items", [])
@@ -723,7 +1026,7 @@ class PingAnnouncer:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(video_api_url, timeout=10) as resp:
                             if resp.status != 200:
-                                debug_print(f"[YouTubeAPI] videos.list failed for {video_id}: {resp.status}")
+                                debug_print(red(f"[YouTubeAPI] videos.list failed for {video_id}: {resp.status}"))
                                 continue
                             video_data = await resp.json()
                     video_items = video_data.get("items", [])
@@ -770,9 +1073,9 @@ class PingAnnouncer:
                         (video_id, json.dumps(recent_ids), ann['id'])
                     )
                 except Exception as e:
-                    debug_print(f"[YouTubeAPI] Error checking uploads for {yt_channel_id}: {e}")
+                    debug_print(red(f"[YouTubeAPI] Error checking uploads for {yt_channel_id}: {e}"))
         except Exception as e:
-            debug_print(f"[YouTubeAPI] YouTube upload check error: {e}")
+            debug_print(red(f"[YouTubeAPI] YouTube upload check error: {e}"))
 
     async def check_twitch_streams(self):
         debug_print("[PingAnnouncer] Checking Twitch streams")
@@ -797,7 +1100,7 @@ class PingAnnouncer:
                             debug_print(f"[PingAnnouncer] decapi.me response for {channel_username}: {text}")
                             is_live = not ("offline" in text.lower() or "not live" in text.lower())
                 except Exception as e:
-                    debug_print(f"[PingAnnouncer] Twitch uptime check failed for {channel_username}: {e}")
+                    debug_print(red(f"[PingAnnouncer] Twitch uptime check failed for {channel_username}: {e}"))
                     continue
 
                 was_live = self.bot.db.get_twitch_live_status(ann_id)
@@ -811,7 +1114,7 @@ class PingAnnouncer:
                 self.bot.db.set_twitch_live_status(ann_id, is_live)
 
         except Exception as e:
-            debug_print(f"[PingAnnouncer] Twitch check error: {str(e)}")
+            debug_print(red(f"[PingAnnouncer] Twitch check error: {str(e)}"))
 
     async def _initialize_twitch_status(self):
         """Set last_live_status for all enabled announcements on startup to avoid duplicate announcements."""
@@ -832,7 +1135,7 @@ class PingAnnouncer:
                         self.bot.db.set_twitch_live_status(ann_id, is_live)
                         debug_print(f"[PingAnnouncer] Startup: {channel_username} is_live={is_live}")
             except Exception as e:
-                debug_print(f"[PingAnnouncer] Error initializing status for {channel_username}: {e}")
+                debug_print(red(f"[PingAnnouncer] Error initializing status for {channel_username}: {e}"))
                 self.bot.db.set_twitch_live_status(ann_id, False)
 
     async def _initialize_youtube_live_status(self):
@@ -875,7 +1178,7 @@ class PingAnnouncer:
                 self.last_youtube_live[ann_id] = is_live
                 debug_print(f"[PingAnnouncer] Startup: YouTube {yt_channel_id} is_live={is_live}")
             except Exception as e:
-                debug_print(f"[PingAnnouncer] Error initializing YouTube live status for {yt_channel_id}: {e}")
+                debug_print(red(f"[PingAnnouncer] Error initializing YouTube live status for {yt_channel_id}: {e}"))
                 self.last_youtube_live[ann_id] = False
 
     async def check_youtube_live(self):
@@ -932,7 +1235,7 @@ class PingAnnouncer:
                                 else:
                                     live_title = "🔴 Live Now!"
                 except Exception as e:
-                    debug_print(f"[PingAnnouncer] Error scraping YouTube live status for {yt_channel_id}: {e}")
+                    debug_print(red(f"[PingAnnouncer] Error scraping YouTube live status for {yt_channel_id}: {e}"))
 
                 ann_id = ann.get('id')
                 was_live = self.last_youtube_live.get(ann_id, None)
@@ -947,7 +1250,7 @@ class PingAnnouncer:
                 self.last_youtube_live[ann_id] = is_live
 
         except Exception as e:
-            debug_print(f"[PingAnnouncer] YouTube live scrape announcement error: {str(e)}")
+            debug_print(red(f"[PingAnnouncer] YouTube live scrape announcement error: {str(e)}"))
 
     async def send_stream_announcement(self, announcement, stream_data):
         debug_print(f"[PingAnnouncer] send_stream_announcement called with: {announcement}, {stream_data}")
@@ -978,7 +1281,7 @@ class PingAnnouncer:
             )
             debug_print("[PingAnnouncer] Updated last_announced in DB")
         except Exception as e:
-            debug_print(f"[PingAnnouncer] Stream announcement error: {str(e)}")
+            debug_print(red(f"[PingAnnouncer] Stream announcement error: {str(e)}"))
 
     async def send_youtube_announcement(self, announcement, video_data):
         debug_print(f"[PingAnnouncer] send_youtube_announcement called with: {announcement}, {video_data}")
@@ -1013,7 +1316,7 @@ class PingAnnouncer:
                     (video_data['id'], announcement['id'])
                 )
         except Exception as e:
-            debug_print(f"[PingAnnouncer] YouTube announcement error: {str(e)}")
+            debug_print(red(f"[PingAnnouncer] YouTube announcement error: {str(e)}"))
 
 # -------------------- Bot Setup --------------------
 intents = discord.Intents.default()
@@ -1049,6 +1352,8 @@ class CustomBot(commands.Bot):
         await self.load_extension("cogs.debug")
         await self.load_extension("cogs.music")
         await self.load_extension("cogs.backup")
+        await self.load_extension("cogs.fun_and_misc")
+        await self.load_extension("cogs.crafty")
         
         if self._command_initialized:
             return
@@ -1072,7 +1377,7 @@ class CustomBot(commands.Bot):
                 if all(key in cmd_data for key in required_keys):
                     valid_commands.append(cmd_data)
                 else:
-                    debug_print(f"⚠️ Invalid command format: {cmd_data}")
+                    debug_print(red(f"⚠️ Invalid command format: {cmd_data}"))
 
             # Group commands by guild
             guild_groups = defaultdict(list)
@@ -1102,7 +1407,7 @@ class CustomBot(commands.Bot):
                     )
                     self.tree.add_command(cmd)
                 except Exception as e:
-                    debug_print(f"  🚨 Global command error: {str(e)}")
+                    debug_print(red(f"  🚨 Global command error: {str(e)}"))
 
             # Process guild-specific commands
             for guild_id_str, cmds in guild_groups.items():
@@ -1136,7 +1441,7 @@ class CustomBot(commands.Bot):
                         )
                         self.tree.add_command(cmd, guild=guild)
                     except Exception as e:
-                        debug_print(f"    🚨 Command error: {str(e)}")
+                        debug_print(red(f"    🚨 Command error: {str(e)}"))
 
                 # Sync guild commands with retry
                 await self.safe_sync(guild=guild)
@@ -1149,7 +1454,7 @@ class CustomBot(commands.Bot):
             self._command_initialized = True
 
         except Exception as e:
-            debug_print(f"❌ Critical initialization error: {str(e)}")
+            debug_print(red(f"❌ Critical initialization error: {str(e)}"))
             traceback.print_exc()
             sys.exit(1)
             
@@ -1168,10 +1473,10 @@ class CustomBot(commands.Bot):
                     debug_print(f"  ⏳ Rate limited. Retrying in {delay:.1f}s")
                     await asyncio.sleep(delay)
                 else:
-                    debug_print(f"  ❌ Sync failed: {e.status} {e.text}")
+                    debug_print(red(f"  ❌ Sync failed: {e.status} {e.text}"))
                     return False
             except Exception as e:
-                debug_print(f"  ❌ Unexpected sync error: {str(e)}")
+                debug_print(red(f"  ❌ Unexpected sync error: {str(e)}"))
                 traceback.print_exc()
                 return False
         return False
@@ -1208,7 +1513,7 @@ class CustomBot(commands.Bot):
                     
         except Exception as e:
             error_msg = f"❌ Command error: {str(e)}"
-            debug_print(f"Command execution failed: {traceback.format_exc()}")
+            debug_print(red(f"Command execution failed: {traceback.format_exc()}"))
             try:
                 if interaction.response.is_done():
                     await interaction.followup.send(error_msg, ephemeral=True)
@@ -1264,7 +1569,7 @@ class CustomBot(commands.Bot):
                     )
                     self.tree.add_command(cmd)
                 except Exception as e:
-                    debug_print(f"Global command error: {cmd_data} | {str(e)}")
+                    debug_print(red(f"Global command error: {cmd_data} | {str(e)}"))
                     traceback.print_exc()
 
             for guild in self.guilds:
@@ -1291,11 +1596,11 @@ class CustomBot(commands.Bot):
                         )
                         self.tree.add_command(cmd, guild=guild)
                     except Exception as e:
-                        debug_print(f"Guild command error: {cmd_data} | {str(e)}")
+                        debug_print(red(f"Guild command error: {cmd_data} | {str(e)}"))
                         traceback.print_exc()
 
         except Exception as e:
-            debug_print("Exception in reload_and_resync_commands")
+            debug_print(red("Exception in reload_and_resync_commands"))
             traceback.print_exc()
             raise
 
@@ -1348,7 +1653,7 @@ async def log_event(guild, event_key, title=None, description=None, color=discor
     try:
         channel = guild.get_channel(int(channel_id))
     except Exception as e:
-        debug_print(f"[LOG EVENT]: Exception converting channel_id to int or getting channel: {e}", level="all")
+        debug_print(red(f"[LOG EVENT]: Exception converting channel_id to int or getting channel: {e}", level="all"))
         return
     debug_print(f"[LOG EVENT]: resolved channel: {channel}", level="all")
     if channel is None:
@@ -1416,7 +1721,7 @@ async def log_event(guild, event_key, title=None, description=None, color=discor
         await channel.send(embed=embed)
         debug_print(f"[LOG EVENT]: embed sent successfully", level="all")
     except Exception as e:
-        debug_print(f"[LOG EVENT]: Failed to send log message in {guild.name}: {str(e)}", level="all")
+        debug_print(red(f"[LOG EVENT]: Failed to send log message in {guild.name}: {str(e)}", level="all"))
 
 # -------------------- Custom Commands Storage --------------------
 def load_commands(guild_id):
@@ -1496,7 +1801,7 @@ async def webserver():
                     raise
                 return web.json_response({'error': ex.reason}, status=ex.status)
             except Exception as ex:
-                debug_print("Unhandled exception in API:", traceback.format_exc())
+                debug_print(red("Unhandled exception in API:"), traceback.format_exc())
                 return web.json_response({'error': str(ex)}, status=500)
         return middleware
 
@@ -1518,11 +1823,14 @@ async def webserver():
     app.router.add_get('/api/get_bans', handle_get_bans)
     app.router.add_post('/api/unban/{userid}', handle_unban)
     app.router.add_post('/api/get_guild_users', handle_get_guild_users)
+    app.router.add_get('/api/{guild_id}/roles', handle_get_guild_roles)
+    app.router.add_get('/api/{guild_id}/channels', handle_get_guild_channels)
     app.router.add_post('/api/get_guild_commands', handle_get_guild_commands)
     app.router.add_post('/api/get_guild_invite', handle_get_guild_invite)
     app.router.add_post('/api/get_guild_audit_log', handle_get_guild_audit_log)
     app.router.add_post('/api/send_role_menu/{menu_id}', handle_send_role_menu)
     app.router.add_post('/api/forms/{form_id}/submit', handle_custom_form_submission)
+    app.router.add_post('/api/{guild_id}/send-message', handle_send_message)
     app.router.add_route(hdrs.METH_OPTIONS, '/api/unban/{userid}', handle_options)
 
     # Setup and start the server
@@ -1557,7 +1865,7 @@ async def handle_leave_guild(request):
         await guild.leave()
         return web.json_response({"success": True, "message": f"Bot left guild {guild_id}"})
     except Exception as e:
-        logger.error(f"Error leaving guild: {str(e)}")
+        logger.error(red(f"Error leaving guild: {str(e)}"))
         return web.json_response({"error": str(e)}, status=500)
 
 async def handle_command_sync(request):
@@ -1609,7 +1917,7 @@ async def handle_get_bans(request):
         return web.json_response(bans)
         
     except Exception as e:
-        debug_print(f"Error fetching bans: {str(e)}")
+        debug_print(red(f"Error fetching bans: {str(e)}"))
         return web.json_response({"error": str(e)}, status=500)
 
 def validate_uuid(uuid_str):
@@ -1626,7 +1934,7 @@ def get_guild_id_from_channel(channel_id):
         channel = bot_instance.get_channel(int(channel_id))
         return str(channel.guild.id) if channel else None
     except Exception as e:
-        debug_print(f"⚠️ Channel resolution error: {str(e)}")
+        debug_print(red(f"⚠️ Channel resolution error: {str(e)}"))
         return None
 
 async def handle_unban(request):
@@ -1654,7 +1962,7 @@ async def handle_unban(request):
             return web.json_response({"error": "User not banned"}, status=404)
             
     except Exception as e:
-        debug_print(f"Unban error: {str(e)}")
+        debug_print(red(f"Unban error: {str(e)}"))
         return web.json_response({"error": str(e)}, status=500)
 
 async def handle_get_guild_users(request):
@@ -1678,6 +1986,65 @@ async def handle_get_guild_users(request):
                 "avatar_url": str(member.display_avatar.url) if hasattr(member, "display_avatar") else None
             })
         return web.json_response(users)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_get_guild_roles(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        guild_id = request.match_info.get('guild_id')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=404)
+        
+        roles = []
+        for role in guild.roles:
+            roles.append({
+                'id': str(role.id),
+                'name': role.name,
+                'position': role.position,
+                'color': role.color.value,
+                'mentionable': role.mentionable
+            })
+        
+        return web.json_response(roles)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def handle_get_guild_channels(request):
+    auth_error = await require_jwt(request)
+    if auth_error:
+        return auth_error
+    try:
+        guild_id = request.match_info.get('guild_id')
+        if not guild_id or not str(guild_id).isdigit():
+            return web.json_response({"error": "Invalid guild ID"}, status=400)
+        
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=404)
+        
+        channels = []
+        for channel in guild.channels:
+            # Only include text channels (type 0) and announcement channels (type 5)
+            if channel.type.value in [0, 5]:  # Text and Announcement channels
+                channels.append({
+                    'id': str(channel.id),
+                    'name': channel.name,
+                    'type': channel.type.value,
+                    'position': channel.position,
+                    'category': channel.category.name if channel.category else None
+                })
+        
+        # Sort by position
+        channels.sort(key=lambda x: x['position'])
+        
+        return web.json_response({'channels': channels})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -1819,10 +2186,45 @@ async def handle_get_guild_audit_log(request):
                 if hasattr(entry.extra, 'uses'):
                     changes.append(f"Uses: {entry.extra.uses}")
             
-            # Properly handle member role updates - PRIMARY FIX
+            # Properly handle member role updates
             elif action_name == "member_role_update":
-                # Try to get role changes from extra attribute
-                if hasattr(entry, 'extra') and hasattr(entry.extra, 'roles'):
+                # Try to get role changes from the changes attribute
+                if hasattr(entry, 'changes') and hasattr(entry.changes, 'roles'):
+                    before_roles = []
+                    after_roles = []
+                    
+                    # Get before roles
+                    if hasattr(entry.changes.roles, 'before') and entry.changes.roles.before is not None:
+                        before_roles = [role.name for role in entry.changes.roles.before if hasattr(role, 'name')]
+                    
+                    # Get after roles
+                    if hasattr(entry.changes.roles, 'after') and entry.changes.roles.after is not None:
+                        after_roles = [role.name for role in entry.changes.roles.after if hasattr(role, 'name')]
+                    
+                    # Calculate added and removed roles
+                    added_roles = [role for role in after_roles if role not in before_roles]
+                    removed_roles = [role for role in before_roles if role not in after_roles]
+                    
+                    # Add to changes if we found any
+                    if added_roles:
+                        changes.append(f"Added roles: {', '.join(added_roles)}")
+                    if removed_roles:
+                        changes.append(f"Removed roles: {', '.join(removed_roles)}")
+                
+                # Fallback method if changes.roles doesn't work - try $add and $remove
+                if not changes and hasattr(entry, 'changes'):
+                    for change_type in ['$add', '$remove']:
+                        if hasattr(entry.changes, change_type):
+                            change = getattr(entry.changes, change_type)
+                            role_ids = change.after if hasattr(change, 'after') else []
+                            role_names = [guild.get_role(rid).name for rid in role_ids if guild.get_role(rid)]
+                            
+                            if role_names:
+                                action = "Added" if change_type == '$add' else "Removed"
+                                changes.append(f"{action} roles: {', '.join(role_names)}")
+                
+                # Fallback: try to extract from extra attribute 
+                if not changes and hasattr(entry, 'extra') and hasattr(entry.extra, 'roles'):
                     added = []
                     removed = []
                     
@@ -1848,18 +2250,39 @@ async def handle_get_guild_audit_log(request):
                     if removed:
                         changes.append(f"Removed roles: {', '.join(removed)}")
                 
-                # Fallback method if extra.roles doesn't work
+                # Fallback: try to parse the raw changes object
                 if not changes and hasattr(entry, 'changes'):
-                    # Handle $add and $remove changes
-                    for change_type in ['$add', '$remove']:
-                        if hasattr(entry.changes, change_type):
-                            change = getattr(entry.changes, change_type)
-                            role_ids = change.after if hasattr(change, 'after') else []
-                            role_names = [guild.get_role(rid).name for rid in role_ids if guild.get_role(rid)]
-                            
-                            if role_names:
-                                action = "Added" if change_type == '$add' else "Removed"
-                                changes.append(f"{action} roles: {', '.join(role_names)}")
+                    debug_print(f"[AUDIT LOG] Final fallback - all changes attributes: {[attr for attr in dir(entry.changes) if not attr.startswith('_')]}", level="all")
+                    # Try to find any role-related changes
+                    for attr in dir(entry.changes):
+                        if 'role' in attr.lower() and not attr.startswith('_'):
+                            value = getattr(entry.changes, attr, None)
+                            debug_print(f"[AUDIT LOG] Found role-related attr {attr}: {value}", level="all")
+                            if value and hasattr(value, 'before') and hasattr(value, 'after'):
+                                before_val = getattr(value, 'before', None)
+                                after_val = getattr(value, 'after', None)
+                                debug_print(f"[AUDIT LOG] {attr} before: {before_val}, after: {after_val}", level="all")
+                                
+                                # Try to extract role names
+                                if before_val and after_val:
+                                    before_roles = []
+                                    after_roles = []
+                                    
+                                    # Handle list of role objects
+                                    if isinstance(before_val, list):
+                                        before_roles = [str(r.name) if hasattr(r, 'name') else str(r) for r in before_val]
+                                    if isinstance(after_val, list):
+                                        after_roles = [str(r.name) if hasattr(r, 'name') else str(r) for r in after_val]
+                                    
+                                    if before_roles or after_roles:
+                                        added = [r for r in after_roles if r not in before_roles]
+                                        removed = [r for r in before_roles if r not in after_roles]
+                                        
+                                        if added:
+                                            changes.append(f"Added roles: {', '.join(added)}")
+                                        if removed:
+                                            changes.append(f"Removed roles: {', '.join(removed)}")
+                                        break
             
             # Special handling for specific actions
             elif action_name == "message_pin":
@@ -1953,7 +2376,7 @@ async def handle_send_role_menu(request):
                     try:
                         await sent_message.add_reaction(emoji_val)
                     except Exception as e:
-                        debug_print(f"Failed to add reaction {emoji_val}: {e}")
+                        debug_print(red(f"Failed to add reaction {emoji_val}: {e}"))
             db.execute_query(
                 'UPDATE role_menus SET message_id = ? WHERE id = ?',
                 (str(sent_message.id), menu_id)
@@ -2165,6 +2588,7 @@ async def handle_reload_schedules(request):
     if auth_error:
         return auth_error
     load_schedules()
+    load_minecraft_schedules()
     return web.json_response({"success": True})
 
 async def handle_custom_form_submission(request):
@@ -2215,17 +2639,156 @@ async def handle_custom_form_submission(request):
         logger.error(f"Custom form submission error: {e}")
         return web.json_response({'error': str(e)}, status=500)
 
+async def handle_send_message(request):
+    """Handle sending messages to Discord channels for announcements"""
+    debug_print("Entering handle_send_message", level="all")
+    
+    # JWT authentication
+    auth_result = await require_jwt(request)
+    if auth_result:
+        return auth_result
+    
+    try:
+        guild_id = request.match_info['guild_id']
+        data = await request.json()
+        
+        channel_id = data.get('channel_id')
+        content = data.get('content', '').strip()
+        
+        if not channel_id or not content:
+            return web.json_response({'error': 'Missing channel_id or content'}, status=400)
+        
+        # Get the guild
+        guild = bot_instance.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({'error': 'Guild not found'}, status=404)
+        
+        # Get the channel
+        channel = bot_instance.get_channel(int(channel_id))
+        if not channel:
+            return web.json_response({'error': 'Channel not found'}, status=404)
+        
+        # Check if the channel belongs to the guild
+        if channel.guild.id != guild.id:
+            return web.json_response({'error': 'Channel does not belong to the specified guild'}, status=400)
+        
+        # Check bot permissions
+        permissions = channel.permissions_for(guild.me)
+        if not permissions.send_messages:
+            return web.json_response({'error': 'Bot does not have permission to send messages in this channel'}, status=403)
+        
+        # Send the message
+        try:
+            message = await channel.send(content)
+            debug_print(f"Announcement sent to {guild.name} #{channel.name}: {content[:50]}...", level="some")
+            return web.json_response({
+                'success': True,
+                'message_id': str(message.id),
+                'channel_name': channel.name,
+                'guild_name': guild.name
+            })
+        except discord.Forbidden:
+            return web.json_response({'error': 'Bot does not have permission to send messages in this channel'}, status=403)
+        except discord.HTTPException as e:
+            return web.json_response({'error': f'Discord API error: {str(e)}'}, status=500)
+            
+    except KeyError as e:
+        return web.json_response({'error': f'Missing required parameter: {str(e)}'}, status=400)
+    except ValueError as e:
+        return web.json_response({'error': f'Invalid parameter value: {str(e)}'}, status=400)
+    except Exception as e:
+        debug_print(red(f"Error in handle_send_message: {traceback.format_exc()}", level="some"))
+        return web.json_response({'error': 'Internal server error'}, status=500)
+
 @tasks.loop(minutes=5)
 async def cleanup():
     # Clean expired data
     processed_messages.clear()
 
+@tasks.loop(hours=1)
+async def check_birthdays():
+    """Check for birthdays and assign/remove birthday roles"""
+    debug_print("[Birthday Checker] Running birthday check", level="all")
+    await bot_instance.wait_until_ready()
+    
+    from datetime import datetime
+    
+    now = datetime.now()
+    current_month = now.month
+    current_day = now.day
+    
+    try:
+        # Get all guilds
+        guilds_data = db.get_all_guilds()
+        
+        for guild_data in guilds_data:
+            guild_id = guild_data['id']
+            guild = bot_instance.get_guild(int(guild_id))
+            
+            if not guild:
+                continue
+            
+            # Get birthday config for this guild
+            config = db.get_birthday_config(guild_id)
+            birthday_role_id = config.get('birthday_role_to_give_id')
+            
+            if not birthday_role_id:
+                # No birthday role configured for this guild
+                continue
+            
+            birthday_role = guild.get_role(int(birthday_role_id))
+            if not birthday_role:
+                debug_print(f"[Birthday Checker] Birthday role {birthday_role_id} not found in guild {guild_id}", level="all")
+                continue
+            
+            # Get all birthdays for this guild
+            all_birthdays = db.get_guild_birthdays(guild_id)
+            birthday_user_ids = set()
+            
+            for birthday in all_birthdays:
+                if birthday['birthday_month'] == current_month and birthday['birthday_day'] == current_day:
+                    birthday_user_ids.add(birthday['user_id'])
+            
+            # Add role to users with birthdays today
+            for user_id in birthday_user_ids:
+                try:
+                    member = guild.get_member(int(user_id))
+                    if member and birthday_role not in member.roles:
+                        await member.add_roles(birthday_role, reason="It's their birthday! 🎂")
+                        debug_print(f"[Birthday Checker] Added birthday role to {member.display_name} in {guild.name}", level="all")
+                except Exception as e:
+                    debug_print(red(f"[Birthday Checker] Error adding birthday role to user {user_id} in guild {guild_id}: {e}"), level="all")
+            
+            # Remove role from users who no longer have birthdays today
+            for member in guild.members:
+                if birthday_role in member.roles and str(member.id) not in birthday_user_ids:
+                    try:
+                        await member.remove_roles(birthday_role, reason="Birthday has passed")
+                        debug_print(f"[Birthday Checker] Removed birthday role from {member.display_name} in {guild.name}", level="all")
+                    except Exception as e:
+                        debug_print(red(f"[Birthday Checker] Error removing birthday role from user {member.id} in guild {guild_id}: {e}"), level="all")
+    
+    except Exception as e:
+        debug_print(red(f"[Birthday Checker] Error in check_birthdays: {e}"), level="all")
+        logger.error(red(f"Error in check_birthdays: {e}"))
+
 @bot_instance.event
 async def on_ready():
     set_event_loop(bot_instance.loop)
+    debug_print("🔄 Loading backup schedules...", level="all")
     load_schedules()
+    debug_print("🔄 Loading minecraft schedules...", level="all")
+    load_minecraft_schedules()
+    debug_print("⏰ Starting scheduler...", level="all")
     scheduler._eventloop = bot_instance.loop
     scheduler.start()
+    
+    # Print active jobs
+    jobs = scheduler.get_jobs()
+    debug_print(f"📅 Scheduler has {len(jobs)} active jobs:", level="all")
+    for job in jobs:
+        debug_print(f"  - {job.id}: {job.func.__name__} next run: {job.next_run_time}", level="all")
+
     print("""
     +==============================================================+
     |  _____         _        _   __                               |
@@ -2238,13 +2801,20 @@ async def on_ready():
     |                                           |_|                |
     +==============================================================+
     """)
+    print(maroon(f"RuleKeeper Version: {VERSION}"))
+    
+    update_info = check_for_update()
+    if update_info['update_available']:
+        print(yellow(f"Update available! New version: {update_info['remote_version']} (see GitHub)"))
     
     print(f'Logged in as {bot_instance.user}')
     if not bot_instance.guilds:
-        debug_print("⚠️ Bot not in any guilds, skipping command sync")
+        debug_print(red("⚠️ Bot not in any guilds, skipping command sync"))
         return
         
     cleanup.start()
+    check_birthdays.start()
+    debug_print("🎂 Birthday checker started", level="all")
     # Get current guild IDs as strings
     current_guild_ids = {str(g.id) for g in bot_instance.guilds}
     
@@ -2479,7 +3049,7 @@ def get_level_data(guild_id, user_id):
             }
         return data
     except Exception as e:
-        debug_print(f"Error getting level data: {str(e)}")
+        debug_print(red(f"Error getting level data: {str(e)}"))
         traceback.print_exc()
         return None
 
@@ -2648,7 +3218,7 @@ async def handle_level_up(user, guild, channel, old_level=None, new_level=None):
                 except discord.Forbidden:
                     debug_print(f"Missing permissions to assign roles in {guild.name}")
                 except Exception as e:
-                    debug_print(f"Error assigning roles: {str(e)}")
+                    debug_print(red(f"Error assigning roles: {str(e)}"))
 
             config = get_level_config(guild_id)
             announce_level_up = bool(config.get('announce_level_up', True))
@@ -2656,7 +3226,7 @@ async def handle_level_up(user, guild, channel, old_level=None, new_level=None):
                 await send_level_up_notification(user, guild, channel, new_level, config)
 
     except Exception as e:
-        debug_print(f"Error handling level up: {str(e)}")
+        debug_print(red(f"Error handling level up: {str(e)}"))
         traceback.print_exc()
 
 async def send_level_up_notification(user, guild, channel, new_level, config):
@@ -2669,7 +3239,7 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
             try:
                 target_channel = guild.get_channel(int(level_channel_id))
             except Exception as ex:
-                debug_print(f"Error: Failed to resolve level_channel {level_channel_id}: {ex}")
+                debug_print(red(f"Error: Failed to resolve level_channel {level_channel_id}: {ex}"))
                 target_channel = None
         if not target_channel:
             target_channel = channel
@@ -2683,7 +3253,7 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
                 else:
                     embed_color = int(embed_color)
             except Exception as ex:
-                debug_print(f"Error: Failed to parse embed_color '{embed_color}': {ex}")
+                debug_print(red(f"Error: Failed to parse embed_color '{embed_color}': {ex}"))
                 embed_color = 0xffd700
 
         # Create the embed
@@ -2698,13 +3268,13 @@ async def send_level_up_notification(user, guild, channel, new_level, config):
         try:
             embed.set_thumbnail(url=user.display_avatar.url)
         except Exception as ex:
-            debug_print(f"Failed to set embed thumbnail: {ex}")
+            debug_print(red(f"Failed to set embed thumbnail: {ex}"))
 
         # Send the embed
         await target_channel.send(embed=embed)
 
     except Exception as e:
-        debug_print(f"Error sending level up notification: {str(e)}")
+        debug_print(red(f"Error sending level up notification: {str(e)}"))
         traceback.print_exc()
 
 # -------------------- Backup System --------------------
@@ -2776,7 +3346,7 @@ async def collect_guild_backup(guild, set_progress=None):
                     "reason": entry.reason
                 })
         except Exception as e:
-            debug_print(f"Error backing up bans: {e}")
+            debug_print(red(f"Error backing up bans: {e}"))
         step += 1
 
         # Timed out users
@@ -2842,13 +3412,13 @@ async def collect_guild_backup(guild, set_progress=None):
                     "changes": str(getattr(entry, "changes", "")),
                 })
         except Exception as e:
-            debug_print(f"Error backing up audit log: {e}")
+            debug_print(red(f"Error backing up audit log: {e}"))
         step += 1
 
         if set_progress: set_progress(100, "Backup complete!")
         return backup
     except Exception as e:
-        debug_print(f"Error during collect_guild_backup: {e}\n{traceback.format_exc()}")
+        debug_print(red(f"Error during collect_guild_backup: {e}\n{traceback.format_exc()}"))
         if set_progress:
             set_progress(0, "Backup failed.")
         raise
@@ -2871,7 +3441,7 @@ async def save_guild_backup(guild, set_progress=None):
             set_progress(100, "Backup complete!")
         return file_path
     except Exception as e:
-        debug_print(f"Error during save_guild_backup: {e}\n{traceback.format_exc()}")
+        debug_print(red(f"Error during save_guild_backup: {e}\n{traceback.format_exc()}"))
         if set_progress:
             set_progress(0, f"Backup failed: {e}")
         raise
@@ -2905,7 +3475,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await role.delete(reason="Restoring from backup")
                 await asyncio.sleep(2.5)
             except Exception as e:
-                debug_print(f"Failed to delete role {role.name}: {e}")
+                debug_print(red(f"Failed to delete role {role.name}: {e}"))
 
         progress("Restoring roles...")
         debug_print("Restoring roles...")
@@ -2925,7 +3495,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 role_map[role_data["id"]] = new_role
                 await asyncio.sleep(2.5)
             except Exception as e:
-                debug_print(f"Error creating role {role_data['name']}: {e}")
+                debug_print(red(f"Error creating role {role_data['name']}: {e}"))
 
         role_map[next(r.id for r in guild.roles if r.is_default())] = guild.default_role
         if rulekeeper_role:
@@ -2944,10 +3514,10 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
         try:
             await guild.edit_role_positions(positions={role: i+1 for i, role in enumerate(roles_in_order)})
         except Exception as e:
-            debug_print(f"Error reordering roles: {e}")
+            debug_print(red(f"Error reordering roles: {e}"))
 
     except Exception as e:
-        debug_print(f"Error restoring roles: {e}")
+        debug_print(red(f"Error restoring roles: {e}"))
 
     # --- Restore Role Assignments ---
     try:
@@ -2986,11 +3556,11 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                         await member.add_roles(*roles_to_assign, reason="Restoring roles from backup")
                         await asyncio.sleep(2.5)
                     except Exception as e:
-                        debug_print(f"Failed to assign roles to {member}: {e}")
+                        debug_print(red(f"Failed to assign roles to {member}: {e}"))
             else:
                 debug_print(f"Member {user_id} not found in guild for role assignment")
     except Exception as e:
-        debug_print(f"Error restoring role assignments: {e}")
+        debug_print(red(f"Error restoring role assignments: {e}"))
 
     # --- Restore Channels and Categories ---
     try:
@@ -3011,7 +3581,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await channel.delete(reason="Restoring from backup")
                 await asyncio.sleep(2.5)
             except Exception as e:
-                debug_print(f"Failed to delete channel {channel.name}: {e}")
+                debug_print(red(f"Failed to delete channel {channel.name}: {e}"))
 
         progress("Restoring channels and categories...")
         debug_print("Restoring channels and categories...")
@@ -3028,7 +3598,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                     category_map[ch["id"]] = new_cat
                     await asyncio.sleep(2.5)
                 except Exception as e:
-                    debug_print(f"Error creating category {ch['name']}: {e}")
+                    debug_print(red(f"Error creating category {ch['name']}: {e}"))
 
         created_channel_map = {}
         for ch in backup["channels"]:
@@ -3084,9 +3654,9 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 created_channel_map[ch["id"]] = new_ch
                 await asyncio.sleep(2.5)
             except discord.HTTPException as e:
-                debug_print(f"Error creating channel {ch['name']}: {e}")
+                debug_print(red(f"Error creating channel {ch['name']}: {e}"))
             except Exception as e:
-                debug_print(f"Error creating channel {ch['name']}: {e}")
+                debug_print(red(f"Error creating channel {ch['name']}: {e}"))
 
         backup_required_channels = {ch["id"]: ch for ch in backup["channels"] if ch.get("id") in required_channel_ids}
         for req_ch in required_channels:
@@ -3100,10 +3670,10 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
             try:
                 await req_ch.edit(category=parent, position=backup_ch["position"], reason="Restoring from backup")
             except Exception as e:
-                debug_print(f"Failed to move required channel {req_ch.name}: {e}")
+                debug_print(red(f"Failed to move required channel {req_ch.name}: {e}"))
 
     except Exception as e:
-        debug_print(f"Error restoring channels: {e}")
+        debug_print(red(f"Error restoring channels: {e}"))
 
     # --- Restore Bans ---
     try:
@@ -3118,7 +3688,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
             debug_print("Timeout while fetching bans.")
             bans = []
         except Exception as e:
-            debug_print(f"Error fetching bans: {e}")
+            debug_print(red(f"Error fetching bans: {e}"))
             bans = []
 
         if not bans:
@@ -3129,7 +3699,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                     await guild.unban(entry.user, reason="Restoring from backup")
                     await asyncio.sleep(2.5)
                 except Exception as e:
-                    debug_print(f"Failed to unban {entry.user}: {e}")
+                    debug_print(red(f"Failed to unban {entry.user}: {e}"))
 
         progress("Restoring bans...")
         debug_print("Restoring bans...")
@@ -3139,9 +3709,9 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await guild.ban(user, reason=ban.get("reason", "Restored from backup"))
                 await asyncio.sleep(2.5)
             except Exception as e:
-                debug_print(f"Failed to ban user {ban['user_id']}: {e}")
+                debug_print(red(f"Failed to ban user {ban['user_id']}: {e}"))
     except Exception as e:
-        debug_print(f"Error restoring bans: {e}")
+        debug_print(red(f"Error restoring bans: {e}"))
 
     # --- Restore Timed Out Users ---
     try:
@@ -3161,11 +3731,11 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                         await member.timeout(until_dt, reason=reason)
                         await asyncio.sleep(1)
                 except Exception as e:
-                    debug_print(f"Error restoring timeout for user {user_id}: {e}")
+                    debug_print(red(f"Error restoring timeout for user {user_id}: {e}"))
             else:
                 debug_print(f"Member {user_id} not found for timeout")
     except Exception as e:
-        debug_print(f"Error restoring timed out users: {e}")
+        debug_print(red(f"Error restoring timed out users: {e}"))
 
     # --- Restore Emojis ---
     try:
@@ -3176,7 +3746,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await emoji.delete(reason="Restoring from backup")
                 await asyncio.sleep(1)
             except Exception as e:
-                debug_print(f"Failed to delete emoji {emoji.name}: {e}")
+                debug_print(red(f"Failed to delete emoji {emoji.name}: {e}"))
 
         progress("Restoring emojis...")
         debug_print("Restoring emojis...")
@@ -3213,15 +3783,15 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                                 debug_print(f"Rate limited while creating emoji {emoji_data['name']}, sleeping for {retry_after} seconds.")
                                 await asyncio.sleep(retry_after)
                             else:
-                                debug_print(f"Failed to create emoji {emoji_data['name']}: {e}")
+                                debug_print(red(f"Failed to create emoji {emoji_data['name']}: {e}"))
                                 break
                         except Exception as e:
-                            debug_print(f"Failed to create emoji {emoji_data['name']}: {e}")
+                            debug_print(red(f"Failed to create emoji {emoji_data['name']}: {e}"))
                             break
                 except Exception as e:
-                    debug_print(f"Error restoring emojis: {e}")
+                    debug_print(red(f"Error restoring emojis: {e}"))
     except Exception as e:
-        debug_print(f"Error restoring emojis: {e}")
+        debug_print(red(f"Error restoring emojis: {e}"))
 
     # --- Restore Stickers ---
     try:
@@ -3232,7 +3802,7 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                 await sticker.delete(reason="Restoring from backup")
                 await asyncio.sleep(1)
             except Exception as e:
-                debug_print(f"Failed to delete sticker {sticker.name}: {e}")
+                debug_print(red(f"Failed to delete sticker {sticker.name}: {e}"))
         
         progress("Restoring stickers...")
         debug_print("Restoring stickers...")
@@ -3252,9 +3822,9 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
                     )
                     await asyncio.sleep(1)
                 except Exception as e:
-                    debug_print(f"Failed to create sticker {sticker_data.get('name')}: {e}")
+                    debug_print(red(f"Failed to create sticker {sticker_data.get('name')}: {e}"))
     except Exception as e:
-        debug_print(f"Error restoring stickers: {e}")
+        debug_print(red(f"Error restoring stickers: {e}"))
 
     # --- Restore Server Settings ---
     try:
@@ -3290,13 +3860,13 @@ async def restore_guild_backup(guild, file_path, progress_callback=None):
         try:
             await guild.edit(**edit_kwargs)
         except discord.Forbidden:
-            debug_print("Error restoring settings: Missing Permissions (Manage Server required)")
+            debug_print(red("Error restoring settings: Missing Permissions (Manage Server required)"))
         except discord.HTTPException as e:
-            debug_print(f"Error restoring settings: {e}")
+            debug_print(red(f"Error restoring settings: {e}"))
         except Exception as e:
-            debug_print(f"Unexpected error restoring settings: {e}")
+            debug_print(red(f"Unexpected error restoring settings: {e}"))
     except Exception as e:
-        debug_print(f"Error restoring settings: {e}")
+        debug_print(red(f"Error restoring settings: {e}"))
 
     progress("Restore complete!")
     debug_print("Restore complete!")
@@ -3356,7 +3926,11 @@ async def on_message(message):
                 user_data = get_level_data(guild_id, user_id)
                 last_cooldown_time = user_data.get('last_message', 0)
 
-                if (current_time - last_cooldown_time) >= cooldown_seconds:
+                # Check if user bypasses cooldown
+                user_role_ids = [str(role.id) for role in message.author.roles]
+                bypasses_cooldown = db.has_cooldown_bypass(guild_id, user_id, user_role_ids)
+
+                if bypasses_cooldown or (current_time - last_cooldown_time) >= cooldown_seconds:
                     db.conn.execute('''
                         INSERT INTO user_levels (guild_id, user_id, username, last_message, xp)
                         VALUES (?, ?, ?, ?, 0)
@@ -3426,7 +4000,7 @@ async def on_message(message):
                     )
                     return
                 except Exception as e:
-                    debug_print(f"Blocked word handling error: {str(e)}")
+                    debug_print(red(f"Blocked word handling error: {str(e)}"))
                 return
 
         # ===== SPAM DETECTION =====
@@ -3511,19 +4085,19 @@ async def on_message(message):
                                             await member.timeout(until, reason=f"Reached {warning_count} warnings (spam)")
                                             action_text = f"User timed out for {duration_seconds//60 if duration_seconds else 60} minutes."
                                         except Exception as e:
-                                            debug_print(f"Failed to timeout user: {e}")
+                                            debug_print(red(f"Failed to timeout user: {e}"))
                                 elif action_type == "kick":
                                     try:
                                         await member.kick(reason=f"Reached {warning_count} warnings (spam)")
                                         action_text = "User kicked."
                                     except Exception as e:
-                                        debug_print(f"Failed to kick user: {e}")
+                                        debug_print(red(f"Failed to kick user: {e}"))
                                 elif action_type == "ban":
                                     try:
                                         await member.ban(reason=f"Reached {warning_count} warnings (spam)")
                                         action_text = "User banned."
                                     except Exception as e:
-                                        debug_print(f"Failed to ban user: {e}")
+                                        debug_print(red(f"Failed to ban user: {e}"))
 
                             # Notify the channel about the action
                             if action_text:
@@ -3538,7 +4112,7 @@ async def on_message(message):
                                 except Exception:
                                     pass
                 except Exception as e:
-                    debug_print(f"Spam handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
+                    debug_print(red(f"Spam handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}"))
 
         user_data = get_level_data(guild_id, user_id)
         total_xp = user_data['xp']
@@ -3573,9 +4147,9 @@ async def on_message(message):
                 )
                 user_mentions[mention_key] = []
             except Exception as e:
-                debug_print(f"Mention flood handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}")
+                debug_print(red(f"Mention flood handling error in guild {message.guild.id} ({message.guild.name}): {str(e)}"))
     except Exception as e:
-        debug_print(f"Error: {str(e)}")
+        debug_print(red(f"Error: {str(e)}"))
 
     # Track processed messages
     processed_messages[message.id] = True
@@ -3658,6 +4232,35 @@ async def on_member_join(member):
                     logger.error(f"Missing permissions to assign roles in {member.guild.name}")
                 except Exception as e:
                     logger.error(f"Error assigning auto-roles: {str(e)}")        
+
+        # Restore user data if snapshot exists and settings allow
+        guild_id = str(member.guild.id)
+        user_id = str(member.id)
+        settings = db.get_restore_settings(guild_id)
+        snap = db.get_user_restore_snapshot(guild_id, user_id)
+        if snap:
+            # Restore roles
+            if settings.get('restore_roles', True):
+                excluded = set(settings.get('excluded_roles', []))
+                role_ids = [r for r in snap['roles'] if r not in excluded]
+                roles_to_restore = [member.guild.get_role(int(rid)) for rid in role_ids]
+                roles_to_restore = [r for r in roles_to_restore if r and r < member.guild.me.top_role]
+                if roles_to_restore:
+                    try:
+                        await member.add_roles(*roles_to_restore, reason="Restore on rejoin")
+                    except Exception as e:
+                        debug_print(red(f"Error restoring roles: {e}"))
+            # Restore XP/level
+            if settings.get('restore_xp', True):
+                db.update_user_level(guild_id, user_id, xp=snap.get('xp', 0), level=snap.get('level', 0))
+            # Restore nickname
+            if settings.get('restore_nickname', True) and snap.get('nickname'):
+                try:
+                    await member.edit(nick=snap['nickname'], reason="Restore on rejoin")
+                except Exception as e:
+                    debug_print(red(f"Error restoring nickname: {e}"))
+            db.delete_user_restore_snapshot(guild_id, user_id)
+            debug_print(f"Restored data for user {user_id} in guild {guild_id}")
         
         config = db.get_welcome_config(str(member.guild.id))
         if not config or not config.get('enabled'):
@@ -3695,7 +4298,7 @@ async def on_member_join(member):
             await channel.send(content)
 
     except Exception as e:
-        debug_print(f"Welcome message error: {str(e)}")
+        debug_print(red(f"Welcome message error: {str(e)}"))
 
 def replace_placeholders(text, replacements):
     debug_print(f"Entering replace_placeholders with text: {text}, replacements: {replacements}", level="all")
@@ -3719,7 +4322,7 @@ async def send_custom_form_dm(user, guild, event_type):
             try:
                 await user.send(f"{msg}\n{form_url}")
             except Exception as e:
-                debug_print(f"Failed to DM user {user}: {e}")
+                debug_print(red(f"Failed to DM user {user}: {e}"))
             break  # Only send one form per event
 
 @bot_instance.event
@@ -3760,7 +4363,7 @@ async def on_member_remove(member):
             await channel.send(content)
 
     except Exception as e:
-        debug_print(f"Goodbye message error: {str(e)}")
+        debug_print(red(f"Goodbye message error: {str(e)}"))
 
     try:
         audit_logs = await member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick).flatten()
@@ -3769,57 +4372,27 @@ async def on_member_remove(member):
             if entry.target.id == member.id and (datetime.utcnow() - entry.created_at).total_seconds() < 10:
                 await send_custom_form_dm(member, member.guild, "kick")
     except Exception as e:
-        debug_print(f"Error checking for kick: {e}")
+        debug_print(red(f"Error checking for kick: {e}"))
 
-@bot_instance.event
-async def on_member_update(before, after):
-    debug_print(f"Entering on_member_update with before: {before}, after: {after}", level="all")
-    if before.guild is None:
-        return
-    config = load_log_config(before.guild.id)
-    log_channel_id = config.get("log_channel_id")
-    if not (config.get("member_role_add", True) or config.get("member_role_remove", True)):
-        return
-
-    # Find added and removed roles
-    before_roles = set(before.roles)
-    after_roles = set(after.roles)
-    added_roles = after_roles - before_roles
-    removed_roles = before_roles - after_roles
-
-    # Only log if there are changes
-    if not added_roles and not removed_roles:
-        return
-
-    # Log added roles
-    if added_roles and config.get("member_role_add", True):
-        description = f"**User:** {after.mention} ({after.id})\n"
-        description += f"**Added Roles:** {', '.join(role.mention for role in added_roles)}\n"
-        await log_event(
-            after.guild,
-            "member_role_add",
-            "Member Role Added",
-            description.strip(),
-            color=discord.Color.green()
-        )
-
-    # Log removed roles
-    if removed_roles and config.get("member_role_remove", True):
-        description = f"**User:** {after.mention} ({after.id})\n"
-        description += f"**Removed Roles:** {', '.join(role.mention for role in removed_roles)}\n"
-        await log_event(
-            after.guild,
-            "member_role_remove",
-            "Member Role Removed",
-            description.strip(),
-            color=discord.Color.red()
-        )
+    # Save user data for restore on rejoin
+    try:
+        guild_id = str(member.guild.id)
+        user_id = str(member.id)
+        roles = [str(r.id) for r in member.roles if not r.is_default()]
+        level_data = db.get_user_level(guild_id, user_id)
+        xp = level_data['xp'] if level_data and 'xp' in level_data else 0
+        level = level_data['level'] if level_data and 'level' in level_data else 0
+        nickname = member.nick or ""
+        db.save_user_restore_snapshot(guild_id, user_id, roles, xp, level, nickname)
+        debug_print(f"Saved restore snapshot for user {user_id} in guild {guild_id}")
+    except Exception as e:
+        debug_print(red(f"Error saving restore snapshot: {e}"))
 
 @bot_instance.event
 async def on_guild_available(guild):
     debug_print(f"Entering on_guild_available with guild: {guild}", level="all")
     if not db.get_guild(str(guild.id)):
-        debug_print(f"⚠️ Guild {guild.name} not in database, attempting recovery...")
+        debug_print(red(f"⚠️ Guild {guild.name} not in database, attempting recovery..."))
         await on_guild_join(guild)  # Re-trigger join logic
 
 @bot_instance.event
@@ -3828,6 +4401,82 @@ async def on_guild_join(guild):
     debug_print(f"Entering on_guild_join with guild: {guild}", level="all")
     try:
         debug_print(f"🤖 Joined new guild: {guild.name} ({guild.id})")
+        
+        # Check if guild is banned
+        if db.is_guild_banned(str(guild.id)):
+            ban_info = db.get_guild_ban_info(str(guild.id))
+            debug_print(f"🚫 Guild {guild.name} ({guild.id}) is banned. Leaving...")
+            try:
+                # Try to send a message to the guild owner
+                owner = guild.owner
+                if owner:
+                    embed = discord.Embed(
+                        title="❌ Access Denied",
+                        description=f"This guild has been banned from using RuleKeeper.",
+                        color=discord.Color.red()
+                    )
+                    embed.add_field(name="Reason", value=ban_info.get('reason', 'No reason provided'), inline=False)
+                    if ban_info.get('expires_at'):
+                        embed.add_field(name="Expires", value=ban_info['expires_at'], inline=False)
+                    embed.set_footer(text="If you believe this is an error, please contact the bot administrators.")
+                    await owner.send(embed=embed)
+            except:
+                pass  # Ignore if we can't DM the owner
+            
+            await guild.leave()
+            return
+        
+        # Check if guild owner is banned
+        if db.is_user_banned(str(guild.owner_id)):
+            ban_info = db.get_user_ban_info(str(guild.owner_id))
+            debug_print(f"🚫 Guild owner {guild.owner_id} is banned. Leaving guild {guild.name} ({guild.id})...")
+            try:
+                # Try to send a message to the guild owner
+                owner = guild.owner
+                if owner:
+                    embed = discord.Embed(
+                        title="❌ Access Denied",
+                        description=f"You have been banned from using RuleKeeper.",
+                        color=discord.Color.red()
+                    )
+                    embed.add_field(name="Reason", value=ban_info.get('reason', 'No reason provided'), inline=False)
+                    if ban_info.get('expires_at'):
+                        embed.add_field(name="Expires", value=ban_info['expires_at'], inline=False)
+                    embed.set_footer(text="If you believe this is an error, please contact the bot administrators.")
+                    await owner.send(embed=embed)
+            except:
+                pass  # Ignore if we can't DM the owner
+            
+            await guild.leave()
+            return
+        
+        # Check if any guild administrators or users with manage server permissions are banned
+        banned_admins = []
+        for member in guild.members:
+            # Check for Administrator permission or Manage Guild (Server) permission
+            if (member.guild_permissions.administrator or member.guild_permissions.manage_guild) and db.is_user_banned(str(member.id)):
+                banned_admins.append(member)
+        
+        if banned_admins:
+            debug_print(f"🚫 Guild {guild.name} ({guild.id}) has banned administrators/managers. Leaving...")
+            try:
+                # Try to notify the guild owner
+                owner = guild.owner
+                if owner:
+                    banned_list = "\n".join([f"• {member.name} ({member.id})" for member in banned_admins])
+                    embed = discord.Embed(
+                        title="❌ Access Denied",
+                        description=f"Your server has one or more users with administrative/management permissions who are banned from using RuleKeeper.",
+                        color=discord.Color.red()
+                    )
+                    embed.add_field(name="Banned Users", value=banned_list, inline=False)
+                    embed.set_footer(text="Remove these users' permissions or contact bot administrators for appeals.")
+                    await owner.send(embed=embed)
+            except:
+                pass  # Ignore if we can't DM the owner
+            
+            await guild.leave()
+            return
         
         # Add to database
         db.add_guild(
@@ -3844,8 +4493,21 @@ async def on_guild_join(guild):
         
         debug_print(f"💾 Saved guild {guild.id} to database")
         
+        # Log to audit system
+        guild_info = f"Guild: {guild.name} (ID: {guild.id})"
+        member_count = guild.member_count if guild.member_count else "Unknown"
+        owner_info = f"Owner: {guild.owner} (ID: {guild.owner_id})" if guild.owner else f"Owner ID: {guild.owner_id}"
+        details = f"RuleKeeper joined {guild_info}. Members: {member_count}. {owner_info}"
+        
+        db.execute_query(
+            '''INSERT INTO audit_log 
+            (action, details, changes, user_id)
+            VALUES (?, ?, ?, ?)''',
+            ("GUILD_JOIN", details, "", f"SYSTEM:RuleKeeper#{bot_instance.user.discriminator}")
+        )
+        
     except Exception as e:
-        debug_print(f"❌ Error handling guild join: {str(e)}")
+        debug_print(red(f"❌ Error handling guild join: {str(e)}"))
         traceback.print_exc()
         
 @bot_instance.event
@@ -3855,6 +4517,19 @@ async def on_guild_remove(guild):
     try:
         debug_print(f"🚪 Left guild: {guild.name} ({guild.id})")
         guild_id = str(guild.id)
+        
+        # Log to audit system before cleanup
+        guild_info = f"Guild: {guild.name} (ID: {guild.id})"
+        member_count = guild.member_count if guild.member_count else "Unknown"
+        owner_info = f"Owner: {guild.owner} (ID: {guild.owner_id})" if guild.owner else f"Owner ID: {guild.owner_id}"
+        details = f"RuleKeeper left {guild_info}. Members: {member_count}. {owner_info}"
+        
+        db.execute_query(
+            '''INSERT INTO audit_log 
+            (action, details, changes, user_id)
+            VALUES (?, ?, ?, ?)''',
+            ("GUILD_LEAVE", details, "", f"SYSTEM:RuleKeeper#{bot_instance.user.discriminator}")
+        )
 
         # List of all tables with guild_id
         tables = [
@@ -3888,7 +4563,7 @@ async def on_guild_remove(guild):
         debug_print(f"🧹 Cleaned up all data for guild {guild_id}")
 
     except Exception as e:
-        debug_print(f"❌ Error handling guild removal: {str(e)}")
+        debug_print(red(f"❌ Error handling guild removal: {str(e)}"))
         traceback.print_exc()
 
 @bot_instance.event
@@ -4157,35 +4832,56 @@ async def on_member_update(before, after):
         return
     config = load_log_config(before.guild.id)
     log_channel_id = config.get("log_channel_id")
-    if not (config.get("member_role_add", True) or config.get("member_role_remove", True)):
-        return
-
+    
+    # Check for nickname changes
+    if before.nick != after.nick and config.get("member_nickname_change", True):
+        before_nick = before.nick or before.display_name
+        after_nick = after.nick or after.display_name
+        
+        description = f"**User:** {after.mention} ({after.id})\n"
+        description += f"**Before:** {before_nick}\n"
+        description += f"**After:** {after_nick}"
+        
+        await log_event(
+            after.guild,
+            "member_nickname_change",
+            "Member Nickname Changed",
+            description,
+            color=discord.Color.blue(),
+            extra_fields={
+                'user_id': after.id,
+                'role_ids': [role.id for role in after.roles],
+                'channel_id': None,
+                'log_bot': after.bot,
+                'log_self': after.id == bot_instance.user.id
+            }
+        )
+    
+    # Check for role changes
     # Find added and removed roles
     before_roles = set(before.roles)
     after_roles = set(after.roles)
     added_roles = after_roles - before_roles
     removed_roles = before_roles - after_roles
 
-    # Only log if there are changes
-    if not added_roles and not removed_roles:
-        return
+    # Only log role changes if there are changes and at least one role event is enabled
+    if (added_roles or removed_roles) and (config.get("member_role_add", True) or config.get("member_role_remove", True)):
+        description = f"**User:** {after.mention} ({after.id})\n"
+        if added_roles and config.get("member_role_add", True):
+            description += f"**Added Roles:** {', '.join(role.mention for role in added_roles)}\n"
+        if removed_roles and config.get("member_role_remove", True):
+            description += f"**Removed Roles:** {', '.join(role.mention for role in removed_roles)}\n"
 
-    description = f"**User:** {after.mention} ({after.id})\n"
-    if added_roles and config.get("member_role_add", True):
-        description += f"**Added Roles:** {', '.join(role.mention for role in added_roles)}\n"
-    if removed_roles and config.get("member_role_remove", True):
-        description += f"**Removed Roles:** {', '.join(role.mention for role in removed_roles)}\n"
+        # Pick color
+        color = discord.Color.green() if added_roles and not removed_roles else discord.Color.red() if removed_roles and not added_roles else discord.Color.orange()
 
-    # Pick color
-    color = discord.Color.green() if added_roles and not removed_roles else discord.Color.red() if removed_roles and not added_roles else discord.Color.orange()
-
-    await log_event(
-        after.guild,
-        "member_role_change",
-        "Member Role Updated",
-        description.strip(),
-        color=color
-    )
+        await log_event(
+            after.guild,
+            "member_role_change",
+            "Member Role Updated",
+            description.strip(),
+            color=color
+        )
 
 @bot_instance.event
 async def on_presence_update(before, after):
@@ -4294,13 +4990,13 @@ async def on_presence_update(before, after):
                         await member.remove_roles(role)
 
     except Exception as e:
-        debug_print(f"Presence update error: {str(e)}")
+        debug_print(red(f"Presence update error: {str(e)}"))
 
 # Error handlers
 @bot_instance.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
     """Global error handler for app commands"""
-    debug_print(f"Entering on_app_command_error with interaction: {interaction}, error: {error}", level="all")
+    debug_print(red(f"Entering on_app_command_error with interaction: {interaction}, error: {error}", level="all"))
     if isinstance(error, app_commands.CheckFailure):
         if not interaction.response.is_done():
             await interaction.response.send_message(
@@ -4313,7 +5009,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: discord.
                 ephemeral=True
             )
     else:
-        debug_print(f"Unhandled command error: {error}")
+        debug_print(red(f"Unhandled command error: {error}"))
         raise error
 
 if __name__ == "__main__":

@@ -4,75 +4,117 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Privacy Policy - RuleKeeper</title>
-  <link rel="icon" type="image/x-icon" href="../static/images/favicon.ico">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
   <style>
     body {
-      font-family: 'Segoe UI', sans-serif;
-      line-height: 1.7;
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      line-height: 1.6;
       background-color: #f9f9f9;
       color: #333;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 2rem;
     }
-    h1, h2 {
-      color: #2e3a59;
-    }
-    h1 {
-      border-bottom: 2px solid #ddd;
-      padding-bottom: 0.5rem;
-    }
-    ul {
-      padding-left: 1.5rem;
-    }
-    li {
-      margin-bottom: 0.5rem;
-    }
-    em {
-      color: #555;
+    h1, h2, h3 {
+      color: #2c3e50;
     }
     a {
-      color: #0066cc;
+      color: #3498db;
+      text-decoration: none;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+    section {
+      margin-bottom: 30px;
+    }
+    code {
+      background-color: #f4f4f4;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
     }
   </style>
+    {% include 'dark_mode_include.html' %}
 </head>
 <body>
   <h1>Privacy Policy</h1>
-  <p><strong>Last updated: April 27, 2025</strong></p>
+  <p><em>Last updated: October 19, 2025</em></p>
 
-  <p>RuleKeeper is an open-source Discord bot designed to assist with moderation, automation, and customization for Discord servers. Your privacy is important to us. This policy outlines what data RuleKeeper collects, how it's used, and your rights.</p>
+  <p>RuleKeeper is an open-source Discord bot designed to assist with moderation, leveling, music playback, server backups, and customization for Discord servers. Your privacy is important to us. This policy outlines what data RuleKeeper collects, how it's used, and your rights.</p>
 
-  <h2>1. Data Collected</h2>
-  <ul>
-    <li><strong>User and Message Metadata:</strong> Usernames, user IDs, message IDs, timestamps.</li>
-    <li><strong>Server Configuration:</strong> Server IDs, channel IDs, role IDs, custom settings, and enabled features.</li>
-    <li><strong>Moderation Logs:</strong> Records of moderation actions (e.g., kicks, bans, deleted messages).</li>
-  </ul>
-  <p><em>RuleKeeper does not store message content unless explicitly configured for features like moderation logging or custom triggers.</em></p>
+  <section>
+    <h2>1. Data Collected</h2>
+    <p>RuleKeeper stores the following types of data to provide its features:</p>
+    
+    <h3>User Data</h3>
+    <ul>
+      <li><strong>User IDs:</strong> Discord user IDs for identifying users across features.</li>
+      <li><strong>Level & XP Data:</strong> Experience points, levels, message counts, voice activity time, and XP boosts for the leveling system.</li>
+      <li><strong>Music Playlists:</strong> User-created playlists including track URLs and metadata.</li>
+      <li><strong>Birthday Information:</strong> Birth dates (month/day/year) if voluntarily provided via birthday commands.</li>
+      <li><strong>Warning Records:</strong> Moderation warnings issued to users, including timestamps and reasons.</li>
+    </ul>
 
-  <h2>2. How Data Is Used</h2>
-  <ul>
-    <li>To provide core features like moderation, logging, and custom command handling.</li>
-    <li>To manage settings and preferences on a per-server basis.</li>
-    <li>For diagnostic and debugging purposes when enabled by server admins.</li>
-  </ul>
+    <h3>Server Configuration Data</h3>
+    <ul>
+      <li><strong>Server IDs, Channel IDs, Role IDs:</strong> For configuring features per server.</li>
+      <li><strong>Custom Commands:</strong> User-defined commands, their responses, and permissions.</li>
+      <li><strong>Logging Settings:</strong> Configuration for which events to log and where.</li>
+      <li><strong>Moderation Settings:</strong> Auto-moderation rules, spam detection thresholds, blocked words, warning actions.</li>
+      <li><strong>Welcome/Goodbye Messages:</strong> Custom messages and channel assignments.</li>
+      <li><strong>Level System Settings:</strong> XP rates, level-up rewards, role assignments.</li>
+      <li><strong>Crafty Controller Integration:</strong> Minecraft server configurations, API tokens, server IDs.</li>
+      <li><strong>Backup Schedules:</strong> Server backup configurations and scheduled backup times.</li>
+    </ul>
 
-  <h2>3. Data Storage</h2>
-  <ul>
-    <li>Data is stored securely by the bot owner or hosting provider.</li>
-    <li>No data is sold, shared, or monetized.</li>
-    <li>If self-hosted, the responsibility for data handling falls to the instance operator.</li>
-  </ul>
+    <h3>Moderation & Event Logs</h3>
+    <ul>
+      <li><strong>Moderation Actions:</strong> Records of warnings, kicks, bans, timeouts, and who issued them.</li>
+      <li><strong>Event Logs:</strong> Server events such as member joins/leaves, message edits/deletions, role changes (when logging is enabled).</li>
+      <li><strong>Spam Detection Data:</strong> Temporary message history for detecting spam patterns.</li>
+    </ul>
+
+    <h3>Backup Data</h3>
+    <ul>
+      <li><strong>Server Backups:</strong> Channel structures, role configurations, permissions (stored as JSON files).</li>
+      <li><strong>Backup Metadata:</strong> Timestamps, creator information, restoration history.</li>
+    </ul>
+
+    <p><em><strong>Note:</strong> RuleKeeper does not store message content unless explicitly configured for moderation logging. Message IDs and metadata may be stored temporarily for spam detection.</em></p>
+  </section>
+
+  <section>
+    <h2>2. How Data Is Used</h2>
+    <ul>
+      <li><strong>Feature Delivery:</strong> To provide moderation, leveling, music playback, backups, and custom commands.</li>
+      <li><strong>Server Management:</strong> To maintain server-specific configurations and preferences.</li>
+      <li><strong>Analytics:</strong> To track XP progression, level rankings, and user engagement (server-specific only).</li>
+      <li><strong>Security:</strong> To detect and prevent spam, abuse, and rule violations.</li>
+      <li><strong>Diagnostics:</strong> For debugging and troubleshooting when issues occur.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>3. Data Storage & Security</h2>
+    <ul>
+      <li><strong>Storage Location:</strong> All data is stored in a local SQLite database by the bot host.</li>
+      <li><strong>Retention:</strong> Data is retained as long as the bot remains in your server or until manually deleted.</li>
+      <li><strong>Security:</strong> Database files are protected with file system permissions and encrypted connections where applicable.</li>
+      <li><strong>No Third-Party Sharing:</strong> Your data is never sold, shared, or provided to third parties.</li>
+      <li><strong>Self-Hosted Instances:</strong> If you self-host RuleKeeper, you are solely responsible for data security and compliance with applicable laws.</li>
+    </ul>
+  </section>
 
   <h2>4. User Rights</h2>
   <p><strong>If you're a server admin:</strong></p>
   <ul>
-    <li>You can view, modify, or delete your server’s data via bot commands or a dashboard.</li>
+    <li>You can view, modify, or delete your server’s data via the dashboard.</li>
     <li>You can remove the bot at any time, which stops all data collection.</li>
   </ul>
   <p><strong>If you're a regular user:</strong></p>
   <ul>
-    <li>You can contact the bot owner or server admin to request deletion of any stored data related to you.</li>
+    <li>You can visit the <a href="/delete-data" target="_blank">data deletion page</a> to request deletion of any stored data related to you.</li>
   </ul>
 
   <h2>5. Self-Hosting</h2>

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from bot.bot import save_guild_backup, load_schedules, restore_guild_backup as restore
 from backups.backups import get_backup, get_conn
 from shared import command_permission_check
+from shared.colors import red
 try:
     from bot.bot import debug_print
 except ImportError:
@@ -71,8 +72,72 @@ async def permissions_autocomplete(
         'stream', 'use_application_commands', 'use_embedded_activities', 'use_external_emojis',
         'use_external_stickers', 'use_voice_activation', 'view_audit_log', 'view_channel', 'view_guild_insights'
     ]
-    matches = [p for p in all_perms if current.lower() in p.lower()]
-    return [app_commands.Choice(name=p.replace('_', ' ').title(), value=p) for p in matches[:25]]
+    
+    # Handle multiple permissions separated by commas
+    if ',' in current:
+        # Split by comma and get the parts
+        parts = [part.strip() for part in current.split(',')]
+        # Get everything before the last comma (already selected permissions)
+        prefix_parts = [part for part in parts[:-1] if part]
+        # Get the part currently being typed (could be empty)
+        current_typing = parts[-1].strip().lower() if parts[-1].strip() else ""
+        
+        # Find permissions that match what's being typed and aren't already selected
+        already_selected = [part.lower() for part in prefix_parts]
+        available_perms = [p for p in all_perms if p.lower() not in already_selected]
+        
+        if current_typing:
+            matches = [p for p in available_perms if current_typing in p.lower()]
+        else:
+            # If nothing is being typed after comma, show all available permissions
+            matches = available_perms
+        
+        # Build the prefix string
+        prefix = ', '.join(prefix_parts)
+        if prefix:
+            prefix += ', '
+    else:
+        # No comma yet, just searching for first permission
+        current_typing = current.lower()
+        matches = [p for p in all_perms if current_typing in p.lower()]
+        prefix = ''
+    
+    # Return choices with the full value shown in both name and value
+    choices = []
+    for perm in matches[:25]:  # Limit to 25 choices
+        display_name = perm.replace('_', ' ').title()
+        full_value = prefix + perm
+        
+        # Show the complete string that will be in the field
+        if prefix:
+            # Show the full comma-separated list in the choice name
+            choice_name = full_value.replace('_', ' ').title().replace(', ', ', ')
+            # Truncate if too long for Discord's 100 character limit
+            if len(choice_name) > 90:
+                truncated = choice_name[:87] + "..."
+                choice_name = truncated
+        else:
+            choice_name = display_name
+            
+        choices.append(app_commands.Choice(name=choice_name, value=full_value))
+    
+    return choices
+
+@app_commands.autocomplete(allow_perms=True)
+async def allow_perms_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for allow_perms parameter."""
+    return await permissions_autocomplete(interaction, current)
+
+@app_commands.autocomplete(deny_perms=True)
+async def deny_perms_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete for deny_perms parameter."""
+    return await permissions_autocomplete(interaction, current)
 
 class UtilitiesCog(commands.Cog):
     def __init__(self, bot):
@@ -84,6 +149,26 @@ class UtilitiesCog(commands.Cog):
     def validate_command_name(name: str) -> bool:
         """Validate command name format"""
         return re.fullmatch(r'^[\w-]{1,32}$', name) is not None
+
+    @staticmethod
+    def normalize_permission_name(perm_name: str) -> str:
+        """Convert display names like 'View Channel' to actual permission names like 'view_channel'"""
+        # Remove extra spaces and convert to lowercase
+        normalized = perm_name.strip().lower()
+        # Replace spaces with underscores
+        normalized = normalized.replace(' ', '_')
+        # Handle common variations
+        permission_mappings = {
+            'view_channels': 'view_channel',
+            'read_messages': 'view_channel',  # Legacy name
+            'use_slash_commands': 'use_application_commands',
+            'use_external_emoji': 'use_external_emojis',
+            'use_external_sticker': 'use_external_stickers',
+            'manage_emoji': 'manage_emojis_and_stickers',
+            'manage_emojis': 'manage_emojis_and_stickers',
+            'manage_stickers': 'manage_emojis_and_stickers',
+        }
+        return permission_mappings.get(normalized, normalized)
 
     # Commands
     @app_commands.command(name="create_command", description="Create a custom command")
@@ -170,7 +255,7 @@ class UtilitiesCog(commands.Cog):
                 f"Failed to create command: {str(e)}",
                 ephemeral=True
             )
-            traceback.print_exc()
+            debug_print(red("Failed to create command", exc_info=True, level="all"))
 
     async def handle_custom_command(self, interaction: discord.Interaction, cmd_data: dict):
         debug_print(f"Entering /handle_custom_command with interaction: {interaction}, cmd_data: {cmd_data}", level="all")
@@ -194,7 +279,7 @@ class UtilitiesCog(commands.Cog):
                 "❌ Error executing command",
                 ephemeral=True
             )
-            debug_print(f"[Custom Command Error]: {str(e)}")
+            debug_print(red(f"[Custom Command Error]: {str(e)}"))
 
     @app_commands.command(name="delete_command", description="Remove a custom command")
     @command_permission_check("delete_command")
@@ -205,10 +290,10 @@ class UtilitiesCog(commands.Cog):
         
         # Find command in database
         cmd = self.db.conn.execute('''
-            SELECT * FROM commands 
-            WHERE command_name = ? AND (guild_id = ? OR guild_id = '0')
+            SELECT * FROM commands
+            WHERE command_name = ? AND guild_id = ?
         ''', (command_name, guild_id)).fetchone()
-        
+
         if not cmd:
             await interaction.response.send_message(
                 f"Command '/{command_name}' not found!",
@@ -218,19 +303,16 @@ class UtilitiesCog(commands.Cog):
             
         # Delete from database
         self.db.conn.execute('''
-            DELETE FROM commands 
+            DELETE FROM commands
             WHERE command_name = ? AND guild_id = ?
-        ''', (command_name, cmd['guild_id']))
+        ''', (command_name, guild_id))
         self.db.conn.commit()
-        
+        self.bot._command_registry.pop(f"{guild_id}_{command_name}", None)
+
         # Remove from command tree
         try:
-            if cmd['guild_id'] == '0':
-                self.bot.tree.remove_command(command_name)
-                await self.bot.tree.sync()
-            else:
-                self.bot.tree.remove_command(command_name, guild=interaction.guild)
-                await self.bot.tree.sync(guild=interaction.guild)
+            self.bot.tree.remove_command(command_name, guild=interaction.guild)
+            await self.bot.tree.sync(guild=interaction.guild)
         except Exception as e:
             await interaction.response.send_message(
                 f"Command deleted but sync failed: {str(e)}",
@@ -339,6 +421,10 @@ class UtilitiesCog(commands.Cog):
         if not guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        # Check bot permissions
+        if not guild.me.guild_permissions.manage_roles:
+            await interaction.response.send_message("I need the 'Manage Roles' permission to create roles.", ephemeral=True)
+            return
         # Parse color
         role_color = None
         if color:
@@ -358,8 +444,9 @@ class UtilitiesCog(commands.Cog):
                 perms_list = [p.strip() for p in permissions.split(',') if p.strip()]
                 invalid = []
                 for p in perms_list:
-                    if hasattr(perms, p):
-                        setattr(perms, p, True)
+                    normalized_perm = self.normalize_permission_name(p)
+                    if normalized_perm in discord.Permissions.VALID_FLAGS:
+                        setattr(perms, normalized_perm, True)
                     else:
                         invalid.append(p)
                 if invalid:
@@ -376,9 +463,14 @@ class UtilitiesCog(commands.Cog):
             )
             await interaction.response.send_message(f"✅ Created role {new_role.mention}", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to create roles.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ I don't have permission to create roles with those permissions. "
+                "Make sure I have the 'Manage Roles' permission and that my role is higher than the role being created. "
+                "I also cannot grant permissions that I don't have myself.",
+                ephemeral=True
+            )
         except Exception as e:
-            await interaction.response.send_message(f"Failed to create role: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Failed to create role: {e}", ephemeral=True)
 
     @app_commands.command(name="delete_role", description="Delete a role by name or mention")
     @command_permission_check("delete_role")
@@ -404,8 +496,13 @@ class UtilitiesCog(commands.Cog):
             await role.delete(reason=f"Deleted by {interaction.user} via /delete_role")
             await interaction.response.send_message(f"✅ Deleted role `{role.name}`.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to delete that role.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ I don't have permission to delete that role. "
+                "Make sure I have the 'Manage Roles' permission and that my role is higher than the role being deleted.",
+                ephemeral=True
+            )
         except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to delete role: {e}", ephemeral=True)
             await interaction.response.send_message(f"Failed to delete role: {e}", ephemeral=True)
                 
     @app_commands.command(name="edit_role", description="Edit a role's name, color, allowed/denied permissions, mentionable, or hoist")
@@ -420,7 +517,7 @@ class UtilitiesCog(commands.Cog):
         hoist="Display role separately from online members",
         perms_integer="Permissions integer (overrides allow/deny perms if provided)"
     )
-    @app_commands.autocomplete(allow_perms=permissions_autocomplete, deny_perms=permissions_autocomplete)
+    @app_commands.autocomplete(allow_perms=allow_perms_autocomplete, deny_perms=deny_perms_autocomplete)
     async def edit_role(
         self,
         interaction: discord.Interaction,
@@ -458,24 +555,32 @@ class UtilitiesCog(commands.Cog):
         if perms_integer is not None:
             kwargs['permissions'] = discord.Permissions(perms_integer)
         elif allow_perms or deny_perms:
-            perms = role.permissions.value
-            allow = discord.Permissions(perms)
-            deny = discord.Permissions.none()
+            # Start with current role permissions
+            current_perms = role.permissions
+            perms_value = current_perms.value
+            perms = discord.Permissions(perms_value)
+            
             invalid_allow = []
             invalid_deny = []
+            
+            # Add allowed permissions
             if allow_perms:
                 for p in [perm.strip() for perm in allow_perms.split(',') if perm.strip()]:
-                    if p in discord.Permissions.VALID_FLAGS:
-                        setattr(allow, p, True)
+                    normalized_perm = self.normalize_permission_name(p)
+                    if normalized_perm in discord.Permissions.VALID_FLAGS:
+                        setattr(perms, normalized_perm, True)
                     else:
                         invalid_allow.append(p)
+            
+            # Remove denied permissions
             if deny_perms:
                 for p in [perm.strip() for perm in deny_perms.split(',') if perm.strip()]:
-                    if p in discord.Permissions.VALID_FLAGS:
-                        setattr(allow, p, False)
-                        setattr(deny, p, True)
+                    normalized_perm = self.normalize_permission_name(p)
+                    if normalized_perm in discord.Permissions.VALID_FLAGS:
+                        setattr(perms, normalized_perm, False)
                     else:
                         invalid_deny.append(p)
+            
             if invalid_allow or invalid_deny:
                 msg = ""
                 if invalid_allow:
@@ -484,7 +589,7 @@ class UtilitiesCog(commands.Cog):
                     msg += f"Invalid deny permissions: {', '.join(invalid_deny)}"
                 await interaction.response.send_message(msg, ephemeral=True)
                 return
-            kwargs['permissions'] = allow
+            kwargs['permissions'] = perms
         if mentionable is not None:
             kwargs['mentionable'] = mentionable
         if hoist is not None:
@@ -493,9 +598,14 @@ class UtilitiesCog(commands.Cog):
             await role.edit(reason=f"Edited by {interaction.user} via /edit_role", **kwargs)
             await interaction.response.send_message(f"✅ Edited role `{role.name}`.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to edit that role.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ I don't have permission to edit that role. "
+                "Make sure I have the 'Manage Roles' permission, that my role is higher than the role being edited, "
+                "and that I'm not trying to grant permissions I don't have myself.",
+                ephemeral=True
+            )
         except Exception as e:
-            await interaction.response.send_message(f"Failed to edit role: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Failed to edit role: {e}", ephemeral=True)
 
     @app_commands.command(name="create_channel", description="Create a new text or voice channel")
     @command_permission_check("create_channel")
@@ -529,7 +639,9 @@ class UtilitiesCog(commands.Cog):
             overwrites = None
             if perms_integer is not None:
                 everyone = guild.default_role
-                overwrites = {everyone: discord.PermissionOverwrite.from_pair(discord.Permissions(perms_integer), discord.Permissions.none())}
+                perms_obj = discord.Permissions(perms_integer)
+                overwrites = {everyone: discord.PermissionOverwrite.from_pair(perms_obj, discord.Permissions.none())}
+            
             if type.value == "text":
                 channel = await guild.create_text_channel(name=name, category=category, overwrites=overwrites, reason=f"Created by {interaction.user} via /create_channel")
             elif type.value == "voice":
@@ -579,7 +691,7 @@ class UtilitiesCog(commands.Cog):
         deny_perms="Comma-separated permissions to deny (optional)",
         perms_integer="Permissions integer for target (optional, overrides allow/deny perms)"
     )
-    @app_commands.autocomplete(allow_perms=permissions_autocomplete, deny_perms=permissions_autocomplete)
+    @app_commands.autocomplete(allow_perms=allow_perms_autocomplete, deny_perms=deny_perms_autocomplete)
     async def edit_channel(
         self,
         interaction: discord.Interaction,
@@ -620,39 +732,52 @@ class UtilitiesCog(commands.Cog):
             if not overwrite_target:
                 await interaction.response.send_message("Target role or user not found.", ephemeral=True)
                 return
+            
+            # Get current overwrites
+            overwrites = dict(channel.overwrites)
+            current_overwrite = overwrites.get(overwrite_target, discord.PermissionOverwrite())
+            
             # Build permissions
             if perms_integer is not None:
+                # If perms_integer is provided, replace the entire overwrite
                 perms_obj = discord.Permissions(perms_integer)
                 perms_dict = {perm: getattr(perms_obj, perm) for perm in discord.Permissions.VALID_FLAGS}
+                overwrites[overwrite_target] = discord.PermissionOverwrite(**perms_dict)
             else:
-                allow = discord.Permissions.none()
-                deny = discord.Permissions.none()
+                # Use allow/deny perms to modify existing permissions
                 invalid_allow = []
                 invalid_deny = []
+                
+                # Create a new overwrite based on current one
+                new_overwrite_dict = {}
+                for perm in discord.Permissions.VALID_FLAGS:
+                    current_value = getattr(current_overwrite, perm)
+                    new_overwrite_dict[perm] = current_value
+                
+                # Apply allow permissions (set to True)
                 if allow_perms:
                     for p in [perm.strip() for perm in allow_perms.split(',') if perm.strip()]:
-                        if hasattr(allow, p):
-                            setattr(allow, p, True)
+                        normalized_perm = self.normalize_permission_name(p)
+                        if normalized_perm in discord.Permissions.VALID_FLAGS:
+                            new_overwrite_dict[normalized_perm] = True
                         else:
                             invalid_allow.append(p)
+                
+                # Apply deny permissions (set to False)
                 if deny_perms:
                     for p in [perm.strip() for perm in deny_perms.split(',') if perm.strip()]:
-                        if hasattr(deny, p):
-                            setattr(deny, p, True)
+                        normalized_perm = self.normalize_permission_name(p)
+                        if normalized_perm in discord.Permissions.VALID_FLAGS:
+                            new_overwrite_dict[normalized_perm] = False
                         else:
                             invalid_deny.append(p)
+                
                 if invalid_allow or invalid_deny:
                     await interaction.response.send_message(f"Invalid permissions: Allow: {', '.join(invalid_allow)} Deny: {', '.join(invalid_deny)}", ephemeral=True)
                     return
-                perms_dict = {}
-                for perm in discord.Permissions.VALID_FLAGS:
-                    if getattr(allow, perm, False):
-                        perms_dict[perm] = True
-                    elif getattr(deny, perm, False):
-                        perms_dict[perm] = False
-            # Get current overwrites
-            overwrites = dict(channel.overwrites)
-            overwrites[overwrite_target] = discord.PermissionOverwrite(**perms_dict)
+                
+                overwrites[overwrite_target] = discord.PermissionOverwrite(**new_overwrite_dict)
+            
             kwargs['overwrites'] = overwrites
         try:
             await channel.edit(reason=f"Edited by {interaction.user} via /edit_channel", **kwargs)
@@ -712,7 +837,7 @@ class UtilitiesCog(commands.Cog):
             await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         else:
             await interaction.response.send_message("An error occurred while executing this command.", ephemeral=True)
-            debug_print(f"[Purge Error]: {error}")
+            debug_print(red(f"[Purge Error]: {error}"))
 
     @app_commands.command(name="purge_after", description="Delete messages after a specific message ID")
     @command_permission_check("purge_after")
@@ -796,12 +921,12 @@ class UtilitiesCog(commands.Cog):
 
     @purge_after.error
     async def purge_after_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        debug_print(f"Entering purge_after_error with interaction: {interaction}, error: {error}", level="all")
+        debug_print(red(f"Entering purge_after_error with interaction: {interaction}, error: {error}", level="all"))
         if isinstance(error, app_commands.CheckFailure):
             await interaction.response.send_message("❌ You need manage messages permissions to use this command.", ephemeral=True)
         else:
             await interaction.response.send_message("⚠️ An error occurred while processing this command.", ephemeral=True)
-            debug_print(f"[Purge After Error]: {str(error)}")
+            debug_print(red(f"[Purge After Error]: {str(error)}"))
 
     async def _create_role_menu(self, interaction, menu_type):
         debug_print(f"Entering _create_role_menu with interaction: {interaction}, menu_type: {menu_type}", level="all")
@@ -841,6 +966,183 @@ class UtilitiesCog(commands.Cog):
         debug_print(f"Entering /create_button with interaction: {interaction}", level="all")
         await self._create_role_menu(interaction, "button")
 
+    @app_commands.command(name="send_message", description="Send a message to a specific channel")
+    @command_permission_check("send_message")
+    @app_commands.describe(
+        channel="Channel to send the message to",
+        message="Message content to send"
+    )
+    async def send_message(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        message: str
+    ):
+        debug_print(f"Entering /send_message with interaction: {interaction}, channel: {channel}, message: {message}", level="all")
+        
+        # Check bot permissions for the target channel
+        if not channel.permissions_for(interaction.guild.me).send_messages:
+            await interaction.response.send_message(
+                f"❌ I don't have permission to send messages in {channel.mention}",
+                ephemeral=True
+            )
+            return
+            
+        # Check if user has permission to send messages in the target channel
+        if not channel.permissions_for(interaction.user).send_messages:
+            await interaction.response.send_message(
+                f"❌ You don't have permission to send messages in {channel.mention}",
+                ephemeral=True
+            )
+            return
+
+        try:
+            # Add the "Sent by @user" footer to the message
+            full_message = f"{message}\n\n-# *Sent by {interaction.user.mention}*"
+            
+            # Send the message to the target channel
+            sent_message = await channel.send(full_message)
+            
+            # Respond to the user with success
+            await interaction.response.send_message(
+                f"✅ Message sent to {channel.mention}: {sent_message.jump_url}",
+                ephemeral=True
+            )
+            
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"❌ I don't have permission to send messages in {channel.mention}",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                "❌ Error sending message",
+                ephemeral=True
+            )
+            debug_print(red(f"[Send Message Error]: {str(e)}"))
+
+    @app_commands.command(name="delete_message", description="Delete a message by its ID")
+    @command_permission_check("delete_message")
+    @app_commands.describe(message_id="ID of the message to delete")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def delete_message(
+        self,
+        interaction: discord.Interaction,
+        message_id: str
+    ):
+        debug_print(f"Entering /delete_message with interaction: {interaction}, message_id: {message_id}", level="all")
+        
+        # Validate message ID format
+        try:
+            message_id_int = int(message_id)
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid message ID format. Please provide a valid Discord message ID.",
+                ephemeral=True
+            )
+            return
+
+        # Check bot permissions
+        if not interaction.guild.me.guild_permissions.manage_messages:
+            await interaction.response.send_message(
+                "❌ I don't have permission to manage messages",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Try to find and delete the message in the current channel first
+            try:
+                message = await interaction.channel.fetch_message(message_id_int)
+                await message.delete()
+                
+                # Log the deletion
+                description = f"**Moderator:** {interaction.user.mention}\n**Channel:** {interaction.channel.mention}\n**Message ID:** {message_id}"
+                await log_event(
+                    interaction.guild,
+                    "message_delete",
+                    "Message Deleted",
+                    description,
+                    color=discord.Color.red()
+                )
+                
+                await interaction.followup.send(
+                    f"✅ Message with ID `{message_id}` has been deleted from {interaction.channel.mention}",
+                    ephemeral=True
+                )
+                return
+                
+            except discord.NotFound:
+                # If not found in current channel, search other channels
+                found_and_deleted = False
+                
+                for channel in interaction.guild.text_channels:
+                    if not channel.permissions_for(interaction.guild.me).read_message_history:
+                        continue
+                        
+                    try:
+                        message = await channel.fetch_message(message_id_int)
+                        
+                        # Check if bot has permission to delete in this channel
+                        if not channel.permissions_for(interaction.guild.me).manage_messages:
+                            await interaction.followup.send(
+                                f"❌ Found message in {channel.mention} but I don't have permission to delete messages there",
+                                ephemeral=True
+                            )
+                            return
+                            
+                        await message.delete()
+                        
+                        # Log the deletion
+                        description = f"**Moderator:** {interaction.user.mention}\n**Channel:** {channel.mention}\n**Message ID:** {message_id}"
+                        await log_event(
+                            interaction.guild,
+                            "message_delete",
+                            "Message Deleted",
+                            description,
+                            color=discord.Color.red()
+                        )
+                        
+                        await interaction.followup.send(
+                            f"✅ Message with ID `{message_id}` has been deleted from {channel.mention}",
+                            ephemeral=True
+                        )
+                        found_and_deleted = True
+                        break
+                        
+                    except discord.NotFound:
+                        continue
+                    except discord.Forbidden:
+                        continue
+                
+                if not found_and_deleted:
+                    await interaction.followup.send(
+                        f"❌ Could not find a message with ID `{message_id}` in any accessible channel",
+                        ephemeral=True
+                    )
+                    
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I don't have permission to delete that message",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Error deleting message",
+                ephemeral=True
+            )
+            debug_print(red(f"[Delete Message Error]: {str(e)}"))
+
+    @delete_message.error
+    async def delete_message_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        debug_print(red(f"Entering delete_message_error with interaction: {interaction}, error: {error}", level="all"))
+        if isinstance(error, app_commands.CheckFailure):
+            await interaction.response.send_message("❌ You need the 'Manage Messages' permission to use this command.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ An error occurred while trying to delete the message.", ephemeral=True)
+
     @app_commands.command(name="setlogchannel", description="Set the channel for logging events")
     @command_permission_check("setlogchannel")
     @app_commands.describe(channel="The channel to use for logging")
@@ -867,12 +1169,11 @@ class UtilitiesCog(commands.Cog):
         )
     
     @app_commands.command(name="help", description="Show information about available commands")
-    @command_permission_check("help")
     async def help(self, interaction: discord.Interaction):
         debug_print(f"Entering /help with interaction: {interaction}", level="all")
         """Display a help message with available commands."""
         embed = discord.Embed(
-            title="**SentinelBot Help**",
+            title="**RuleKeeper Help**",
             description=(
                 "**Here are some commands you can use to start:**\n"
                 "**Or check the [documentation](https://docs.rulekeeper.cc/) for more details and commands.**"
@@ -928,7 +1229,7 @@ class UtilitiesCog(commands.Cog):
             )
         except Exception as e:
             await interaction.response.send_message("Command error!", ephemeral=True)
-            debug_print(f"[Custom Command Error]: {str(e)}")
+            debug_print(red(f"[Custom Command Error]: {str(e)}"))
 
 async def setup(bot):
     await bot.add_cog(UtilitiesCog(bot))
