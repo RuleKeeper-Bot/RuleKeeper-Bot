@@ -16,6 +16,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Read version from version.txt
+        id: version
+        run: echo "VERSION=$(cat version.txt | tr -d '\n')" >> $GITHUB_OUTPUT
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -34,7 +38,9 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/rulekeeper-bot:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/rulekeeper-bot:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/rulekeeper-bot:${{ steps.version.outputs.VERSION }}
 
   binaries:
     strategy:
@@ -148,24 +154,24 @@ jobs:
     needs: binaries
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version from version.txt
+        id: version
+        run: echo "VERSION=$(cat version.txt | tr -d '\n')" >> $GITHUB_OUTPUT
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
 
-      - name: Delete old continuous release (if exists)
-        uses: dev-drprasad/delete-tag-and-release@v1.1
-        with:
-          tag_name: continuous
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-
-      - name: Create new continuous release
+      - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: continuous
-          name: Continuous Release
-          body: "Latest build of rulekeeper-bot for all platforms."
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Release v${{ steps.version.outputs.VERSION }}
+          body: "Release v${{ steps.version.outputs.VERSION }} of rulekeeper-bot for all platforms."
           files: |
             artifacts/rulekeeper-bot-ubuntu-latest-x86_64/*
             artifacts/rulekeeper-bot-ubuntu-latest-arm64/*
