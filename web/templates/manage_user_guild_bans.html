@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage User & Guild Bans</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+        
+        .container-fluid {
+            min-height: 100vh;
+        }
+        
+        /* Limit full-height to the top-level layout row only */
+        .page-row {
+            min-height: 100vh;
+        }
+        
+        .sidebar {
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 100;
+            padding: 0;
+            box-shadow: inset -1px 0 0 rgba(0, 0, 0, .1);
+            overflow-y: auto;
+        }
+        
+        main {
+            margin-left: 16.666667%; /* Matches col-md-2 width */
+        }
+        
+        @media (max-width: 767.98px) {
+            .sidebar {
+                position: relative;
+            }
+            
+            main {
+                margin-left: 0;
+            }
+        }
+        
+        .card {
+            box-shadow: 0 0.125rem 0.25rem rgba(0,0,0,0.075);
+        }
+        
+        .table code {
+            background-color: #f8f9fa;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+        
+        .btn-group-sm > .btn {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+        }
+        
+        .nav-tabs .nav-link.active {
+            font-weight: bold;
+        }
+    </style>
+    {% include 'dark_mode_include.html' %}
+</head>
+<body>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="container-fluid">
+        <div class="row page-row">
+            <!-- Sidebar -->
+            <nav class="col-md-2 d-none d-md-block bg-light sidebar">
+                <div class="sidebar-sticky pt-3">
+                    <h6 class="sidebar-heading d-flex justify-content-between align-items-center px-3 mb-3 text-muted">
+                        <span>Admin Panel</span>
+                    </h6>
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_dashboard') }}">
+                                <i class="bi bi-speedometer2 me-2"></i>
+                                Dashboard
+                            </a>
+                        </li>
+                        {% if is_head_admin() %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_bot_admins') }}">
+                                <i class="bi bi-people-fill me-2"></i>
+                                Manage Bot Admins
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_ip_bans') }}">
+                                <i class="bi bi-shield-x me-2"></i>
+                                IP Bans
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active" href="{{ url_for('manage_user_guild_bans') }}">
+                                <i class="bi bi-person-x me-2"></i>
+                                User & Guild Bans
+                            </a>
+                        </li>
+                        {% endif %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_guilds') }}">
+                                <i class="bi bi-discord me-2"></i>
+                                Manage Guilds
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_announcements') }}">
+                                <i class="bi bi-megaphone me-2"></i>
+                                Announcements
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_audit_log') }}">
+                                <i class="bi bi-clock-history me-2"></i>
+                                Audit Log
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('settings') }}">
+                                <i class="bi bi-gear me-2"></i>
+                                Settings
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+
+            <!-- Main Content -->
+            <main role="main" class="col-md-9 ml-sm-auto col-lg-10 px-4 py-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2"><i class="bi bi-person-x me-2"></i>User & Guild Ban Management</h1>
+                    <div class="btn-toolbar mb-2 mb-md-0">
+                        <div class="btn-group mr-2">
+                            <span class="btn btn-sm btn-outline-secondary">
+                                Logged in as: <strong>{{ 'Head Admin' if is_head_admin() else 'Bot Admin' }}</strong>
+                            </span>
+                        </div>
+                        <div class="btn-group">
+                            <a href="{{ url_for('admin_dashboard') }}" class="btn btn-outline-primary btn-sm me-2">
+                                <i class="bi bi-arrow-left"></i> Back to Dashboard
+                            </a>
+                            <a href="{{ url_for('logout_admin') }}" class="btn btn-danger btn-sm">
+                                <i class="bi bi-box-arrow-right"></i> Logout
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tabs for User vs Guild Bans -->
+                <ul class="nav nav-tabs mb-4" id="banTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-bans" 
+                                type="button" role="tab" aria-controls="user-bans" aria-selected="true">
+                            <i class="bi bi-person-x"></i> User Bans ({{ user_bans|length }})
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="guild-tab" data-bs-toggle="tab" data-bs-target="#guild-bans" 
+                                type="button" role="tab" aria-controls="guild-bans" aria-selected="false">
+                            <i class="bi bi-discord"></i> Guild Bans ({{ guild_bans|length }})
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="banTabsContent">
+                    <!-- User Bans Tab -->
+                    <div class="tab-pane fade show active" id="user-bans" role="tabpanel" aria-labelledby="user-tab">
+                        <!-- Add User Ban Form -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-danger text-white">
+                                <h5 class="mb-0"><i class="bi bi-person-x"></i> Ban User</h5>
+                            </div>
+                            <div class="card-body">
+                                <form method="POST" action="{{ url_for('manage_user_guild_bans') }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="action" value="add">
+                                    <input type="hidden" name="ban_type" value="user">
+                                    
+                                    <div class="row">
+                                        <div class="col-md-3">
+                                            <div class="mb-3">
+                                                <label for="user_id" class="form-label">User ID *</label>
+                                                <input type="text" class="form-control" id="user_id" name="user_id" 
+                                                       placeholder="123456789012345678" required>
+                                                <small class="text-muted">Discord User ID</small>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="mb-3">
+                                                <label for="username" class="form-label">Username (Optional)</label>
+                                                <input type="text" class="form-control" id="username" name="username" 
+                                                       placeholder="username#0000">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="mb-3">
+                                                <label for="user_reason" class="form-label">Reason *</label>
+                                                <input type="text" class="form-control" id="user_reason" name="reason" 
+                                                       placeholder="Reason for ban" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <div class="mb-3">
+                                                <label for="user_expires_at" class="form-label">Expires At</label>
+                                                <input type="datetime-local" class="form-control" id="user_expires_at" name="expires_at">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <button type="submit" class="btn btn-danger">
+                                        <i class="bi bi-person-x"></i> Ban User
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Active User Bans -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-dark text-white">
+                                <h5 class="mb-0"><i class="bi bi-people"></i> Active User Bans ({{ user_bans|length }})</h5>
+                            </div>
+                            <div class="card-body">
+                                {% if user_bans %}
+                                    <div class="table-responsive">
+                                        <table class="table table-striped table-hover">
+                                            <thead>
+                                                <tr>
+                                                    <th>User ID</th>
+                                                    <th>Username</th>
+                                                    <th>Reason</th>
+                                                    <th>Banned By</th>
+                                                    <th>Banned At</th>
+                                                    <th>Expires At</th>
+                                                    <th>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for ban in user_bans %}
+                                                    <tr>
+                                                        <td><code>{{ ban.user_id }}</code></td>
+                                                        <td>{{ ban.username or 'N/A' }}</td>
+                                                        <td>{{ ban.reason }}</td>
+                                                        <td>{{ ban.banned_by }}</td>
+                                                        <td>{{ ban.banned_at }}</td>
+                                                        <td>
+                                                            {% if ban.expires_at %}
+                                                                {{ ban.expires_at }}
+                                                            {% else %}
+                                                                <span class="badge bg-warning">Permanent</span>
+                                                            {% endif %}
+                                                        </td>
+                                                        <td>
+                                                            <form method="POST" action="{{ url_for('manage_user_guild_bans') }}" style="display: inline;">
+                                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                <input type="hidden" name="action" value="remove">
+                                                                <input type="hidden" name="ban_type" value="user">
+                                                                <input type="hidden" name="ban_id" value="{{ ban.id }}">
+                                                                <button type="submit" class="btn btn-sm btn-success"
+                                                                        onclick="return confirm('Are you sure you want to unban this user?');">
+                                                                    <i class="bi bi-check"></i> Unban
+                                                                </button>
+                                                            </form>
+                                                        </td>
+                                                    </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                {% else %}
+                                    <div class="alert alert-info mb-0">
+                                        <i class="bi bi-info-circle"></i> No active user bans found.
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <!-- Recently Expired User Bans -->
+                        {% if expired_user_bans %}
+                            <div class="card">
+                                <div class="card-header bg-secondary text-white">
+                                    <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recently Expired User Bans</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>User ID</th>
+                                                    <th>Username</th>
+                                                    <th>Reason</th>
+                                                    <th>Banned At</th>
+                                                    <th>Expired At</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for ban in expired_user_bans %}
+                                                    <tr class="text-muted">
+                                                        <td><code>{{ ban.user_id }}</code></td>
+                                                        <td>{{ ban.username or 'N/A' }}</td>
+                                                        <td>{{ ban.reason }}</td>
+                                                        <td>{{ ban.banned_at }}</td>
+                                                        <td>{{ ban.expires_at }}</td>
+                                                    </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Guild Bans Tab -->
+                    <div class="tab-pane fade" id="guild-bans" role="tabpanel" aria-labelledby="guild-tab">
+                        <!-- Add Guild Ban Form -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-danger text-white">
+                                <h5 class="mb-0"><i class="bi bi-discord"></i> Ban Guild</h5>
+                            </div>
+                            <div class="card-body">
+                                <form method="POST" action="{{ url_for('manage_user_guild_bans') }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <input type="hidden" name="action" value="add">
+                                    <input type="hidden" name="ban_type" value="guild">
+                                    
+                                    <div class="row">
+                                        <div class="col-md-3">
+                                            <div class="mb-3">
+                                                <label for="guild_id" class="form-label">Guild ID *</label>
+                                                <input type="text" class="form-control" id="guild_id" name="guild_id" 
+                                                       placeholder="123456789012345678" required>
+                                                <small class="text-muted">Discord Guild ID</small>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <div class="mb-3">
+                                                <label for="guild_name" class="form-label">Guild Name (Optional)</label>
+                                                <input type="text" class="form-control" id="guild_name" name="guild_name" 
+                                                       placeholder="Guild Name">
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="mb-3">
+                                                <label for="guild_reason" class="form-label">Reason *</label>
+                                                <input type="text" class="form-control" id="guild_reason" name="reason" 
+                                                       placeholder="Reason for ban" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <div class="mb-3">
+                                                <label for="guild_expires_at" class="form-label">Expires At</label>
+                                                <input type="datetime-local" class="form-control" id="guild_expires_at" name="expires_at">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <button type="submit" class="btn btn-danger">
+                                        <i class="bi bi-discord"></i> Ban Guild
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Active Guild Bans -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-dark text-white">
+                                <h5 class="mb-0"><i class="bi bi-server"></i> Active Guild Bans ({{ guild_bans|length }})</h5>
+                            </div>
+                            <div class="card-body">
+                                {% if guild_bans %}
+                                    <div class="table-responsive">
+                                        <table class="table table-striped table-hover">
+                                            <thead>
+                                                <tr>
+                                                    <th>Guild ID</th>
+                                                    <th>Guild Name</th>
+                                                    <th>Reason</th>
+                                                    <th>Banned By</th>
+                                                    <th>Banned At</th>
+                                                    <th>Expires At</th>
+                                                    <th>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for ban in guild_bans %}
+                                                    <tr>
+                                                        <td><code>{{ ban.guild_id }}</code></td>
+                                                        <td>{{ ban.guild_name or 'N/A' }}</td>
+                                                        <td>{{ ban.reason }}</td>
+                                                        <td>{{ ban.banned_by }}</td>
+                                                        <td>{{ ban.banned_at }}</td>
+                                                        <td>
+                                                            {% if ban.expires_at %}
+                                                                {{ ban.expires_at }}
+                                                            {% else %}
+                                                                <span class="badge bg-warning">Permanent</span>
+                                                            {% endif %}
+                                                        </td>
+                                                        <td>
+                                                            <form method="POST" action="{{ url_for('manage_user_guild_bans') }}" style="display: inline;">
+                                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                                <input type="hidden" name="action" value="remove">
+                                                                <input type="hidden" name="ban_type" value="guild">
+                                                                <input type="hidden" name="ban_id" value="{{ ban.id }}">
+                                                                <button type="submit" class="btn btn-sm btn-success"
+                                                                        onclick="return confirm('Are you sure you want to unban this guild?');">
+                                                                    <i class="bi bi-check"></i> Unban
+                                                                </button>
+                                                            </form>
+                                                        </td>
+                                                    </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                {% else %}
+                                    <div class="alert alert-info mb-0">
+                                        <i class="bi bi-info-circle"></i> No active guild bans found.
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <!-- Recently Expired Guild Bans -->
+                        {% if expired_guild_bans %}
+                            <div class="card">
+                                <div class="card-header bg-secondary text-white">
+                                    <h5 class="mb-0"><i class="bi bi-clock-history"></i> Recently Expired Guild Bans</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Guild ID</th>
+                                                    <th>Guild Name</th>
+                                                    <th>Reason</th>
+                                                    <th>Banned At</th>
+                                                    <th>Expired At</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for ban in expired_guild_bans %}
+                                                    <tr class="text-muted">
+                                                        <td><code>{{ ban.guild_id }}</code></td>
+                                                        <td>{{ ban.guild_name or 'N/A' }}</td>
+                                                        <td>{{ ban.reason }}</td>
+                                                        <td>{{ ban.banned_at }}</td>
+                                                        <td>{{ ban.expires_at }}</td>
+                                                    </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+                    <p>
+                        &copy; 2025 RuleKeeper. All rights reserved. |
+                        <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+                        <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+                        <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+                    </p>
+                </footer>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

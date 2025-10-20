@@ -18,6 +18,7 @@ import random
 from typing import Literal, Optional
 from datetime import timedelta
 from shared import command_permission_check
+from shared.colors import red
 try:
     from bot.bot import debug_print, db
 except ImportError:
@@ -276,7 +277,7 @@ class TrackSelectButton(Button):
                 await interaction.response.send_message("Failed to add track. Please try again.", ephemeral=True)
             else:
                 await interaction.followup.send("Failed to add track. Please try again.", ephemeral=True)
-            debug_print(f"Button callback error: {e}")
+            debug_print(red(f"Button callback error: {e}"))
 
 class Music(commands.Cog):
     def _format_duration(self, seconds):
@@ -330,7 +331,7 @@ class Music(commands.Cog):
                     return requests.get(search_url, headers=headers, timeout=12).text
                 html_text = await asyncio.get_event_loop().run_in_executor(None, _get)
         except Exception as e:
-            debug_print(f"Fallback SC search fetch failed: {e}")
+            debug_print(red(f"Fallback SC search fetch failed: {e}"))
             return []
 
         if not html_text:
@@ -403,14 +404,25 @@ class Music(commands.Cog):
         else:
             bar = '🔘' + '▬' * (bar_length - 1)
             time_str = "`Live`"
+        
+        # Format title with link for SoundCloud, plain text for local files
+        if state.now_playing.get('is_local_file'):
+            title_text = f"**{state.now_playing['title']}**"
+        else:
+            title_text = f"[{state.now_playing['title']}]({state.now_playing['url']})"
+        
         embed = discord.Embed(
             title="Now Playing",
-            description=f"[{state.now_playing['title']}]({state.now_playing['url']})\n{bar}\n{time_str}",
+            description=f"{title_text}\n{bar}\n{time_str}",
             color=discord.Color.blurple()
         )
         embed.add_field(name="Duration", value=self._format_duration(duration), inline=True)
         embed.add_field(name="Requested by", value=state.now_playing['requester'].mention, inline=True)
-        embed.set_image(url=state.now_playing.get('thumbnail', ''))
+        
+        # Only set thumbnail if available
+        if state.now_playing.get('thumbnail'):
+            embed.set_image(url=state.now_playing['thumbnail'])
+        
         try:
             await state.last_play_msg.edit(embed=embed)
         except Exception:
@@ -427,7 +439,7 @@ class Music(commands.Cog):
         self.guild_states = defaultdict(GuildMusicState)
         
     async def play_next(self, guild, error=None):
-        debug_print(f"Entering play_next with guild: {guild}, error: {error}", level="all")
+        debug_print(red(f"Entering play_next with guild: {guild}, error: {error}"), level="all")
         state = self.guild_states[guild.id]
 
         # Before moving on, update the embed for the song that just finished.
@@ -438,21 +450,41 @@ class Music(commands.Cog):
                 bar = '▬' * bar_length + '🔘'
                 time_str = f"`{self._format_duration(duration)}` / `{self._format_duration(duration)}`"
                 
+                # Format title with link for SoundCloud, plain text for local files
+                if state.now_playing.get('is_local_file'):
+                    title_text = f"**{state.now_playing['title']}**"
+                else:
+                    title_text = f"[{state.now_playing['title']}]({state.now_playing['url']})"
+                
                 embed = discord.Embed(
                     title="Finished Playing",
-                    description=f"[{state.now_playing['title']}]({state.now_playing['url']})\n{bar}\n{time_str}",
+                    description=f"{title_text}\n{bar}\n{time_str}",
                     color=discord.Color.green()
                 )
                 embed.add_field(name="Duration", value=self._format_duration(duration), inline=True)
                 embed.add_field(name="Requested by", value=state.now_playing['requester'].mention, inline=True)
-                embed.set_image(url=state.now_playing.get('thumbnail', ''))
+                
+                # Only set thumbnail if available
+                if state.now_playing.get('thumbnail'):
+                    embed.set_image(url=state.now_playing['thumbnail'])
+                
                 try:
                     await state.last_play_msg.edit(embed=embed)
                 except Exception:
                     pass # Ignore if message was deleted
+            
+            # Clean up local file if it was one
+            if state.now_playing.get('is_local_file'):
+                try:
+                    file_path = state.now_playing['url']
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        debug_print(f"Cleaned up temporary file: {file_path}", level="all")
+                except Exception as e:
+                    debug_print(red(f"Failed to clean up temporary file: {e}"))
 
         if error:
-            debug_print(f"Player error: {error}")
+            debug_print(red(f"Player error: {error}"))
         if state.voice_client is None or not state.voice_client.is_connected():
             return
 
@@ -468,8 +500,8 @@ class Music(commands.Cog):
         # Only send 'Queue finished!' if there was something playing before and now there is nothing left to play
         queue_was_active = state.now_playing is not None or state.queue
 
-        # Skip tracks with invalid URLs
-        while next_track and (
+        # Skip tracks with invalid URLs (but allow local files)
+        while next_track and not next_track.get('is_local_file') and (
             not isinstance(next_track.get('url'), str) 
             or 'api.soundcloud.com' in next_track['url'].lower()
             or 'soundcloud:tracks:' in next_track['url']
@@ -499,9 +531,24 @@ class Music(commands.Cog):
         state.paused_at = None
         state.total_paused = 0
         try:
-            source = await YTDLSource.from_url(next_track['url'], loop=self.bot.loop, stream=True)
-            source.volume = state.volume
-            state.voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild, e)))
+            # Check if this is a local file
+            if next_track.get('is_local_file'):
+                # Play local file directly with FFmpeg
+                ffmpeg_params = {
+                    'options': '-vn -acodec pcm_s16le -ar 48000 -ac 2',
+                    'executable': 'ffmpeg'
+                }
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(next_track['url'], **ffmpeg_params),
+                    volume=state.volume
+                )
+                state.voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild, e)))
+            else:
+                # Play from URL (SoundCloud)
+                source = await YTDLSource.from_url(next_track['url'], loop=self.bot.loop, stream=True)
+                source.volume = state.volume
+                state.voice_client.play(source, after=lambda e: self.bot.loop.create_task(self.play_next(guild, e)))
+            
             state.song_start_time = int(time.time())
             # Now Playing embed with progress bar
             if state.text_channel:
@@ -516,14 +563,25 @@ class Music(commands.Cog):
                 else:
                     bar = '🔘' + '▬' * (bar_length - 1)
                     time_str = "`Live`"
+                
+                # Format title with link for SoundCloud, plain text for local files
+                if next_track.get('is_local_file'):
+                    title_text = f"**{next_track['title']}**"
+                else:
+                    title_text = f"[{next_track['title']}]({next_track['url']})"
+                
                 embed = discord.Embed(
                     title="Now Playing",
-                    description=f"[{next_track['title']}]({next_track['url']})\n{bar}\n{time_str}",
+                    description=f"{title_text}\n{bar}\n{time_str}",
                     color=discord.Color.blurple()
                 )
                 embed.add_field(name="Duration", value=self._format_duration(duration), inline=True)
                 embed.add_field(name="Requested by", value=next_track['requester'].mention, inline=True)
-                embed.set_image(url=next_track.get('thumbnail', ''))
+                
+                # Only set thumbnail if available
+                if next_track.get('thumbnail'):
+                    embed.set_image(url=next_track['thumbnail'])
+                
                 # If there is an old message, try to delete it
                 if state.last_play_msg:
                     try:
@@ -539,11 +597,33 @@ class Music(commands.Cog):
                 await channel.send(f"Error playing track: {e}")
             await self.play_next(guild)
 
-    @app_commands.command(name="play", description="Play music from SoundCloud")
+    @app_commands.command(name="play", description="Play music from various sources")
     @command_permission_check("play")
-    @app_commands.describe(query="Song name or SoundCloud URL")
-    async def play(self, interaction: discord.Interaction, query: str):
-        debug_print(f"Entering /play with interaction: {interaction}, query: {query}", level="all")
+    @app_commands.describe(
+        query="Search for a song on SoundCloud",
+        url="Play from a SoundCloud URL",
+        playlist="Play from one of your playlists",
+        file="Upload an audio file to play"
+    )
+    async def play(
+        self, 
+        interaction: discord.Interaction, 
+        query: Optional[str] = None,
+        url: Optional[str] = None,
+        playlist: Optional[str] = None,
+        file: Optional[discord.Attachment] = None
+    ):
+        debug_print(f"Entering /play with interaction: {interaction}, query: {query}, url: {url}, playlist: {playlist}, file: {file}", level="all")
+        
+        # Check that exactly one option is provided
+        options_provided = sum([query is not None, url is not None, playlist is not None, file is not None])
+        if options_provided == 0:
+            await interaction.response.send_message("Please provide one of: query, url, playlist, or file", ephemeral=True)
+            return
+        if options_provided > 1:
+            await interaction.response.send_message("Please provide only one option at a time", ephemeral=True)
+            return
+        
         await interaction.response.defer(ephemeral=True)
 
         if not interaction.user.voice:
@@ -561,13 +641,86 @@ class Music(commands.Cog):
 
         state.text_channel = interaction.channel.id
 
-        if urlparse(query).scheme in ('http', 'https'):
-            if 'soundcloud.com' not in query.lower():
+        # Handle file upload
+        if file is not None:
+            # Validate file type
+            if not any(file.filename.lower().endswith(ext) for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.webm', '.opus']):
+                await interaction.followup.send("Unsupported file type. Please upload an audio file (mp3, wav, ogg, m4a, flac, webm, opus)", ephemeral=True)
+                return
+            
+            # Check file size (Discord limit is 25MB for most servers, 50MB for boosted)
+            if file.size > 50 * 1024 * 1024:  # 50MB
+                await interaction.followup.send("File too large. Maximum size is 50MB", ephemeral=True)
+                return
+            
+            try:
+                # Create a temporary directory if it doesn't exist
+                temp_dir = os.path.join(os.path.dirname(__file__), '..', 'temp_audio')
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                # Save the file temporarily
+                file_path = os.path.join(temp_dir, f"{interaction.guild.id}_{interaction.user.id}_{file.filename}")
+                await file.save(file_path)
+                
+                # Get audio duration using ffmpeg (ffprobe)
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    duration = int(float(result.stdout.strip())) if result.stdout.strip() else None
+                except Exception:
+                    duration = None
+                
+                track = {
+                    'title': file.filename,
+                    'url': file_path,  # Store local file path
+                    'duration': duration,
+                    'requester': interaction.user,
+                    'thumbnail': None,
+                    'is_local_file': True  # Flag to indicate this is a local file
+                }
+                state.queue.append(track)
+                await interaction.followup.send(f"Added **{track['title']}** to queue", ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"Error processing file: {e}", ephemeral=True)
+                return
+
+        # Handle playlist
+        elif playlist is not None:
+            user_id = str(interaction.user.id)
+            playlists = db.get_user_playlists(user_id)
+            pl = next((p for p in playlists if p['playlist_id'] == playlist), None)
+            if not pl:
+                await interaction.followup.send("Playlist not found.", ephemeral=True)
+                return
+            tracks = db.get_playlist_tracks(playlist, user_id)
+            if not tracks:
+                await interaction.followup.send("This playlist is empty.", ephemeral=True)
+                return
+            
+            # Add all tracks to queue
+            for t in tracks:
+                state.queue.append({
+                    'title': t['title'],
+                    'url': t['url'],
+                    'duration': t.get('duration'),
+                    'requester': interaction.user,
+                    'thumbnail': t.get('thumbnail')
+                })
+            await interaction.followup.send(f"▶️ Added {len(tracks)} tracks from **{pl['name']}** to the queue.", ephemeral=True)
+
+        # Handle URL
+        elif url is not None:
+            if 'soundcloud.com' not in url.lower():
                 await interaction.followup.send("Only SoundCloud URLs are supported", ephemeral=True)
                 return
 
             try:
-                data = await YTDLSource.from_url(query, loop=self.bot.loop, stream=True)
+                data = await YTDLSource.from_url(url, loop=self.bot.loop, stream=True)
                 # Use the largest thumbnail available from data.data['thumbnails'] if present
                 thumbnails = data.data.get('thumbnails', [])
                 largest_thumb = None
@@ -582,7 +735,7 @@ class Music(commands.Cog):
                 else:
                     largest_thumb = data.data.get('thumbnail')
                 # Always use the public SoundCloud URL for playback
-                public_url = data.data.get('webpage_url') or data.data.get('permalink_url') or query
+                public_url = data.data.get('webpage_url') or data.data.get('permalink_url') or url
                 track = {
                     'title': data.title,
                     'url': public_url,
@@ -595,7 +748,9 @@ class Music(commands.Cog):
             except Exception as e:
                 await interaction.followup.send(f"Error processing URL: {e}", ephemeral=True)
                 return
-        else:
+
+        # Handle query (search)
+        elif query is not None:
             tracks = []
             try:
                 search_options = {
@@ -626,7 +781,7 @@ class Music(commands.Cog):
                                 thumb = thumbs[-1].get('url')
                         tracks.append({'title': title, 'url': public_url, 'duration': e.get('duration'), 'thumbnail': thumb})
             except Exception as e:
-                debug_print(f"yt-dlp scsearch failed: {e}")
+                debug_print(red(f"yt-dlp scsearch failed: {e}"))
 
             # If yt-dlp yields no valid tracks, fallback to HTML scraping
             if not tracks:
@@ -659,6 +814,16 @@ class Music(commands.Cog):
         if not was_playing and state.queue:
             # If nothing was playing but we just added a song, start playing
             await self.play_next(interaction.guild)
+
+    @play.autocomplete("playlist")
+    async def play_playlist_autocomplete(self, interaction: discord.Interaction, current: str):
+        user_id = str(interaction.user.id)
+        playlists = db.get_user_playlists(user_id)
+        results = []
+        for p in playlists:
+            if not current or current.lower() in p['name'].lower():
+                results.append(app_commands.Choice(name=p['name'], value=p['playlist_id']))
+        return results[:25]
 
     @app_commands.command(name="pause", description="Pause the player")
     @command_permission_check("pause")
@@ -766,9 +931,15 @@ class Music(commands.Cog):
         
         if state.now_playing:
             duration = self._format_duration(state.now_playing.get('duration'))
+            # Format title with link for SoundCloud, plain text for local files
+            if state.now_playing.get('is_local_file'):
+                title_text = f"**{state.now_playing['title']}**"
+            else:
+                title_text = f"[{state.now_playing['title']}]({state.now_playing['url']})"
+            
             embed.add_field(
                 name="Now Playing",
-                value=f"[{state.now_playing['title']}]({state.now_playing['url']})\n"
+                value=f"{title_text}\n"
                       f"`{duration}`\nRequested by {state.now_playing['requester'].mention}",
                 inline=False
             )
@@ -777,8 +948,14 @@ class Music(commands.Cog):
             queue_text = []
             for i, track in enumerate(state.queue[:10], 1):
                 duration = self._format_duration(track.get('duration'))
+                # Format title with link for SoundCloud, plain text for local files
+                if track.get('is_local_file'):
+                    title_text = f"**{track['title']}**"
+                else:
+                    title_text = f"[{track['title']}]({track['url']})"
+                
                 queue_text.append(
-                    f"{i}. [{track['title']}]({track['url']}) - `{duration}` - {track['requester'].mention}"
+                    f"{i}. {title_text} - `{duration}` - {track['requester'].mention}"
                 )
             embed.add_field(
                 name=f"Up Next ({len(state.queue)} tracks)",
@@ -925,10 +1102,11 @@ class Music(commands.Cog):
             return
         # If multiple, paginate
         class PlaylistPages(View):
-            def __init__(self, embeds):
+            def __init__(self, embeds, owner_id):
                 super().__init__(timeout=60)
                 self.embeds = embeds
                 self.index = 0
+                self.owner_id = owner_id
                 self.prev_button = Button(label="Prev", style=discord.ButtonStyle.secondary, row=0)
                 self.next_button = Button(label="Next", style=discord.ButtonStyle.secondary, row=0)
                 self.prev_button.callback = self.prev
@@ -955,25 +1133,25 @@ class Music(commands.Cog):
 
             async def interaction_check(self, interaction: discord.Interaction):
                 # Only allow the user who invoked the command to interact
-                return interaction.user.id == interaction.user.id
+                return interaction.user.id == self.owner_id
 
-        view = PlaylistPages(embeds)
+        view = PlaylistPages(embeds, owner_id=interaction.user.id)
         await interaction.followup.send(embed=embeds[0], view=view, ephemeral=True)
 
-        # Make all page changes ephemeral
+        # Make all page changes ephemeral and owner-checked
         async def prev_ephemeral(interaction):
-            if view.index > 0:
+            if interaction.user.id == view.owner_id and view.index > 0:
                 view.index -= 1
                 view.update_buttons()
                 await interaction.response.edit_message(embed=view.embeds[view.index], view=view, ephemeral=True)
         async def next_ephemeral(interaction):
-            if view.index < len(view.embeds) - 1:
+            if interaction.user.id == view.owner_id and view.index < len(view.embeds) - 1:
                 view.index += 1
                 view.update_buttons()
                 await interaction.response.edit_message(embed=view.embeds[view.index], view=view, ephemeral=True)
         view.prev = prev_ephemeral
         view.next = next_ephemeral
-    
+        
     @app_commands.command(name="add_playlist_to_queue", description="Add all or selected songs from a playlist to the queue")
     @command_permission_check("add_playlist_to_queue")
     @app_commands.describe(playlist="Select a playlist", tracks="(Optional) Select specific tracks to add (leave empty for all)")
@@ -1033,55 +1211,6 @@ class Music(commands.Cog):
             label = f"{i}. {t['title'][:80]}"
             if not current or current.lower() in label.lower():
                 results.append(app_commands.Choice(name=label, value=str(i)))
-        return results[:25]
-
-    @app_commands.command(name="play_playlist", description="Play all songs from one of your playlists")
-    @command_permission_check("play_playlist")
-    @app_commands.describe(playlist="Select a playlist to play")
-    async def play_playlist(self, interaction: discord.Interaction, playlist: str):
-        debug_print(f"/play_playlist called by {interaction.user.id} for playlist {playlist}", level="all")
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        user_id = str(interaction.user.id)
-        playlists = db.get_user_playlists(user_id)
-        pl = next((p for p in playlists if p['playlist_id'] == playlist), None)
-        if not pl:
-            await interaction.followup.send("Playlist not found.", ephemeral=True)
-            return
-        tracks = db.get_playlist_tracks(playlist, user_id)
-        if not tracks:
-            await interaction.followup.send("This playlist is empty.", ephemeral=True)
-            return
-        if not interaction.user.voice:
-            await interaction.followup.send("You must be in a voice channel!", ephemeral=True)
-            return
-        state = self.guild_states[interaction.guild.id]
-        voice_channel = interaction.user.voice.channel
-        if state.voice_client is None:
-            state.voice_client = await voice_channel.connect()
-        elif state.voice_client.channel != voice_channel:
-            await state.voice_client.move_to(voice_channel)
-        state.text_channel = interaction.channel.id
-        # Add all tracks to queue
-        for t in tracks:
-            state.queue.append({
-                'title': t['title'],
-                'url': t['url'],
-                'duration': t.get('duration'),
-                'requester': interaction.user,
-                'thumbnail': t.get('thumbnail')
-            })
-        await interaction.followup.send(f"▶️ Added {len(tracks)} tracks from **{pl['name']}** to the queue.", ephemeral=True)
-        if not state.now_playing:
-            await self.play_next(interaction.guild)
-
-    @play_playlist.autocomplete("playlist")
-    async def play_playlist_autocomplete(self, interaction: discord.Interaction, current: str):
-        user_id = str(interaction.user.id)
-        playlists = db.get_user_playlists(user_id)
-        results = []
-        for p in playlists:
-            if not current or current.lower() in p['name'].lower():
-                results.append(app_commands.Choice(name=p['name'], value=p['playlist_id']))
         return results[:25]
 
     @app_commands.command(name="add_to_playlist", description="Add the currently playing song to one of your playlists")

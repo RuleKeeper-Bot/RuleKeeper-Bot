@@ -4,7 +4,7 @@
     <title>Leveling Configuration</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
-    <link rel="icon" type="image/x-icon" href="../../static/images/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
     <style>
         .form-section {
             margin-bottom: 2rem;
@@ -73,6 +73,7 @@
             display: inline-block;
             margin-right: 8px;
             border: 1px solid #dee2e6;
+            margin-bottom: -3px;
         }
         .boost-role-select option {
             padding-left: 30px;
@@ -133,6 +134,7 @@
             margin-top: 0;
         }
     </style>
+    {% include 'dark_mode_include.html' %}
 </head>
 <body>
     <div class="container mt-4">
@@ -263,7 +265,7 @@
                                                 data-color="#{{ '%06x' % role.color }}">
                                             <span class="role-option-color" 
                                                   style="background-color: #{{ '%06x' % role.color }}"></span>
-                                            {{ role.name }} ({{ role.id }})
+                                            {{ role.name }}
                                         </option>
                                     {% endfor %}
                                 </select>
@@ -277,6 +279,142 @@
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                             <button type="button" class="btn btn-primary" id="saveBoost">Save Changes</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- XP Cooldown Bypass Card -->
+            <div class="form-section">
+                <h4><i class="bi bi-clock-history"></i> XP Cooldown Bypass</h4>
+                <div class="mb-4">
+                    <label class="form-label">Roles that bypass XP cooldown</label>
+                    <div class="list-group" id="bypass-roles-list">
+                        {% if config.cooldown_bypass_roles and config.cooldown_bypass_roles|length > 0 %}
+                            {% for role_id in config.cooldown_bypass_roles %}
+                                {% set role = roles|selectattr('id', 'equalto', role_id|string)|first or roles|selectattr('id', 'equalto', role_id|int)|first %}
+                                {% if role %}
+                                <div class="list-group-item d-flex justify-content-between align-items-center" data-role-id="{{ role_id }}">
+                                    <div>
+                                        <span class="role-color-indicator" style="background-color: {{ '#%06x'|format(role.color) if role.color else '#99aab5' }};"></span>
+                                        <strong>{{ role.name }}</strong>
+                                    </div>
+                                    <button type="button" class="btn btn-danger btn-sm delete-bypass-role">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                                {% else %}
+                                <div class="list-group-item">
+                                    <div>
+                                        <span class="role-color-indicator" style="background-color: #99aab5;"></span>
+                                        <strong>Unknown Role ({{ role_id }})</strong>
+                                    </div>
+                                </div>
+                                {% endif %}
+                            {% endfor %}
+                        {% else %}
+                            <div class="list-group-item text-muted">No cooldown bypass roles configured</div>
+                        {% endif %}
+                    </div>
+                    <button type="button" class="btn btn-primary btn-sm mt-2" data-bs-toggle="modal" data-bs-target="#bypassRoleModal">
+                        <i class="bi bi-plus-circle"></i> Add Bypass Role
+                    </button>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Users that bypass XP cooldown</label>
+                    <div class="list-group" id="bypass-users-list">
+                        {% if config.cooldown_bypass_users and config.cooldown_bypass_users|length > 0 %}
+                            {% for user_id in config.cooldown_bypass_users %}
+                                {% set user = users|selectattr('id', 'equalto', user_id|string)|first or users|selectattr('id', 'equalto', user_id|int)|first %}
+                                <div class="list-group-item d-flex justify-content-between align-items-center" data-user-id="{{ user_id }}">
+                                    <div>
+                                        {% if user %}
+                                            <strong>{{ user.name }}</strong>
+                                            <small class="text-muted">({{ user_id }})</small>
+                                        {% else %}
+                                            <strong>Unknown User</strong>
+                                            <small class="text-muted">({{ user_id }})</small>
+                                        {% endif %}
+                                    </div>
+                                    <button type="button" class="btn btn-danger btn-sm delete-bypass-user">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <div class="list-group-item text-muted">No cooldown bypass users configured</div>
+                        {% endif %}
+                    </div>
+                    <button type="button" class="btn btn-primary btn-sm mt-2" data-bs-toggle="modal" data-bs-target="#bypassUserModal">
+                        <i class="bi bi-plus-circle"></i> Add Bypass User
+                    </button>
+                </div>
+
+                <!-- Hidden fields to store the JSON data -->
+                <textarea class="form-control d-none" name="cooldown_bypass_roles" 
+                         id="bypass_roles_json" rows="3">{{ config.cooldown_bypass_roles|tojson|safe }}</textarea>
+                <textarea class="form-control d-none" name="cooldown_bypass_users" 
+                         id="bypass_users_json" rows="3">{{ config.cooldown_bypass_users|tojson|safe }}</textarea>
+            </div>
+
+            <!-- Bypass Role Modal -->
+            <div class="modal fade" id="bypassRoleModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Add Cooldown Bypass Role</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">Select Role</label>
+                                <select class="form-select" id="bypassRoleSelect">
+                                    <option value="">Choose a role...</option>
+                                    {% for role in roles %}
+                                        {% if role.id != guild.id %}
+                                        <option value="{{ role.id }}" data-color="{{ role.color_hex if role.color_hex != '#000000' else '#99aab5' }}">
+                                            {{ role.name }}
+                                        </option>
+                                        {% endif %}
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" id="saveBypassRole">Add Role</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bypass User Modal -->
+            <div class="modal fade" id="bypassUserModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">Add Cooldown Bypass User</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">Select User</label>
+                                <select class="form-select" id="bypassUserSelect">
+                                    <option value="">Choose a user...</option>
+                                    {% if users %}
+                                        {% for user in users %}
+                                            <option value="{{ user.id }}">{{ user.name }}</option>
+                                        {% endfor %}
+                                    {% else %}
+                                        <option value="" disabled>No users available</option>
+                                    {% endif %}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" id="saveBypassUser">Add User</button>
                         </div>
                     </div>
                 </div>
@@ -606,6 +744,144 @@
         titleInput.addEventListener('input', updateEmbedPreview);
         descInput.addEventListener('input', updateEmbedPreview);
         colorInput.addEventListener('input', updateEmbedPreview);
+    });
+
+    // Cooldown bypass functionality
+    document.addEventListener('DOMContentLoaded', function() {
+        const bypassRolesList = document.getElementById('bypass-roles-list');
+        const bypassUsersList = document.getElementById('bypass-users-list');
+        const bypassRoleModal = new bootstrap.Modal('#bypassRoleModal');
+        
+        // Update JSON fields
+        function updateBypassRolesJson() {
+            const roles = [];
+            bypassRolesList.querySelectorAll('[data-role-id]').forEach(item => {
+                const roleId = item.dataset.roleId;
+                if (roleId) roles.push(roleId);
+            });
+            document.getElementById('bypass_roles_json').value = JSON.stringify(roles);
+        }
+        
+        function updateBypassUsersJson() {
+            const users = [];
+            bypassUsersList.querySelectorAll('[data-user-id]').forEach(item => {
+                const userId = item.dataset.userId;
+                if (userId) users.push(userId);
+            });
+            document.getElementById('bypass_users_json').value = JSON.stringify(users);
+        }
+        
+        // Add bypass role
+        document.getElementById('saveBypassRole').addEventListener('click', () => {
+            const roleId = document.getElementById('bypassRoleSelect').value;
+            if (!roleId) {
+                alert('Please select a role!');
+                return;
+            }
+            
+            // Check if role already exists
+            if (bypassRolesList.querySelector(`[data-role-id="${roleId}"]`)) {
+                alert('This role is already in the bypass list!');
+                return;
+            }
+            
+            const roleOption = document.querySelector(`#bypassRoleSelect option[value="${roleId}"]`);
+            const roleName = roleOption ? roleOption.textContent : `Unknown Role (${roleId})`;
+            const roleColor = roleOption ? roleOption.dataset.color : '#99aab5';
+            
+            // Remove empty state message
+            const emptyState = bypassRolesList.querySelector('.list-group-item.text-muted');
+            if (emptyState) emptyState.remove();
+            
+            const newItem = document.createElement('div');
+            newItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+            newItem.dataset.roleId = roleId;
+            newItem.innerHTML = `
+                <div>
+                    <span class="role-color-indicator" style="background-color: ${roleColor};"></span>
+                    <strong>${roleName}</strong>
+                </div>
+                <button type="button" class="btn btn-danger btn-sm delete-bypass-role">
+                    <i class="bi bi-trash"></i>
+                </button>
+            `;
+            
+            bypassRolesList.appendChild(newItem);
+            updateBypassRolesJson();
+            
+            // Reset modal
+            document.getElementById('bypassRoleSelect').value = '';
+            bypassRoleModal.hide();
+        });
+        
+        // Delete bypass role
+        bypassRolesList.addEventListener('click', (e) => {
+            if (e.target.closest('.delete-bypass-role')) {
+                e.target.closest('.list-group-item').remove();
+                if (!bypassRolesList.querySelector('[data-role-id]')) {
+                    bypassRolesList.innerHTML = '<div class="list-group-item text-muted">No cooldown bypass roles configured</div>';
+                }
+                updateBypassRolesJson();
+            }
+        });
+        
+        // Add bypass user
+        const bypassUserModal = new bootstrap.Modal('#bypassUserModal');
+        document.getElementById('saveBypassUser').addEventListener('click', () => {
+            const userId = document.getElementById('bypassUserSelect').value;
+            if (!userId) {
+                alert('Please select a user!');
+                return;
+            }
+            
+            // Check if user already exists
+            if (bypassUsersList.querySelector(`[data-user-id="${userId}"]`)) {
+                alert('This user is already in the bypass list!');
+                return;
+            }
+            
+            const userOption = document.querySelector(`#bypassUserSelect option[value="${userId}"]`);
+            const userName = userOption ? userOption.textContent : `Unknown User (${userId})`;
+            
+            // Remove empty state message
+            const emptyState = bypassUsersList.querySelector('.list-group-item.text-muted');
+            if (emptyState) emptyState.remove();
+            
+            const newItem = document.createElement('div');
+            newItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+            newItem.dataset.userId = userId;
+            newItem.innerHTML = `
+                <div>
+                    <strong>${userName}</strong>
+                    <small class="text-muted">(${userId})</small>
+                </div>
+                <button type="button" class="btn btn-danger btn-sm delete-bypass-user">
+                    <i class="bi bi-trash"></i>
+                </button>
+            `;
+            
+            bypassUsersList.appendChild(newItem);
+            updateBypassUsersJson();
+            
+            // Reset modal
+            document.getElementById('bypassUserSelect').value = '';
+            bypassUserModal.hide();
+        });
+        
+        // Delete bypass user
+        bypassUsersList.addEventListener('click', (e) => {
+            if (e.target.closest('.delete-bypass-user')) {
+                e.target.closest('.list-group-item').remove();
+                if (!bypassUsersList.querySelector('[data-user-id]')) {
+                    bypassUsersList.innerHTML = '<div class="list-group-item text-muted">No cooldown bypass users configured</div>';
+                }
+                updateBypassUsersJson();
+            }
+        });
+        
+        // Initialize JSON values
+        updateBypassRolesJson();
+        updateBypassUsersJson();
     });
     </script>
     <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">

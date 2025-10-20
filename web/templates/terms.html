@@ -4,44 +4,44 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Terms of Service - RuleKeeper</title>
-  <link rel="icon" type="image/x-icon" href="../static/images/favicon.ico">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
   <style>
     body {
-      font-family: 'Segoe UI', sans-serif;
-      line-height: 1.7;
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      line-height: 1.6;
       background-color: #f9f9f9;
       color: #333;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 2rem;
     }
-    h1, h2 {
-      color: #2e3a59;
-    }
-    h1 {
-      border-bottom: 2px solid #ddd;
-      padding-bottom: 0.5rem;
-    }
-    ul {
-      padding-left: 1.5rem;
-    }
-    li {
-      margin-bottom: 0.5rem;
+    h1, h2, h3 {
+      color: #2c3e50;
     }
     a {
-      color: #0066cc;
+      color: #3498db;
       text-decoration: none;
     }
     a:hover {
       text-decoration: underline;
     }
+    section {
+      margin-bottom: 30px;
+    }
+    code {
+      background-color: #f4f4f4;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
   </style>
+    {% include 'dark_mode_include.html' %}
 </head>
 <body>
   <h1>Terms of Service</h1>
-  <p><strong>Last updated: April 27, 2025</strong></p>
+  <p><em>Last updated: October 19, 2025</em></p>
 
-  <p>By using RuleKeeper in your Discord server, you agree to the following terms:</p>
+  <p>By using RuleKeeper ("the Bot") in your Discord server, you agree to be bound by these Terms of Service. If you do not agree with these terms, please do not use the Bot.</p>
 
   <h2>1. Usage</h2>
   <ul>
@@ -50,22 +50,133 @@
     <li>You may not use RuleKeeper to violate Discord’s <a href="https://discord.com/terms" target="_blank">Terms of Service</a> or <a href="https://discord.com/guidelines" target="_blank">Community Guidelines</a>.</li>
   </ul>
 
-  <h2>2. Responsibility</h2>
-  <ul>
-    <li>The bot owner is not responsible for any misuse of the bot or damage caused by bugs or unintended behavior.</li>
-    <li>Server admins are responsible for configuring the bot and managing its permissions.</li>
-  </ul>
+  <section>
+    <h2>2. Acceptable Use</h2>
+    <p>You agree to use RuleKeeper in compliance with all applicable laws and Discord's policies:</p>
+    <ul>
+      <li>You will not use the Bot to violate <a href="https://discord.com/terms" target="_blank">Discord's Terms of Service</a> or <a href="https://discord.com/guidelines" target="_blank">Community Guidelines</a>.</li>
+      <li>You will not use the Bot for illegal activities, harassment, hate speech, or distribution of malicious content.</li>
+      <li>You will not attempt to exploit, reverse engineer, or circumvent the Bot's security measures.</li>
+      <li>You will not use the Bot to spam, flood, or abuse Discord's API or other users.</li>
+      <li>You will not impersonate the Bot, its developers, or misrepresent its capabilities.</li>
+    </ul>
+  </section>
 
-  <h2>3. Termination</h2>
-  <ul>
-    <li>You may remove the bot from your server at any time.</li>
-    <li>Abuse (e.g., spam, malicious use) may result in the bot blocking your server or user ID from further use.</li>
-  </ul>
+  <section>
+    <h2>3. User Responsibilities</h2>
+    <p><strong>Server Administrators:</strong></p>
+    <ul>
+      <li>You are responsible for properly configuring the Bot's permissions and settings.</li>
+      <li>You must ensure the Bot is used in accordance with your server's rules and applicable laws.</li>
+      <li>You are responsible for managing user data collected through the Bot in your server.</li>
+      <li>You must comply with data protection laws (GDPR, CCPA, etc.) if applicable to your region.</li>
+    </ul>
+    
+    <p><strong>All Users:</strong></p>
+    <ul>
+      <li>You acknowledge that your interactions with the Bot may be logged for moderation purposes.</li>
+      <li>You understand that server administrators can access data the Bot collects about you.</li>
+      <li>You will not attempt to abuse or exploit Bot features.</li>
+    </ul>
+  </section>
 
-  <h2>4. Modifications</h2>
-  <p>These terms may change. If significant changes are made, server admins will be notified through bot messages, GitHub, or an official announcement.</p>
+  <section>
+    <h2>4. Disclaimers & Limitations of Liability</h2>
+    <ul>
+      <li><strong>No Warranty:</strong> RuleKeeper is provided <strong>"AS IS"</strong> without warranty of any kind, express or implied. The Bot may have bugs, experience downtime, or lose data.</li>
+      <li><strong>No Guarantee of Service:</strong> We do not guarantee the Bot will be available 24/7 or that it will function without errors.</li>
+      <li><strong>No Liability:</strong> The Bot developers, contributors, and maintainers are not responsible for:
+        <ul>
+          <li>Data loss or corruption</li>
+          <li>Server disruptions or moderation mistakes</li>
+          <li>Damage caused by bugs or misconfigurations</li>
+          <li>Actions taken by server administrators using the Bot</li>
+          <li>Third-party service failures (YouTube, Crafty Controller, etc.)</li>
+        </ul>
+      </li>
+      <li><strong>Indemnification:</strong> You agree to hold harmless the Bot developers from any claims arising from your use of the Bot.</li>
+    </ul>
+  </section>
 
-  <h2>5. Open Source Licensing</h2>
-  <p>RuleKeeper is open-source and licensed under the <strong>Mozilla Public License 2.0</strong>. You can find the full license text in the project repository or on the <a href="https://www.mozilla.org/en-US/MPL/2.0/" target="_blank">Mozilla website</a>.</p>
+  <section>
+    <h2>5. Data & Privacy</h2>
+    <p>Your use of RuleKeeper is subject to the <a href="/privacy-policy">Privacy Policy</a>, which explains:</p>
+    <ul>
+      <li>What data the Bot collects (user IDs, server configurations, logs, levels, playlists, etc.)</li>
+      <li>How data is stored and secured</li>
+      <li>Your rights regarding data access and deletion</li>
+    </ul>
+    <p>By using the Bot, you consent to the data collection practices described in the Privacy Policy.</p>
+  </section>
+
+  <section>
+    <h2>6. Termination</h2>
+    <p><strong>By You:</strong></p>
+    <ul>
+      <li>You may remove the Bot from your server at any time, which will stop further data collection.</li>
+      <li>You may request data deletion as outlined in the Privacy Policy.</li>
+    </ul>
+    
+    <p><strong>By Us:</strong></p>
+    <ul>
+      <li>We reserve the right to block servers or users from using the Bot if they violate these terms.</li>
+      <li>Abuse, spam, or malicious use may result in immediate termination without notice.</li>
+      <li>We may discontinue the Bot or specific features at any time.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7. Open Source License</h2>
+    <p>RuleKeeper is open-source software licensed under the <strong>Mozilla Public License 2.0 (MPL 2.0)</strong>. You may:</p>
+    <ul>
+      <li>Use, modify, and distribute the Bot's source code</li>
+      <li>Self-host your own instance of the Bot</li>
+      <li>Create derivative works</li>
+    </ul>
+    <p><strong>Conditions:</strong></p>
+    <ul>
+      <li>Modified source files must be released under the MPL 2.0.</li>
+      <li>You must retain all copyright and license notices.</li>
+      <li>See the full license at <a href="https://www.mozilla.org/en-US/MPL/2.0/" target="_blank">Mozilla.org</a> or in the project repository.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>8. Third-Party Services</h2>
+    <p>The Bot integrates with third-party services that have their own terms:</p>
+    <ul>
+      <li><strong>Discord:</strong> Subject to <a href="https://discord.com/terms" target="_blank">Discord's Terms of Service</a> and <a href="https://discord.com/guidelines" target="_blank">Community Guidelines</a>.</li>
+      <li><strong>YouTube:</strong> Notification features use YouTube's API and are subject to <a href="https://www.youtube.com/t/terms" target="_blank">YouTube's Terms of Service</a>.</li>
+      <li><strong>Crafty Controller:</strong> Minecraft server management requires a Crafty Controller instance and API access.</li>
+    </ul>
+    <p>We are not responsible for these third-party services or their terms.</p>
+  </section>
+
+  <section>
+    <h2>9. Changes to These Terms</h2>
+    <p>These Terms of Service may be updated periodically to reflect new features or legal requirements. Changes will be announced through:</p>
+    <ul>
+      <li>Bot announcements in your server (if enabled)</li>
+      <li>The official <a href="https://github.com/RuleKeeper-Bot/RuleKeeper-Bot" target="_blank">GitHub repository</a></li>
+      <li>The web dashboard</li>
+    </ul>
+    <p>Continued use of the Bot after changes constitutes acceptance of the new terms. If you do not agree with updated terms, you must stop using the Bot.</p>
+  </section>
+
+  <section>
+    <h2>10. Contact & Support</h2>
+    <p>For questions, support, or legal inquiries:</p>
+    <ul>
+      <li>Open an issue on <a href="https://github.com/RuleKeeper-Bot/RuleKeeper-Bot" target="_blank">GitHub</a></li>
+      <li>Use the <a href="/delete-data">data deletion page</a> for privacy requests</li>
+      <li>Contact the bot administrator through Discord</li>
+      <li>Email: <a href="mailto:contact@rulekeeper.cc">contact@rulekeeper.cc</a></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>11. Governing Law</h2>
+    <p>These terms are governed by the laws of the jurisdiction where the Bot operator resides. If you self-host the Bot, you are responsible for compliance with your local laws.</p>
+  </section>
 </body>
 </html>

@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from shared.colors import red
 try:
     from bot.bot import debug_print
 except ImportError:
@@ -22,7 +23,7 @@ class GlobalCommands(commands.Cog):
                 "An error occurred while executing this command.",
                 ephemeral=True
             )
-            debug_print(f"Command error: {error.original}")
+            debug_print(red(f"Command error: {error.original}"))
         elif isinstance(error, app_commands.CheckFailure):
             await interaction.response.send_message(
                 "You don't have permission to use this command.",
@@ -33,7 +34,7 @@ class GlobalCommands(commands.Cog):
                 "Something went wrong with this command!",
                 ephemeral=True
             )
-            debug_print(f"Command error: {error}")
+            debug_print(red(f"Command error: {error}"))
 
 async def setup(bot):
     await bot.add_cog(GlobalCommands(bot))

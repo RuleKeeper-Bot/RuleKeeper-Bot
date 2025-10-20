@@ -3,7 +3,8 @@ import functools
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-from bot.bot import bot_instance
+
+# Avoid circular import - import bot_instance only when needed
 try:
     from bot.bot import debug_print
 except ImportError:
@@ -35,10 +36,45 @@ def command_permission_check(command_name, is_custom=False):
             if perms['allow_roles'] or perms['allow_users']:
                 if any(r in perms['allow_roles'] for r in user_roles) or user_id in perms['allow_users']:
                     return await func(self, interaction, *args, **kwargs)
-                await interaction.response.send_message("**You do not have permission to use this command.**\n\n*If you are a normal user and believe this is an error, please contact an admin.*\n***If you are an admin, you can change the command permissions in the dashboard.***", ephemeral=True)
+                
+                # Create denial embed
+                embed = discord.Embed(
+                    title="🚫 Permission Denied",
+                    description="You do not have permission to use this command.",
+                    color=discord.Color.red()
+                )
+                embed.add_field(
+                    name="ℹ️ For Users",
+                    value="If you believe this is an error, please contact a server administrator.",
+                    inline=False
+                )
+                embed.add_field(
+                    name="⚙️ For Administrators",
+                    value="You can manage command permissions through the dashboard.",
+                    inline=False
+                )
+                embed.set_footer(text=f"Command: /{command_name}")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
+            
             # If no allow list is set, deny by default
-            await interaction.response.send_message("**You do not have permission to use this command.**\n\n*If you are a normal user and believe this is an error, please contact an admin.*\n***If you are an admin, you can change the command permissions in the dashboard.***", ephemeral=True)
+            embed = discord.Embed(
+                title="🚫 Permission Denied",
+                description="You do not have permission to use this command.",
+                color=discord.Color.red()
+            )
+            embed.add_field(
+                name="ℹ️ For Users",
+                value="If you believe this is an error, please contact a server administrator.",
+                inline=False
+            )
+            embed.add_field(
+                name="⚙️ For Administrators",
+                value="You can manage command permissions through the dashboard.",
+                inline=False
+            )
+            embed.set_footer(text=f"Command: /{command_name}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         return wrapper
     return decorator
@@ -50,7 +86,15 @@ class Shared:
         
         if not self.token:
             raise ValueError("No BOT_TOKEN found in .env file!")
-            
-        self.bot = bot_instance
+        
+        self._bot = None
+    
+    @property
+    def bot(self):
+        """Lazily import bot_instance to avoid circular imports"""
+        if self._bot is None:
+            from bot.bot import bot_instance
+            self._bot = bot_instance
+        return self._bot
 
 shared = Shared()

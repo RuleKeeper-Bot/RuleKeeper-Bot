@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Crafty Controller & Cloudflare Configuration - {{ guild.name }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    <style>
+        .card-header {
+            background-color: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .server-card {
+            border-left: 4px solid #28a745;
+        }
+        .server-card.offline {
+            border-left-color: #dc3545;
+        }
+        .permission-badge {
+            font-size: 0.8em;
+        }
+        .dns-record {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 0.375rem;
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 0.5rem;
+        }
+        .status-online {
+            background-color: #28a745;
+        }
+        .status-offline {
+            background-color: #dc3545;
+        }
+        .status-unknown {
+            background-color: #ffc107;
+        }
+        .status-loading {
+            background: linear-gradient(45deg, #007bff, #00d4ff);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .server-actions {
+            gap: 0.5rem;
+        }
+    </style>
+	{% include 'dark_mode_include.html' %}
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h1>Crafty Controller & Cloudflare Configuration</h1>
+                <p class="text-muted">Manage Minecraft servers and DNS records for {{ guild.name }}</p>
+                <a href="{{ url_for('guild_dashboard', guild_id=guild.guild_id) }}" class="btn btn-sm btn-outline-secondary">
+                    <i class="bi bi-arrow-left me-1"></i>Back to Dashboard
+                </a>
+            </div>
+            <div>
+                <a href="{{ url_for('logout') }}" class="btn btn-danger">
+                    <i class="bi bi-box-arrow-right"></i> Logout
+                </a>
+            </div>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- Cloudflare Configuration -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="bi bi-cloud me-2"></i>Cloudflare Configuration
+                </h5>
+            </div>
+            <div class="card-body">
+                {% if cloudflare_config %}
+                    <div class="row">
+                        <div class="col-md-8">
+                            <p><strong>Domain:</strong> {{ cloudflare_config.domain }}</p>
+                            <p><strong>Zone ID:</strong> {{ cloudflare_config.zone_id }}</p>
+                            <p><strong>Status:</strong> 
+                                <span class="badge bg-{{ 'success' if cloudflare_config.enabled else 'secondary' }}">
+                                    {{ 'Enabled' if cloudflare_config.enabled else 'Disabled' }}
+                                </span>
+                            </p>
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <button class="btn btn-primary btn-sm mb-2" data-bs-toggle="modal" data-bs-target="#cloudflareModal" style="min-width: 140px;">
+                                <i class="bi bi-gear me-1"></i>Configure
+                            </button>
+                            <button class="btn btn-outline-info btn-sm mb-2" onclick="testCloudflareConnection()" style="min-width: 140px;">
+                                <i class="bi bi-wifi me-1"></i>Test Connection
+                            </button>
+                            <button class="btn btn-outline-warning btn-sm" onclick="syncDnsRecords()" style="min-width: 140px;">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Sync Records
+                            </button>
+                        </div>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="bi bi-cloud-slash text-muted" style="font-size: 3rem;"></i>
+                        <h5 class="mt-3">Cloudflare Not Configured</h5>
+                        <p class="text-muted">Configure Cloudflare to automatically manage DNS records for your Minecraft servers.</p>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#cloudflareModal">
+                            <i class="bi bi-plus me-1"></i>Configure Cloudflare
+                        </button>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Crafty Instances -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="bi bi-server me-2"></i>Crafty Controller Instances
+                </h5>
+                <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#instanceModal">
+                    <i class="bi bi-plus me-1"></i>Add Instance
+                </button>
+            </div>
+            <div class="card-body">
+                {% if crafty_instances %}
+                    <div class="row">
+                        {% for instance in crafty_instances %}
+                        <div class="col-md-6 mb-3">
+                            <div class="card">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <div>
+                                            <h6 class="card-title">{{ instance.name }}</h6>
+                                            <p class="card-text text-muted small">{{ instance.description or 'No description' }}</p>
+                                            <small class="text-muted">{{ instance.api_url }}</small>
+                                        </div>
+                                        <div class="dropdown">
+                                            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                                Actions
+                                            </button>
+                                            <ul class="dropdown-menu dropdown-menu-end">
+                                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="editInstance({{ instance.id }})">
+                                                    <i class="bi bi-pencil me-1"></i>Edit
+                                                </a></li>
+                                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="testInstanceConnection({{ instance.id }})">
+                                                    <i class="bi bi-wifi me-1"></i>Test Connection
+                                                </a></li>
+                                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="syncInstanceServers({{ instance.id }})">
+                                                    <i class="bi bi-arrow-clockwise me-1"></i>Sync Servers
+                                                </a></li>
+                                                <li><hr class="dropdown-divider"></li>
+                                                <li><a class="dropdown-item text-danger" href="javascript:void(0)" onclick="deleteInstance({{ instance.id }})">
+                                                    <i class="bi bi-trash me-1"></i>Delete
+                                                </a></li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                    <div class="mt-3">
+                                        <span class="badge bg-{{ 'success' if instance.enabled else 'secondary' }}">
+                                            {{ 'Enabled' if instance.enabled else 'Disabled' }}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="bi bi-server text-muted" style="font-size: 3rem;"></i>
+                        <h5 class="mt-3">No Crafty Instances</h5>
+                        <p class="text-muted">Add a Crafty Controller instance to manage your Minecraft servers.</p>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#instanceModal">
+                            <i class="bi bi-plus me-1"></i>Add First Instance
+                        </button>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Minecraft Servers -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="bi bi-controller me-2"></i>Minecraft Servers
+                </h5>
+                <div>
+                    <button class="btn btn-outline-info btn-sm me-2" onclick="refreshServerStatuses()">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh Status
+                    </button>
+                    <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#serverModal">
+                        <i class="bi bi-plus me-1"></i>Add Server
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if minecraft_servers %}
+                    <div class="row">
+                        {% for server in minecraft_servers %}
+                        <div class="col-md-6 mb-3">
+                            <div class="card server-card {{ 'offline' if server_statuses.get(server.id, {}).get('running') == False else '' }}">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div>
+                                            <h6 class="card-title">
+                                                {% set status = server_statuses.get(server.id, {}) %}
+                                                {% if status.get('running') == True %}
+                                                    <span class="status-indicator status-online"></span>
+                                                {% elif status.get('running') == False %}
+                                                    <span class="status-indicator status-offline"></span>
+                                                {% else %}
+                                                    <span class="status-indicator status-unknown"></span>
+                                                {% endif %}
+                                                {{ server.server_name }}
+                                            </h6>
+                                            <p class="card-text text-muted small">{{ server.description or 'No description' }}</p>
+                                            <small class="text-muted">Instance: {{ server.instance_name }}</small>
+                                            {% if server.port %}
+                                            <br><small class="text-muted">Port: {{ server.port }}</small>
+                                            {% endif %}
+                                        </div>
+                                        <div class="dropdown">
+                                            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                                Actions
+                                            </button>
+                                            <ul class="dropdown-menu dropdown-menu-end">
+                                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="managePermissions()">
+                                                    <i class="bi bi-key me-1"></i>Manage Permissions
+                                                </a></li>
+                                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="manageDnsRecord({{ server.id }})">
+                                                    <i class="bi bi-cloud me-1"></i>DNS Record
+                                                </a></li>
+                                                <li><hr class="dropdown-divider"></li>
+                                                <li><a class="dropdown-item text-danger" href="javascript:void(0)" onclick="deleteServer({{ server.id }})">
+                                                    <i class="bi bi-trash me-1"></i>Remove
+                                                </a></li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Server Actions -->
+                                    <div class="d-flex server-actions">
+                                        {% set status = server_statuses.get(server.id, {}) %}
+                                        {% if status.get('running') == True %}
+                                            <!-- Server is running: show stop and restart buttons -->
+                                            <button class="btn btn-warning btn-sm" onclick="serverAction({{ server.id }}, 'restart')">
+                                                <i class="bi bi-arrow-clockwise me-1"></i>Restart
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" onclick="serverAction({{ server.id }}, 'stop')">
+                                                <i class="bi bi-stop-fill me-1"></i>Stop
+                                            </button>
+                                        {% elif status.get('running') == False %}
+                                            <!-- Server is stopped: show start button only -->
+                                            <button class="btn btn-success btn-sm" onclick="serverAction({{ server.id }}, 'start')">
+                                                <i class="bi bi-play-fill me-1"></i>Start
+                                            </button>
+                                        {% else %}
+                                            <!-- Status unknown: show all buttons but disabled -->
+                                            <button class="btn btn-success btn-sm" onclick="serverAction({{ server.id }}, 'start')" disabled>
+                                                <i class="bi bi-play-fill me-1"></i>Start
+                                            </button>
+                                            <button class="btn btn-warning btn-sm" onclick="serverAction({{ server.id }}, 'restart')" disabled>
+                                                <i class="bi bi-arrow-clockwise me-1"></i>Restart
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" onclick="serverAction({{ server.id }}, 'stop')" disabled>
+                                                <i class="bi bi-stop-fill me-1"></i>Stop
+                                            </button>
+                                            <small class="text-muted ms-2">Status: {{ status.get('error', 'Unknown') }}</small>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="bi bi-controller text-muted" style="font-size: 3rem;"></i>
+                        <h5 class="mt-3">No Minecraft Servers</h5>
+                        <p class="text-muted">Add Crafty instances first, then sync servers or add them manually.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- DNS Records -->
+        {% if dns_records %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="bi bi-dns me-2"></i>Minecraft DNS Records
+                </h5>
+            </div>
+            <div class="card-body">
+                {% for record in dns_records %}
+                <div class="dns-record">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>{{ record.hostname }}</strong>
+                            <span class="text-muted">→ mc.randomstuff.cc:{{ record.port }}</span>
+                            <br>
+                            <small class="text-muted">Server: {{ record.server_name }} ({{ record.instance_name }})</small>
+                        </div>
+                        <div>
+                            <button class="btn btn-outline-primary btn-sm me-2" onclick="editDnsRecord({{ record.id }})">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-outline-danger btn-sm" onclick="deleteDnsRecord({{ record.id }})">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Server Scheduling -->
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="bi bi-calendar-event me-2"></i>Server Scheduling
+                </h5>
+                <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#scheduleModal">
+                    <i class="bi bi-plus me-1"></i>Add Schedule
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="schedules-container">
+                    <div class="text-center py-3">
+                        <i class="bi bi-clock-history text-muted" style="font-size: 2rem;"></i>
+                        <p class="text-muted mt-2">Loading schedules...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Server Schedule Modal -->
+    <div class="modal fade" id="scheduleModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Schedule Server Action</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="scheduleForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <div class="modal-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label for="scheduleServer" class="form-label">Minecraft Server</label>
+                                <select class="form-select" id="scheduleServer" name="crafty_server_id" required>
+                                    <option value="">Select a server...</option>
+                                    {% for server in minecraft_servers %}
+                                    <option value="{{ server.id }}">{{ server.server_name }} ({{ server.instance_name }})</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="scheduleAction" class="form-label">Action</label>
+                                <select class="form-select" id="scheduleAction" name="action" required>
+                                    <option value="">Select action...</option>
+                                    <option value="start">Start Server</option>
+                                    <option value="stop">Stop Server</option>
+                                    <option value="restart">Restart Server</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="scheduleStartDate" class="form-label">Start Date</label>
+                                <input type="date" class="form-control" id="scheduleStartDate" name="start_date" required>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="scheduleStartTime" class="form-label">Start Time</label>
+                                <input type="time" class="form-control" id="scheduleStartTime" name="start_time" required>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="scheduleTimezone" class="form-label">Timezone</label>
+                                <select class="form-select" id="scheduleTimezone" name="timezone" required>
+                                    <option value="UTC">UTC</option>
+                                    <option value="America/New_York">Eastern Time</option>
+                                    <option value="America/Chicago">Central Time</option>
+                                    <option value="America/Denver">Mountain Time</option>
+                                    <option value="America/Los_Angeles">Pacific Time</option>
+                                    <option value="Europe/London">London</option>
+                                    <option value="Europe/Paris">Paris</option>
+                                    <option value="Asia/Tokyo">Tokyo</option>
+                                    <option value="Australia/Sydney">Sydney</option>
+                                </select>
+                            </div>
+                            <div class="col-md-12">
+                                <label class="form-label">Frequency</label>
+                                <div class="d-flex gap-2 align-items-center">
+                                    <span>Every</span>
+                                    <input type="number" min="1" class="form-control" style="max-width:120px;" 
+                                           id="scheduleFrequencyValue" name="frequency_value" required placeholder="1">
+                                    <select class="form-select" id="scheduleFrequencyUnit" name="frequency_unit" 
+                                            style="max-width:160px;" required>
+                                        <option value="minutes">Minute(s)</option>
+                                        <option value="hours">Hour(s)</option>
+                                        <option value="days">Day(s)</option>
+                                        <option value="weeks">Week(s)</option>
+                                        <option value="months">Month(s)</option>
+                                        <option value="years">Year(s)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <!-- Hidden input to ensure a value is always sent -->
+                                    <input type="hidden" name="check_player_count" value="false">
+                                    <input type="checkbox" class="form-check-input" id="scheduleCheckPlayers" name="check_player_count" value="true">
+                                    <label class="form-check-label" for="scheduleCheckPlayers">
+                                        Only proceed if no players are online
+                                    </label>
+                                </div>
+                                <div class="form-text">For stop/restart actions, the schedule will only execute if the server has no players online</div>
+                            </div>
+                            <div class="col-md-6" id="idleMinutesDiv" style="display: none;">
+                                <label for="scheduleIdleMinutes" class="form-label">Minimum idle time (minutes)</label>
+                                <input type="number" min="1" class="form-control" id="scheduleIdleMinutes" 
+                                       name="min_idle_minutes" value="5">
+                                <div class="form-text">How long the server must have no players before action executes</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Create Schedule</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cloudflare Configuration Modal -->
+    <div class="modal fade" id="cloudflareModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Configure Cloudflare</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="cloudflareForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label for="cfApiToken" class="form-label">API Token</label>
+                            <input type="password" class="form-control" id="cfApiToken" name="api_token" 
+                                   value="{{ cloudflare_config.api_token if cloudflare_config else '' }}" required>
+                            <div class="form-text">Create a token with Zone:Zone:Read and Zone:DNS:Edit permissions</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="cfZoneId" class="form-label">Zone ID</label>
+                            <input type="text" class="form-control" id="cfZoneId" name="zone_id" 
+                                   value="{{ cloudflare_config.zone_id if cloudflare_config else '' }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="cfDomain" class="form-label">Domain</label>
+                            <input type="text" class="form-control" id="cfDomain" name="domain" 
+                                   value="{{ cloudflare_config.domain if cloudflare_config else '' }}" 
+                                   placeholder="example.com" required>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="cfEnabled" name="enabled" 
+                                   {{ 'checked' if cloudflare_config and cloudflare_config.enabled else '' }}>
+                            <label class="form-check-label" for="cfEnabled">
+                                Enable Cloudflare integration
+                            </label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Crafty Instance Modal -->
+    <div class="modal fade" id="instanceModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Crafty Instance</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="instanceForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label for="instanceName" class="form-label">Instance Name</label>
+                            <input type="text" class="form-control" id="instanceName" name="name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="instanceUrl" class="form-label">API URL</label>
+                            <input type="url" class="form-control" id="instanceUrl" name="api_url" 
+                                   placeholder="https://your-crafty-server.com:8443" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="instanceToken" class="form-label">API Token</label>
+                            <input type="password" class="form-control" id="instanceToken" name="api_token" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="instanceDescription" class="form-label">Description (Optional)</label>
+                            <textarea class="form-control" id="instanceDescription" name="description" rows="2"></textarea>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="instanceEnabled" name="enabled" checked>
+                            <label class="form-check-label" for="instanceEnabled">
+                                Enable this instance
+                            </label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Add Instance</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Instance Modal -->
+    <div class="modal fade" id="editInstanceModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Crafty Instance</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <form id="editInstanceForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                    <input type="hidden" id="editInstanceId" name="instance_id"/>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label for="editInstanceName" class="form-label">Instance Name</label>
+                            <input type="text" class="form-control" id="editInstanceName" name="name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editInstanceUrl" class="form-label">API URL</label>
+                            <input type="url" class="form-control" id="editInstanceUrl" name="api_url" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editInstanceToken" class="form-label">API Token</label>
+                            <input type="password" class="form-control" id="editInstanceToken" name="api_token" placeholder="Leave blank to keep current token">
+                        </div>
+                        <div class="mb-3">
+                            <label for="editInstanceDescription" class="form-label">Description (Optional)</label>
+                            <textarea class="form-control" id="editInstanceDescription" name="description" rows="2"></textarea>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="editInstanceEnabled" name="enabled">
+                            <label class="form-check-label" for="editInstanceEnabled">
+                                Enable this instance
+                            </label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Update Instance</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Permissions Modal -->
+    <div class="modal fade" id="permissionsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Manage Crafty Commands Permissions</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Current Permissions -->
+                    <div class="mb-4">
+                        <h6>Current Command Permissions</h6>
+                        <div id="currentCommandPermissions">
+                            <!-- Will be populated by JavaScript -->
+                        </div>
+                    </div>
+                    
+                    <!-- Add Permission Form -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h6 class="mb-0">Add User/Role Permission</h6>
+                        </div>
+                        <div class="card-body">
+                            <form id="addCommandPermissionForm">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="mb-3">
+                                            <label class="form-label">Command</label>
+                                            <select class="form-select" id="commandName" name="command_name" required>
+                                                <option value="">Select command...</option>
+                                                <option value="start_crafty_server">Start Server</option>
+                                                <option value="stop_crafty_server">Stop Server</option>
+                                                <option value="restart_crafty_server">Restart Server</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Permission Type</label>
+                                            <select class="form-select" id="permissionType" name="permission_type" required>
+                                                <option value="">Select type...</option>
+                                                <option value="user">User</option>
+                                                <option value="role">Role</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3" id="userSelectDiv" style="display: none;">
+                                            <label class="form-label">User</label>
+                                            <select class="form-select" id="userId" name="user_id">
+                                                <option value="">Select user...</option>
+                                                {% for user in guild_users %}
+                                                    <option value="{{ user.id }}">{{ user.name }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="mb-3" id="roleSelectDiv" style="display: none;">
+                                            <label class="form-label">Role</label>
+                                            <select class="form-select" id="roleId" name="role_id">
+                                                <option value="">Select role...</option>
+                                                {% for role in guild_roles %}
+                                                    <option value="{{ role.id }}">{{ role.name }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="alert alert-info">
+                                            <h6>Command Descriptions:</h6>
+                                            <ul class="mb-0 small">
+                                                <li><strong>Start Server:</strong> Allows starting Minecraft servers</li>
+                                                <li><strong>Stop Server:</strong> Allows stopping Minecraft servers</li>
+                                                <li><strong>Restart Server:</strong> Allows restarting Minecraft servers</li>
+                                                <li><strong>List Servers:</strong> Allows viewing available servers</li>
+                                                <li><strong>Server Status:</strong> Allows checking server status</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-success">Add Permission</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DNS Record Modal -->
+    <div class="modal fade" id="dnsRecordModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Manage DNS Record</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="dnsServerId"/>
+                    <form id="dnsRecordForm">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <div class="mb-3">
+                            <label for="hostname" class="form-label">Hostname</label>
+                            <input type="text" class="form-control" id="hostname" name="hostname" placeholder="play" required>
+                            <div class="form-text">This will create: _minecraft._tcp.{hostname}.{domain}</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="port" class="form-label">Port</label>
+                            <input type="number" class="form-control" id="port" name="port" min="1" max="65535" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="priority" class="form-label">Priority</label>
+                            <input type="number" class="form-control" id="priority" name="priority" min="0" value="0">
+                            <small class="form-text text-muted">Lower values have higher priority (default: 0)</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="weight" class="form-label">Weight</label>
+                            <input type="number" class="form-control" id="weight" name="weight" min="0" value="5">
+                            <small class="form-text text-muted">Used for load balancing between records with same priority (default: 5)</small>
+                        </div>
+                        <div class="alert alert-info">
+                            <small>
+                                <strong>Note:</strong> This will create an SRV record pointing to mc.randomstuff.cc.
+                            </small>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="createDnsRecord()">Create Record</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit DNS Record Modal -->
+    <div class="modal fade" id="editDnsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit DNS Record</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editDnsRecordId"/>
+                    <form id="editDnsRecordForm">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                        <div class="mb-3">
+                            <label for="editHostname" class="form-label">Hostname</label>
+                            <input type="text" class="form-control" id="editHostname" name="hostname" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editPort" class="form-label">Port</label>
+                            <input type="number" class="form-control" id="editPort" name="port" min="1" max="65535" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editPriority" class="form-label">Priority</label>
+                            <input type="number" class="form-control" id="editPriority" name="priority" min="0" value="0">
+                            <small class="form-text text-muted">Lower values have higher priority (default: 0)</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editWeight" class="form-label">Weight</label>
+                            <input type="number" class="form-control" id="editWeight" name="weight" min="0" value="5">
+                            <small class="form-text text-muted">Used for load balancing between records with same priority (default: 5)</small>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="updateDnsRecord()">Update Record</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; color: #555;">
+        <p>
+            &copy; 2025 RuleKeeper. All rights reserved. |
+            <a href="/privacy-policy" style="color: #0066cc; text-decoration: none;">Privacy Policy</a> |
+            <a href="/terms-of-service" style="color: #0066cc; text-decoration: none;">Terms of Service</a> |
+            <a href="/end-user-license-agreement" style="color: #0066cc; text-decoration: none;">End User License Agreement</a>
+        </p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        // CSRF token for AJAX requests
+        const csrfToken = '{{ csrf_token() }}';
+
+        // Form submissions
+        $('#cloudflareForm').on('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            
+            $.ajax({
+                url: '/api/{{ guild.guild_id }}/crafty/cloudflare',
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    location.reload();
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Configuration failed'));
+                }
+            });
+        });
+
+        $('#instanceForm').on('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            
+            $.ajax({
+                url: '/api/{{ guild.guild_id }}/crafty/instances',
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    if (response.success) {
+                        location.reload();
+                    } else {
+                        alert('Error: ' + (response.message || 'Failed to add instance'));
+                    }
+                },
+                error: function(xhr) {
+                    console.error('Instance creation error:', xhr);
+                    let errorMessage = 'Failed to add instance';
+                    if (xhr.responseJSON && xhr.responseJSON.message) {
+                        errorMessage = xhr.responseJSON.message;
+                    } else if (xhr.responseText) {
+                        try {
+                            const errorData = JSON.parse(xhr.responseText);
+                            errorMessage = errorData.message || errorMessage;
+                        } catch (e) {
+                            errorMessage = `HTTP ${xhr.status}: ${xhr.statusText}`;
+                        }
+                    }
+                    alert('Error: ' + errorMessage);
+                }
+            });
+        });
+
+        // Action functions
+        function testCloudflareConnection() {
+            $.post('/api/{{ guild.guild_id }}/crafty/cloudflare/test', {csrf_token: csrfToken})
+                .done(function(data) {
+                    alert(data.success ? 'Connection successful!' : 'Connection failed: ' + data.message);
+                })
+                .fail(function() {
+                    alert('Failed to test connection');
+                });
+        }
+
+        function syncDnsRecords() {
+            $.post('/api/{{ guild.guild_id }}/crafty/cloudflare/sync', {csrf_token: csrfToken})
+                .done(function(data) {
+                    alert(data.message);
+                    if (data.success) location.reload();
+                })
+                .fail(function() {
+                    alert('Failed to sync DNS records');
+                });
+        }
+
+        function testInstanceConnection(instanceId) {
+            $.post(`/api/{{ guild.guild_id }}/crafty/instances/${instanceId}/test`, {csrf_token: csrfToken})
+                .done(function(data) {
+                    alert(data.success ? 'Connection successful!' : 'Connection failed: ' + data.message);
+                })
+                .fail(function() {
+                    alert('Failed to test connection');
+                });
+        }
+
+        function syncInstanceServers(instanceId) {
+            $.post(`/api/{{ guild.guild_id }}/crafty/instances/${instanceId}/sync`, {csrf_token: csrfToken})
+                .done(function(data) {
+                    alert(data.message);
+                    if (data.success) location.reload();
+                })
+                .fail(function() {
+                    alert('Failed to sync servers');
+                });
+        }
+
+        function deleteInstance(instanceId) {
+            if (confirm('Are you sure you want to delete this instance? This will also remove all associated servers and permissions.')) {
+                $.ajax({
+                    url: `/api/{{ guild.guild_id }}/crafty/instances/${instanceId}`,
+                    method: 'DELETE',
+                    data: {csrf_token: csrfToken},
+                    success: function() {
+                        location.reload();
+                    },
+                    error: function() {
+                        alert('Failed to delete instance');
+                    }
+                });
+            }
+        }
+
+        function serverAction(serverId, action) {
+            $.post(`/api/{{ guild.guild_id }}/crafty/servers/${serverId}/${action}`, {csrf_token: csrfToken})
+                .done(function(data) {
+                    alert(data.message);
+                    // Refresh statuses after action
+                    refreshServerStatuses();
+                })
+                .fail(function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || `Failed to ${action} server`));
+                });
+        }
+
+        function refreshServerStatuses() {
+            // Show loading indicator
+            $('.status-indicator').removeClass('status-online status-offline status-unknown').addClass('status-loading');
+            
+            $.get(`/api/{{ guild.guild_id }}/crafty/servers/status`)
+                .done(function(response) {
+                    if (response.success) {
+                        updateServerStatuses(response.statuses);
+                    } else {
+                        alert('Error: ' + (response.message || 'Failed to refresh server statuses'));
+                        // Reset indicators to unknown on error
+                        $('.status-indicator').removeClass('status-loading').addClass('status-unknown');
+                    }
+                })
+                .fail(function(xhr) {
+                    alert('Error: Failed to refresh server statuses');
+                    // Reset indicators to unknown on error
+                    $('.status-indicator').removeClass('status-loading').addClass('status-unknown');
+                });
+        }
+
+        function updateServerStatuses(statuses) {
+            // Update each server's status indicator and buttons
+            for (const serverId in statuses) {
+                const status = statuses[serverId];
+                const serverCard = $(`.server-card:has([onclick*="serverAction(${serverId}"])`);
+                const statusIndicator = serverCard.find('.status-indicator');
+                const actionButtons = serverCard.find('.server-actions');
+                
+                // Update status indicator
+                statusIndicator.removeClass('status-loading status-online status-offline status-unknown');
+                if (status.running === true) {
+                    statusIndicator.addClass('status-online');
+                    serverCard.removeClass('offline');
+                } else if (status.running === false) {
+                    statusIndicator.addClass('status-offline');
+                    serverCard.addClass('offline');
+                } else {
+                    statusIndicator.addClass('status-unknown');
+                    serverCard.removeClass('offline');
+                }
+                
+                // Update action buttons
+                if (status.running === true) {
+                    // Server is running: show stop and restart buttons
+                    actionButtons.html(`
+                        <button class="btn btn-warning btn-sm" onclick="serverAction(${serverId}, 'restart')">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Restart
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="serverAction(${serverId}, 'stop')">
+                            <i class="bi bi-stop-fill me-1"></i>Stop
+                        </button>
+                    `);
+                } else if (status.running === false) {
+                    // Server is stopped: show start button only
+                    actionButtons.html(`
+                        <button class="btn btn-success btn-sm" onclick="serverAction(${serverId}, 'start')">
+                            <i class="bi bi-play-fill me-1"></i>Start
+                        </button>
+                    `);
+                } else {
+                    // Status unknown: show all buttons but disabled
+                    const errorMsg = status.error || 'Unknown';
+                    actionButtons.html(`
+                        <button class="btn btn-success btn-sm" onclick="serverAction(${serverId}, 'start')" disabled>
+                            <i class="bi bi-play-fill me-1"></i>Start
+                        </button>
+                        <button class="btn btn-warning btn-sm" onclick="serverAction(${serverId}, 'restart')" disabled>
+                            <i class="bi bi-arrow-clockwise me-1"></i>Restart
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="serverAction(${serverId}, 'stop')" disabled>
+                            <i class="bi bi-stop-fill me-1"></i>Stop
+                        </button>
+                        <small class="text-muted ms-2">Status: ${errorMsg}</small>
+                    `);
+                }
+            }
+        }
+
+        function toggleDebugInfo() {
+            $('.debug-info').toggle();
+        }
+
+        function deleteServer(serverId) {
+            if (confirm('Are you sure you want to remove this server?')) {
+                $.ajax({
+                    url: `/api/{{ guild.guild_id }}/crafty/servers/${serverId}`,
+                    method: 'DELETE',
+                    data: {csrf_token: csrfToken},
+                    success: function() {
+                        location.reload();
+                    },
+                    error: function() {
+                        alert('Failed to remove server');
+                    }
+                });
+            }
+        }
+
+        // Placeholder functions - will need more complex modals
+        function editInstance(instanceId) {
+            // Load instance data
+            $.get(`/api/{{ guild.guild_id }}/crafty/instances/${instanceId}`)
+                .done(function(data) {
+                    $('#editInstanceId').val(instanceId);
+                    $('#editInstanceName').val(data.name);
+                    $('#editInstanceUrl').val(data.api_url);
+                    $('#editInstanceDescription').val(data.description);
+                    $('#editInstanceEnabled').prop('checked', data.enabled);
+                    $('#editInstanceModal').modal('show');
+                })
+                .fail(function() {
+                    alert('Failed to load instance data');
+                });
+        }
+
+        function managePermissions() {
+            loadCommandPermissions();
+            $('#permissionsModal').modal('show');
+        }
+
+        function manageDnsRecord(serverId) {
+            $('#dnsServerId').val(serverId);
+            $('#dnsRecordModal').modal('show');
+        }
+
+        function editDnsRecord(recordId) {
+            // Load DNS record data
+            $.get(`/api/{{ guild.guild_id }}/crafty/dns/${recordId}`)
+                .done(function(response) {
+                    if (response.success && response.record) {
+                        $('#editDnsRecordId').val(recordId);
+                        $('#editHostname').val(response.record.hostname);
+                        $('#editPort').val(response.record.port);
+                        $('#editPriority').val(response.record.priority || 0);
+                        $('#editWeight').val(response.record.weight || 5);
+                        $('#editDnsModal').modal('show');
+                    } else {
+                        alert('Failed to load DNS record data: ' + (response.message || 'Unknown error'));
+                    }
+                })
+                .fail(function(xhr) {
+                    alert('Failed to load DNS record data: ' + (xhr.responseJSON?.message || 'Network error'));
+                });
+        }
+
+        function deleteDnsRecord(recordId) {
+            if (confirm('Are you sure you want to delete this DNS record?')) {
+                $.ajax({
+                    url: `/api/{{ guild.guild_id }}/crafty/dns/${recordId}`,
+                    method: 'DELETE',
+                    data: {csrf_token: csrfToken},
+                    success: function() {
+                        location.reload();
+                    },
+                    error: function() {
+                        alert('Failed to delete DNS record');
+                    }
+                });
+            }
+        }
+    </script>
+
+    <!-- Additional JavaScript for modal forms -->
+    <script>
+        // Additional form submissions
+        $('#editInstanceForm').on('submit', function(e) {
+            e.preventDefault();
+            const instanceId = $('#editInstanceId').val();
+            const formData = new FormData(this);
+            
+            $.ajax({
+                url: `/api/{{ guild.guild_id }}/crafty/instances/${instanceId}`,
+                method: 'PUT',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    location.reload();
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to update instance'));
+                }
+            });
+        });
+
+        $('#addCommandPermissionForm').on('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            
+            $.ajax({
+                url: `/api/{{ guild.guild_id }}/crafty/command-permissions`,
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    loadCommandPermissions();
+                    $('#addCommandPermissionForm')[0].reset();
+                    $('#permissionType').change();
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to add permission'));
+                }
+            });
+        });
+
+        // Permission type change handler
+        $('#permissionType').on('change', function() {
+            const type = $(this).val();
+            $('#userSelectDiv').toggle(type === 'user');
+            $('#roleSelectDiv').toggle(type === 'role');
+        });
+
+        // Helper functions
+        function loadCommandPermissions() {
+            const commands = ['start_crafty_server', 'stop_crafty_server', 'restart_crafty_server'];
+            
+            // Get available roles and users from the page context
+            const availableRoles = {{ guild_roles | tojson }};
+            const availableUsers = {{ guild_users | tojson }};
+            
+            $.get(`/api/{{ guild.guild_id }}/crafty/command-permissions`)
+                .done(function(data) {
+                    let html = '';
+                    commands.forEach(command => {
+                        const permissions = data[command] || { allow_roles: [], allow_users: [] };
+                        const commandName = command.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        
+                        html += `<div class="card mb-2">
+                            <div class="card-header">
+                                <h6 class="mb-0">${commandName}</h6>
+                            </div>
+                            <div class="card-body">`;
+                        
+                        if (permissions.allow_roles && permissions.allow_roles.length > 0) {
+                            html += '<p class="mb-1"><strong>Allowed Roles:</strong></p><ul class="mb-2">';
+                            permissions.allow_roles.forEach(roleId => {
+                                // Look up role name from available roles
+                                const role = availableRoles.find(r => r.id === roleId);
+                                const roleName = role ? role.name : `Role ${roleId}`;
+                                html += `<li>${roleName} <button class="btn btn-sm btn-outline-danger ms-1" onclick="removeCommandPermission('${command}', 'role', '${roleId}')">Remove</button></li>`;
+                            });
+                            html += '</ul>';
+                        }
+                        
+                        if (permissions.allow_users && permissions.allow_users.length > 0) {
+                            html += '<p class="mb-1"><strong>Allowed Users:</strong></p><ul class="mb-2">';
+                            permissions.allow_users.forEach(userId => {
+                                // Look up user name from available users
+                                const user = availableUsers.find(u => u.id === userId);
+                                const userName = user ? user.name : `User ${userId}`;
+                                html += `<li>${userName} <button class="btn btn-sm btn-outline-danger ms-1" onclick="removeCommandPermission('${command}', 'user', '${userId}')">Remove</button></li>`;
+                            });
+                            html += '</ul>';
+                        }
+                        
+                        if ((!permissions.allow_roles || permissions.allow_roles.length === 0) && 
+                            (!permissions.allow_users || permissions.allow_users.length === 0)) {
+                            html += '<p class="text-warning mb-0"><i class="bi bi-exclamation-triangle me-1"></i>No permissions set - command is denied to all users</p>';
+                        }
+                        
+                        html += '</div></div>';
+                    });
+                    
+                    $('#currentCommandPermissions').html(html);
+                })
+                .fail(function() {
+                    $('#currentCommandPermissions').html('<p class="text-danger">Failed to load command permissions</p>');
+                });
+        }
+
+        function removeCommandPermission(command, type, targetId) {
+            if (confirm(`Are you sure you want to remove this ${type} permission for ${command}?`)) {
+                $.ajax({
+                    url: `/api/{{ guild.guild_id }}/crafty/command-permissions/${command}`,
+                    method: 'DELETE',
+                    data: {
+                        csrf_token: csrfToken,
+                        permission_type: type,
+                        target_id: targetId
+                    },
+                    success: function() {
+                        loadCommandPermissions();
+                    },
+                    error: function() {
+                        alert('Failed to remove permission');
+                    }
+                });
+            }
+        }
+
+        function createDnsRecord() {
+            const serverId = $('#dnsServerId').val();
+            const formData = new FormData(document.getElementById('dnsRecordForm'));
+            formData.append('server_id', serverId);
+            
+            $.ajax({
+                url: `/api/{{ guild.guild_id }}/crafty/dns`,
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    alert('DNS record created successfully!');
+                    $('#dnsRecordModal').modal('hide');
+                    location.reload();
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to create DNS record'));
+                }
+            });
+        }
+
+        function updateDnsRecord() {
+            const recordId = $('#editDnsRecordId').val();
+            const formData = new FormData(document.getElementById('editDnsRecordForm'));
+            
+            $.ajax({
+                url: `/api/{{ guild.guild_id }}/crafty/dns/${recordId}`,
+                method: 'PUT',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    alert('DNS record updated successfully!');
+                    $('#editDnsModal').modal('hide');
+                    location.reload();
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to update DNS record'));
+                }
+            });
+        }
+    </script>
+
+    <!-- Server Scheduling JavaScript -->
+    <script>
+        // Load schedules on page load
+        $(document).ready(function() {
+            loadSchedules();
+            
+            // Show/hide idle minutes field based on player check
+            $('#scheduleCheckPlayers').change(function() {
+                if (this.checked) {
+                    $('#idleMinutesDiv').show();
+                } else {
+                    $('#idleMinutesDiv').hide();
+                }
+            });
+            
+            // Set default date to tomorrow
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            $('#scheduleStartDate').val(tomorrow.toISOString().split('T')[0]);
+        });
+
+        function loadSchedules() {
+            $.get(`/api/{{ guild.guild_id }}/crafty/schedules`)
+                .done(function(data) {
+                    if (data.success) {
+                        displaySchedules(data.schedules);
+                    } else {
+                        $('#schedules-container').html('<div class="text-center py-3 text-danger">Failed to load schedules</div>');
+                    }
+                })
+                .fail(function() {
+                    $('#schedules-container').html('<div class="text-center py-3 text-danger">Error loading schedules</div>');
+                });
+        }
+
+        function displaySchedules(schedules) {
+            const container = $('#schedules-container');
+            
+            if (schedules.length === 0) {
+                container.html(`
+                    <div class="text-center py-4">
+                        <i class="bi bi-calendar-x text-muted" style="font-size: 3rem;"></i>
+                        <h5 class="mt-3">No Schedules</h5>
+                        <p class="text-muted">Create your first server schedule to automate start, stop, and restart actions.</p>
+                    </div>
+                `);
+                return;
+            }
+
+            let html = '';
+            schedules.forEach(function(schedule) {
+                const actionIcon = {
+                    'start': 'play-circle-fill',
+                    'stop': 'stop-circle-fill',
+                    'restart': 'arrow-clockwise'
+                }[schedule.action] || 'circle';
+                
+                const actionColor = {
+                    'start': 'success',
+                    'stop': 'danger',
+                    'restart': 'warning'
+                }[schedule.action] || 'secondary';
+
+                const nextRunText = schedule.next_run_local !== 'Error' 
+                    ? `${schedule.next_run_local} (${schedule.timezone})`
+                    : 'Error calculating next run';
+
+                const timeUntil = schedule.seconds_until > 0 
+                    ? formatTimeUntil(schedule.seconds_until)
+                    : 'Past due';
+
+                html += `
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <h6 class="card-title">
+                                        <i class="bi bi-${actionIcon} text-${actionColor} me-2"></i>
+                                        ${schedule.action.charAt(0).toUpperCase() + schedule.action.slice(1)} ${schedule.server_name}
+                                        ${schedule.enabled ? '<span class="badge bg-success ms-2">Enabled</span>' : '<span class="badge bg-secondary ms-2">Disabled</span>'}
+                                    </h6>
+                                    <p class="card-text">
+                                        <small class="text-muted">
+                                            <i class="bi bi-server me-1"></i>Instance: ${schedule.instance_name}<br>
+                                            <i class="bi bi-clock me-1"></i>Every ${schedule.frequency_value} ${schedule.frequency_unit}<br>
+                                            <i class="bi bi-calendar-event me-1"></i>Next run: ${nextRunText}
+                                            ${schedule.seconds_until > 0 ? `<span class="text-primary">(in ${timeUntil})</span>` : ''}
+                                        </small>
+                                    </p>
+                                    ${schedule.check_player_count ? '<small class="badge bg-info">Player check enabled</small>' : ''}
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-outline-primary btn-sm" onclick="viewScheduleLogs(${schedule.id})">
+                                        <i class="bi bi-clock-history"></i> Logs
+                                    </button>
+                                    <button class="btn btn-outline-warning btn-sm" onclick="toggleSchedule(${schedule.id})">
+                                        <i class="bi bi-${schedule.enabled ? 'pause' : 'play'}"></i> ${schedule.enabled ? 'Disable' : 'Enable'}
+                                    </button>
+                                    <button class="btn btn-outline-danger btn-sm" onclick="deleteSchedule(${schedule.id})">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.html(html);
+        }
+
+        function formatTimeUntil(seconds) {
+            if (seconds < 60) return `${seconds} seconds`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} minutes`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours`;
+            return `${Math.floor(seconds / 86400)} days`;
+        }
+
+        // Schedule form submission
+        $('#scheduleForm').on('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            
+            $.ajax({
+                url: `/api/{{ guild.guild_id }}/crafty/schedules`,
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success: function(response) {
+                    if (response.success) {
+                        alert('Schedule created successfully!');
+                        $('#scheduleModal').modal('hide');
+                        $('#scheduleForm')[0].reset();
+                        loadSchedules();
+                    } else {
+                        alert('Error: ' + response.message);
+                    }
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to create schedule'));
+                }
+            });
+        });
+
+        function deleteSchedule(scheduleId) {
+            if (confirm('Are you sure you want to delete this schedule?')) {
+                $.ajax({
+                    url: `/api/{{ guild.guild_id }}/crafty/schedules/${scheduleId}`,
+                    method: 'DELETE',
+                    data: {csrf_token: csrfToken},
+                    success: function(response) {
+                        if (response.success) {
+                            alert('Schedule deleted successfully!');
+                            loadSchedules();
+                        } else {
+                            alert('Error: ' + response.message);
+                        }
+                    },
+                    error: function(xhr) {
+                        alert('Error: ' + (xhr.responseJSON?.message || 'Failed to delete schedule'));
+                    }
+                });
+            }
+        }
+
+        function toggleSchedule(scheduleId) {
+            $.ajax({
+                url: `/api/{{ guild.guild_id }}/crafty/schedules/${scheduleId}/toggle`,
+                method: 'POST',
+                data: {csrf_token: csrfToken},
+                success: function(response) {
+                    if (response.success) {
+                        loadSchedules(); // Reload to show updated status
+                    } else {
+                        alert('Error: ' + response.message);
+                    }
+                },
+                error: function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to toggle schedule'));
+                }
+            });
+        }
+
+        function viewScheduleLogs(scheduleId) {
+            $.get(`/api/{{ guild.guild_id }}/crafty/schedules/${scheduleId}/logs`)
+                .done(function(data) {
+                    if (data.success) {
+                        displayScheduleLogs(data.logs);
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .fail(function(xhr) {
+                    alert('Error: ' + (xhr.responseJSON?.message || 'Failed to load logs'));
+                });
+        }
+
+        function displayScheduleLogs(logs) {
+            let html = '<div class="modal fade" id="logsModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content">';
+            html += '<div class="modal-header"><h5 class="modal-title">Schedule Execution Logs</h5>';
+            html += '<button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>';
+            html += '<div class="modal-body" style="max-height: 400px; overflow-y: auto;">';
+            
+            if (logs.length === 0) {
+                html += '<p class="text-muted text-center">No execution logs yet.</p>';
+            } else {
+                html += '<table class="table table-sm"><thead><tr><th>Time</th><th>Status</th><th>Players</th><th>Error</th></tr></thead><tbody>';
+                logs.forEach(function(log) {
+                    const statusIcon = log.success ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-danger"></i>';
+                    const players = log.player_count !== null ? log.player_count : 'N/A';
+                    const error = log.error_message || '';
+                    html += `<tr><td>${new Date(log.executed_at).toLocaleString()}</td><td>${statusIcon}</td><td>${players}</td><td class="text-danger small">${error}</td></tr>`;
+                });
+                html += '</tbody></table>';
+            }
+            
+            html += '</div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div>';
+            html += '</div></div></div>';
+            
+            // Remove existing modal if any
+            $('#logsModal').remove();
+            
+            // Add and show new modal
+            $('body').append(html);
+            $('#logsModal').modal('show');
+            
+            // Clean up when modal is hidden
+            $('#logsModal').on('hidden.bs.modal', function() {
+                $(this).remove();
+            });
+        }
+    </script>
+</body>
+</html>

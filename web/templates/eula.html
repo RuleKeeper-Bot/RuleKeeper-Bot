@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>End User License Agreement (EULA) - RuleKeeper</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -26,11 +29,12 @@
             margin-bottom: 30px;
         }
     </style>
+    {% include 'dark_mode_include.html' %}
 </head>
 <body>
 
 <h1>End User License Agreement (EULA)</h1>
-<p><em>Last updated: April 27, 2025</em></p>
+<p><em>Last updated: October 19, 2025</em></p>
 <p>Please read this End User License Agreement ("Agreement") carefully before using RuleKeeper ("Software"). By installing, hosting, accessing, or otherwise using the Software, you agree to be bound by the terms of this Agreement.</p>
 
 <section>
@@ -46,41 +50,127 @@
 </section>
 
 <section>
-    <h2>2. Usage Restrictions</h2>
-    <p>You agree not to:</p>
+    <h2>2. Features Covered</h2>
+    <p>This EULA applies to all features of RuleKeeper, including but not limited to:</p>
     <ul>
-        <li>Use the Software to violate Discord's Terms of Service or Community Guidelines.</li>
-        <li>Use the Software for unlawful, malicious, or abusive purposes.</li>
-        <li>Misrepresent the origin of the Software or remove legal notices.</li>
+        <li><strong>Moderation Tools:</strong> Warning systems, auto-moderation, spam detection, and blocked word filters.</li>
+        <li><strong>Leveling System:</strong> XP tracking, level progression, role rewards, and leaderboards.</li>
+        <li><strong>Music Playback:</strong> Queue management, playlists, and audio streaming.</li>
+        <li><strong>Server Backups:</strong> Automated and manual backup creation and restoration.</li>
+        <li><strong>Crafty Controller Integration:</strong> Minecraft server management commands.</li>
+        <li><strong>Custom Commands:</strong> User-defined commands with configurable responses.</li>
+        <li><strong>Event Logging:</strong> Server event tracking and moderation logs.</li>
+        <li><strong>Fun & Utilities:</strong> Birthday tracking and miscellaneous utility commands.</li>
     </ul>
 </section>
 
 <section>
-    <h2>3. Privacy</h2>
-    <p>Your use of the Software is subject to the <a href="/privacy-policy" target="_blank">Privacy Policy</a> which explains what data may be collected and how it is handled.</p>
-    <p>If you self-host the Software, you are responsible for any data you collect through your instance.</p>
+    <h2>3. Usage Restrictions</h2>
+    <p>You agree not to:</p>
+    <ul>
+        <li>Use the Software to violate <a href="https://discord.com/terms" target="_blank">Discord's Terms of Service</a> or <a href="https://discord.com/guidelines" target="_blank">Community Guidelines</a>.</li>
+        <li>Use the Software for unlawful, malicious, or abusive purposes.</li>
+        <li>Misrepresent the origin of the Software or remove legal notices.</li>
+        <li>Attempt to exploit, reverse engineer (except as permitted by the MPL 2.0), or compromise the Software's security.</li>
+        <li>Use the Software to spam, harass, or distribute malicious content.</li>
+    </ul>
 </section>
 
 <section>
-    <h2>4. Disclaimer of Warranty</h2>
-    <p>The Software is provided "AS IS," without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and noninfringement.</p>
-    <p>Use of the Software is at your own risk.</p>
+    <h2>4. Privacy & Data Collection</h2>
+    <p>Your use of the Software is subject to the <a href="/privacy-policy">Privacy Policy</a>, which explains:</p>
+    <ul>
+        <li>What data is collected (user IDs, server configurations, levels, playlists, logs, etc.)</li>
+        <li>How data is stored and secured</li>
+        <li>Your rights to access, modify, and delete your data</li>
+    </ul>
+    <p>If you self-host the Software, you are solely responsible for:</p>
+    <ul>
+        <li>Complying with applicable data protection laws (GDPR, CCPA, etc.)</li>
+        <li>Securing and managing data collected by your instance</li>
+        <li>Informing users of your data collection practices</li>
+    </ul>
 </section>
 
 <section>
-    <h2>5. Limitation of Liability</h2>
-    <p>In no event shall the creators, contributors, or maintainers of RuleKeeper be liable for any damages arising from the use or inability to use the Software, including but not limited to lost profits, data loss, or business interruption.</p>
+    <h2>5. Disclaimer of Warranty</h2>
+    <p>The Software is provided "AS IS," without warranty of any kind, express or implied, including but not limited to warranties of:</p>
+    <ul>
+        <li>Merchantability</li>
+        <li>Fitness for a particular purpose</li>
+        <li>Noninfringement</li>
+        <li>Continuous or error-free operation</li>
+        <li>Accuracy or reliability of data or features</li>
+    </ul>
+    <p>The Software may contain bugs, experience downtime, or lose data. Use of the Software is entirely at your own risk.</p>
 </section>
 
 <section>
-    <h2>6. Termination</h2>
-    <p>This Agreement is effective until terminated. You may terminate it by discontinuing use and deleting all copies of the Software.<br>
-    Your rights under this Agreement will terminate automatically if you fail to comply with any term(s).</p>
+    <h2>6. Limitation of Liability</h2>
+    <p>In no event shall the creators, contributors, or maintainers of RuleKeeper be liable for any damages arising from the use or inability to use the Software, including but not limited to:</p>
+    <ul>
+        <li>Lost profits or revenue</li>
+        <li>Data loss or corruption</li>
+        <li>Business interruption</li>
+        <li>Server disruptions or moderation errors</li>
+        <li>Damage caused by bugs, misconfigurations, or third-party service failures</li>
+        <li>Actions taken by server administrators using the Software</li>
+    </ul>
+    <p>This limitation applies even if the developers have been advised of the possibility of such damages.</p>
 </section>
 
 <section>
-    <h2>7. Changes to the Agreement</h2>
-    <p>This Agreement may be updated occasionally. Significant changes will be announced through official channels (e.g., GitHub repository, bot announcements).</p>
+    <h2>7. Third-Party Services</h2>
+    <p>The Software integrates with third-party services that have their own terms and policies:</p>
+    <ul>
+        <li><strong>Discord:</strong> Subject to <a href="https://discord.com/terms" target="_blank">Discord's Terms of Service</a> and <a href="https://discord.com/guidelines" target="_blank">Community Guidelines</a>.</li>
+        <li><strong>YouTube:</strong> Notification features use YouTube's API and are subject to <a href="https://www.youtube.com/t/terms" target="_blank">YouTube's Terms of Service</a>.</li>
+        <li><strong>Crafty Controller:</strong> Minecraft server management requires a separate Crafty Controller instance.</li>
+        <li><strong>Cloudflare:</strong> Optional domain management integration.</li>
+    </ul>
+    <p>The developers of RuleKeeper are not responsible for these third-party services or their availability.</p>
+</section>
+
+<section>
+    <h2>8. Termination</h2>
+    <p>This Agreement is effective until terminated.</p>
+    <p><strong>Termination by You:</strong></p>
+    <ul>
+        <li>You may terminate this Agreement at any time by discontinuing use and removing the Software from your servers.</li>
+        <li>If self-hosting, delete all copies of the Software and associated data.</li>
+    </ul>
+    <p><strong>Automatic Termination:</strong></p>
+    <ul>
+        <li>Your rights under this Agreement will terminate automatically if you fail to comply with any terms.</li>
+        <li>The developers may block access to hosted instances for violations of this Agreement.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>9. Changes to the Agreement</h2>
+    <p>This Agreement may be updated to reflect new features, legal requirements, or changes to the Software. Significant changes will be announced through:</p>
+    <ul>
+        <li>The official <a href="https://github.com/RuleKeeper-Bot/RuleKeeper-Bot" target="_blank">GitHub repository</a></li>
+        <li>Bot announcements in your server (if enabled)</li>
+        <li>The web dashboard</li>
+    </ul>
+    <p>Continued use of the Software after changes constitutes acceptance of the updated Agreement.</p>
+</section>
+
+<section>
+    <h2>10. Contact Information</h2>
+    <p>For questions about this Agreement, licensing, or legal matters:</p>
+    <ul>
+        <li>Open an issue on the <a href="https://github.com/RuleKeeper-Bot/RuleKeeper-Bot" target="_blank">GitHub repository</a></li>
+        <li>Review the <a href="/privacy-policy">Privacy Policy</a> and <a href="/terms">Terms of Service</a></li>
+        <li>Contact the bot administrator through Discord</li>
+        <li>Email: <a href="mailto:contact@rulekeeper.cc">contact@rulekeeper.cc</a></li>
+    </ul>
+</section>
+
+<section>
+    <h2>11. Governing Law</h2>
+    <p>This Agreement is governed by the laws of the jurisdiction where the Software operator resides. If you self-host the Software, you are responsible for compliance with your local laws and regulations.</p>
 </section>
 
 </body>

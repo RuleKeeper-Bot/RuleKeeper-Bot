@@ -6,16 +6,17 @@
   <title>RuleKeeper Bot</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons/font/bootstrap-icons.css" rel="stylesheet">
-  <link rel="icon" type="image/x-icon" href="../static/images/favicon.ico">
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+  {% include 'dark_mode_include.html' %}
 </head>
 <body class="bg-gray-900 text-white font-sans leading-relaxed">
 
-  <header class="bg-gray-800 p-6 shadow-md">
+  <header class="bg-gray-800 p-6">
     <div class="container mx-auto text-center">
       <h1 class="text-4xl font-bold text-teal-400 flex justify-center items-center gap-3">
         <img src="../static/images/icon.png" alt="RuleKeeper Icon" class="w-10 h-10 inline-block"> RuleKeeper
       </h1>
-      <p class="text-gray-300 mt-2 text-lg">The All-Purpose Discord Bot for Moderation, Automation & More</p>
+      <p class="text-gray-300 mt-2 text-lg">The All-Purpose Discord Bot for Moderation, Automation & Much, Much, More</p>
     </div>
   </header>
 
@@ -39,7 +40,7 @@
     <!-- Features Section -->
     <section>
       <h2 class="text-3xl font-semibold text-teal-300 mb-6">🚀 Bot Features</h2>
-      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
+      <div class="bg-gray-800 p-6 rounded-lg space-y-4">
         <ul class="list-disc ml-5 text-gray-300 space-y-2">
           <li><strong>Custom Commands:</strong>
             <ul class="list-disc ml-6">
@@ -97,7 +98,7 @@
 
     <section>
       <h2 class="text-3xl font-semibold text-teal-300 mb-6">💻 Dashboard Features</h2>
-      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
+      <div class="bg-gray-800 p-6 rounded-lg space-y-4">
         <ul class="list-disc ml-5 text-gray-300 space-y-2">
           <li><strong>Login Using Discord OAuth:</strong>
             <ul class="list-disc ml-6">
@@ -183,7 +184,7 @@
     <!-- Support & Permissions -->
     <section>
       <h2 class="text-3xl font-semibold text-teal-300 mb-4">💬 Support & Permissions</h2>
-      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4">
+      <div class="bg-gray-800 p-6 rounded-lg space-y-4">
         <p>Need help or want to suggest something? Join our support Discord server:</p>
         <a href="https://discord.gg/kcu7dJZKy9" class="inline-block bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 px-4 rounded">Join Support Server</a>
 
@@ -221,10 +222,10 @@
     <!-- Delete Data -->
     <section>
       <h2 class="text-3xl font-semibold text-teal-300 mb-4">🗑️ Delete My Data</h2>
-      <div class="bg-gray-800 p-6 rounded-lg shadow-md space-y-4 text-center">
+      <div class="bg-gray-800 p-6 rounded-lg space-y-4 text-center">
         <p>If you want to delete your data from our database, click the button below. This will remove all your data from all servers.</p>
         <a href="{{ url_for('delete_my_data') }}" class="inline-block">
-          <button type="submit" class="w-full max-w-xs mx-auto mt-6 bg-red-600 hover:bg-red-700 text-white text-xl font-bold py-4 px-8 rounded-lg shadow-lg transition-colors duration-200">
+          <button type="submit" class="w-full max-w-xs mx-auto mt-6 bg-red-600 hover:bg-red-700 text-white text-xl font-bold py-4 px-8 rounded-lg transition-colors duration-200">
             Delete My Data
           </button>
         </a>

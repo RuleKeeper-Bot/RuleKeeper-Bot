@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Audit Log - {{ guild_id }}</title>
+    <title>Audit Log for {{ guild.name }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="icon" type="image/x-icon" href="../../../static/images/favicon.ico">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    {% include 'dark_mode_include.html' %}
 </head>
 <body>
 <div class="container mt-4">
@@ -17,7 +18,7 @@
             {% endfor %}
         {% endif %}
     {% endwith %}
-    <h2>Audit Log for Guild {{ guild_id }}</h2>
+    <h2>Audit Log for {{ guild.name }}</h2>
     <a href="{{ url_for('admin_guilds') }}" class="btn btn-secondary mb-3">&larr; Back to Guilds</a>
     <div class="table-responsive">
         <table class="table table-striped table-bordered align-middle">

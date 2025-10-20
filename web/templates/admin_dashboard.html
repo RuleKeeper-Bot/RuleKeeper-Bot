@@ -4,7 +4,9 @@
     <title>Admin Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <link href="/static/style.css" rel="stylesheet">
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
+    {% include 'dark_mode_include.html' %}
     <style>
         .dashboard-card {
             transition: transform 0.2s;
@@ -75,6 +77,7 @@
             background-color: #f8f9fa;
         }
     </style>
+    {% include 'dark_mode_include.html' %}
 </head>
 <body>
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -87,6 +90,13 @@
             {% endfor %}
         {% endif %}
     {% endwith %}
+    {% if update_info.update_available and is_head_admin() %}
+    <div class="alert alert-warning alert-dismissible fade show" role="alert">
+        <strong>Update available!</strong> New version: {{ update_info.remote_version }} (Current: {{ update_info.local_version }})<br>
+        Please update via GitHub: <a href="{{ getenv('GITHUB_REPO_URL') }}" target="_blank">Repository</a>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
     <div class="container-fluid">
         <div class="row">
             <!-- Sidebar -->
@@ -109,11 +119,41 @@
                                 Manage Bot Admins
                             </a>
                         </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_ip_bans') }}">
+                                <i class="bi bi-shield-x me-2"></i>
+                                IP Bans
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('manage_user_guild_bans') }}">
+                                <i class="bi bi-person-x me-2"></i>
+                                User & Guild Bans
+                            </a>
+                        </li>
                         {% endif %}
                         <li class="nav-item">
                             <a class="nav-link" href="{{ url_for('admin_guilds') }}">
                                 <i class="bi bi-discord me-2"></i>
-                                Managed Guilds
+                                Manage Guilds
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_announcements') }}">
+                                <i class="bi bi-megaphone me-2"></i>
+                                Announcements
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('admin_audit_log') }}">
+                                <i class="bi bi-clock-history me-2"></i>
+                                Audit Log
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('settings') }}">
+                                <i class="bi bi-gear me-2"></i>
+                                Settings
                             </a>
                         </li>
                     </ul>
@@ -170,7 +210,12 @@
 				<div class="card mt-4 shadow-sm">
 					<div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
 						<h5 class="mb-0"><i class="bi bi-clipboard2-data me-2"></i>Audit Log</h5>
-						<small>Latest events</small>
+						<div class="d-flex align-items-center">
+							<small class="me-3">Latest events</small>
+							<a href="{{ url_for('admin_audit_log') }}" class="btn btn-outline-light btn-sm">
+								<i class="bi bi-eye me-1"></i>View All
+							</a>
+						</div>
 					</div>
 					<div class="card-body p-0">
 						<div class="table-responsive">
@@ -193,7 +238,12 @@
 											</span>
 										</td>
 										<td>
-											<span class="badge bg-{% if log.action == 'BOT_ADMIN_DELETED' %}danger{% elif log.action == 'PRIVILEGES_UPDATED' %}primary{% elif log.action == 'CONFIG_CHANGE' %}success{% else %}warning{% endif %}">
+											<span class="badge bg-{% if log.action == 'BOT_ADMIN_DELETED' %}danger{% elif log.action == 'PRIVILEGES_UPDATED' %}primary{% elif log.action == 'CONFIG_CHANGE' %}success{% elif log.action == 'GUILD_JOIN' %}info{% elif log.action == 'GUILD_LEAVE' %}secondary{% else %}warning{% endif %}">
+												{% if log.action == 'GUILD_JOIN' %}
+													<i class="bi bi-plus-circle me-1"></i>
+												{% elif log.action == 'GUILD_LEAVE' %}
+													<i class="bi bi-dash-circle me-1"></i>
+												{% endif %}
 												{{ log.action|replace('_', ' ')|title }}
 											</span>
 										</td>
@@ -220,6 +270,11 @@
 											<span class="badge bg-primary">
 												<i class="bi bi-person-fill-gear"></i>
 												{{ log.user_id|replace('BOT-ADMIN:', '') }}
+											</span>
+											{% elif 'SYSTEM:' in log.user_id %}
+											<span class="badge bg-success">
+												<i class="bi bi-robot"></i>
+												{{ log.user_id|replace('SYSTEM:', '') }}
 											</span>
 											{% else %}
 											<span class="text-muted">{{ log.user_id }}</span>
@@ -250,6 +305,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+    const csrfToken = '{{ csrf_token() }}';
     // Initialize popovers and tooltips
     document.addEventListener('DOMContentLoaded', function() {
         // Popovers for change details

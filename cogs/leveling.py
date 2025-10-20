@@ -5,6 +5,7 @@ import logging
 import traceback
 from bot.bot import get_level_data, save_level_data, get_level_config, calculate_xp_for_level, calculate_level, calculate_progress, calculate_xp_with_boost, handle_level_up
 from shared import command_permission_check
+from shared.colors import red
 try:
     from bot.bot import debug_print
 except ImportError:
@@ -71,73 +72,104 @@ class LevelingCog(commands.Cog):
             await interaction.response.send_message(embed=embed)
 
         except Exception as e:
-            logging.error(f"Level command error: {str(e)}")
-            await interaction.response.send_message(
-                "❌ Failed to load profile. Please try again later.",
-                ephemeral=True
-            )
+            debug_print(red(f"Level command error: {str(e)}"))
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "❌ Failed to load profile. Please try again later.",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "❌ Failed to load profile. Please try again later.",
+                        ephemeral=True
+                    )
+            except Exception as send_error:
+                debug_print(red(f"Failed to send error message in level command: {send_error}"))
 
     @app_commands.command(name="leaderboard", description="Show the server level leaderboard")
     @command_permission_check("leaderboard")
     async def leaderboard(self, interaction: discord.Interaction):
         debug_print(f"Entering /leaderboard with interaction: {interaction}", level="all")
-        guild_id = str(interaction.guild.id)
-        
-        cursor = self.db.conn.execute('''
-            SELECT user_id, xp, username 
-            FROM user_levels 
-            WHERE guild_id = ?
-            ORDER BY xp DESC 
-            LIMIT 10
-        ''', (guild_id,))
-         
-        top_users = cursor.fetchall()
-         
-        embed = discord.Embed(
-            title="🏆 Server Leaderboard",
-            color=discord.Color.gold()
-        )
-         
-        for idx, user in enumerate(top_users, 1):
-            member = interaction.guild.get_member(int(user['user_id']))
-            display_name = member.display_name if member else user['username']
-            level = calculate_level(float(user['xp']))
+        try:
+            guild_id = str(interaction.guild.id)
             
-            embed.add_field(
-                name=f"{idx}. {display_name}",
-                value=f"Level {level} | XP {user['xp']:.0f}",
-                inline=False
+            cursor = self.db.conn.execute('''
+                SELECT user_id, xp, username 
+                FROM user_levels 
+                WHERE guild_id = ?
+                ORDER BY xp DESC 
+                LIMIT 10
+            ''', (guild_id,))
+             
+            top_users = cursor.fetchall()
+             
+            embed = discord.Embed(
+                title="🏆 Server Leaderboard",
+                color=discord.Color.gold()
             )
-           
-        await interaction.response.send_message(embed=embed)
+             
+            for idx, user in enumerate(top_users, 1):
+                member = interaction.guild.get_member(int(user['user_id']))
+                display_name = member.display_name if member else user['username']
+                level = calculate_level(float(user['xp']))
+                
+                embed.add_field(
+                    name=f"{idx}. {display_name}",
+                    value=f"Level {level} | XP {user['xp']:.0f}",
+                    inline=False
+                )
+               
+            await interaction.response.send_message(embed=embed)
+            
+        except Exception as e:
+            debug_print(red(f"Leaderboard error: {str(e)}"))
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("❌ Failed to load leaderboard. Check logs.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ Failed to load leaderboard. Check logs.", ephemeral=True)
+            except Exception as send_error:
+                debug_print(red(f"Failed to send error message in leaderboard: {send_error}"))
 
     @app_commands.command(name="setxp", description="Set a user's XP")
     @command_permission_check("setxp")
     @app_commands.describe(user="User to modify", xp="New XP value to set")
     async def set_xp(self, interaction: discord.Interaction, user: discord.User, xp: int):
         debug_print(f"Entering /set_xp with interaction: {interaction}, user: {user}, xp: {xp}", level="all")
-        guild_id = str(interaction.guild.id)
-        user_id = str(user.id)
-        # Ensure we have a Member object for .roles and other member attributes
-        if not isinstance(user, discord.Member) and interaction.guild is not None:
-            try:
-                user = await interaction.guild.fetch_member(user.id)
-            except Exception:
-                pass  # fallback to User if not found
+        try:
+            guild_id = str(interaction.guild.id)
+            user_id = str(user.id)
+            # Ensure we have a Member object for .roles and other member attributes
+            if not isinstance(user, discord.Member) and interaction.guild is not None:
+                try:
+                    user = await interaction.guild.fetch_member(user.id)
+                except Exception:
+                    pass  # fallback to User if not found
 
-        self.db.conn.execute('''
-            INSERT OR REPLACE INTO user_levels 
-            (guild_id, user_id, xp, username)
-            VALUES (?, ?, ?, ?)
-        ''', (guild_id, user_id, float(xp), user.name))
-        self.db.conn.commit()
-         
-        embed = discord.Embed(
-            title="XP Updated",
-            description=f"{user.mention}'s XP has been set to **{xp}**",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            self.db.conn.execute('''
+                INSERT OR REPLACE INTO user_levels 
+                (guild_id, user_id, xp, username)
+                VALUES (?, ?, ?, ?)
+            ''', (guild_id, user_id, float(xp), user.name))
+            self.db.conn.commit()
+             
+            embed = discord.Embed(
+                title="XP Updated",
+                description=f"{user.mention}'s XP has been set to **{xp}**",
+                color=discord.Color.green()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        except Exception as e:
+            debug_print(red(f"Set XP error: {str(e)}"))
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("❌ Failed to set XP. Check logs.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ Failed to set XP. Check logs.", ephemeral=True)
+            except Exception as send_error:
+                debug_print(red(f"Failed to send error message in set_xp: {send_error}"))
 
     @app_commands.command(name="addxp", description="Add XP to a user")
     @command_permission_check("addxp")
@@ -151,6 +183,9 @@ class LevelingCog(commands.Cog):
         if xp <= 0:
             await interaction.response.send_message("❌ XP amount must be positive!", ephemeral=True)
             return
+
+        # Defer the response to give us more time for processing
+        await interaction.response.defer(ephemeral=True)
 
         try:
             guild_id = str(interaction.guild.id)
@@ -194,7 +229,7 @@ class LevelingCog(commands.Cog):
                 f"**Level:** {new_level} (+{levels_gained})" if levels_gained else ""
             ]
 
-            await interaction.response.send_message("\n".join(filter(None, response)), ephemeral=True)
+            await interaction.followup.send("\n".join(filter(None, response)), ephemeral=True)
 
             # Use main leveling logic for level up announcement and embed
             if levels_gained > 0:
@@ -202,9 +237,12 @@ class LevelingCog(commands.Cog):
                 await handle_level_up(user, interaction.guild, interaction.channel)
 
         except Exception as e:
-            await interaction.response.send_message("❌ Failed to add XP. Check logs.", ephemeral=True)
-            logging.error(f"AddXP error: {str(e)}")
+            debug_print(red(f"AddXP error: {str(e)}"))
             traceback.print_exc()
+            try:
+                await interaction.followup.send("❌ Failed to add XP. Check logs.", ephemeral=True)
+            except Exception as send_error:
+                debug_print(red(f"Failed to send error message: {send_error}"))
 
     @app_commands.command(name="setlevel", description="Set a user's level")
     @command_permission_check("setlevel")
@@ -235,7 +273,7 @@ class LevelingCog(commands.Cog):
             )
             
         except Exception as e:
-            logging.error(f"Setlevel error: {str(e)}", exc_info=True)
+            debug_print(red(f"Setlevel error: {str(e)}", exc_info=True))
             await interaction.followup.send(
                 "❌ Failed to update level. Check logs.",
                 ephemeral=True
@@ -245,12 +283,13 @@ class LevelingCog(commands.Cog):
     @set_xp.error
     @setlevel.error
     async def xp_commands_error(self, interaction: discord.Interaction, error):
-        debug_print(f"Entering /xp_commands_error with interaction: {interaction}, error: {error}", level="all")
+        debug_print(red(f"Entering /xp_commands_error with interaction: {interaction}, error: {error}", level="all"))
         if isinstance(error, app_commands.CheckFailure):
-            await interaction.response.send_message(
-                "❌ You need administrator permissions to use this command!",
-                ephemeral=True
-            )
-            
+            msg = "❌ You do not have permission to use this command."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(LevelingCog(bot))
