@@ -6,7 +6,7 @@ A powerful multi-purpose Discord bot with a sleek dashboard for managing every f
 
 ## Check out the [support server](https://discord.gg/kcu7dJZKy9) for help.
 
-## Check out the [satus page](https://status.rulekeeper.cc) for the bot uptime.
+## Check out the [status page](https://status.rulekeeper.cc) for the bot uptime.
 
 ## [Delete your data](https://rulekeeper.cc/delete-data) from our database.
 
